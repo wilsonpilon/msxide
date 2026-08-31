@@ -1,0 +1,8 @@
+1 ? "Press [A] to toogle"
+2 if inkey$ <> "A" THEN 2
+3 a$ = inkey$
+4 ? "Press [B] to exit"
+5 if a$ = "A" THEN 1
+6 if a$ = "B" THEN 8
+7 GOTO 3
+8 end

@@ -1,0 +1,5 @@
+msxide.exe
+msxide.db
+sqlite3.dll
+third_party/sqlite/extract/
+paleobasic/

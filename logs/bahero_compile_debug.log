@@ -1,0 +1,5 @@
+08-31-2026 17:55:46 [compile] start mode=4 file=msx00.dmx
+08-31-2026 17:55:46 [compile] resolved src=E:\baHERO\\msx00.dmx ext=.dmx
+08-31-2026 17:55:46 [compile] modeLabel=Compilar e Executar rc=-1 err= amxOut=E:\baHERO\\msx00.amx bmxOut=E:\baHERO\\msx00.bmx
+08-31-2026 17:55:46 [compile] run emu rc=1 cmd="d:\msx\openmsx\openmsx.exe" -machine "Boosted_MSX2_EN" -diska "E:\baHERO\\disk\\\MSX00.dsk"
+08-31-2026 17:55:46 [compile] success msg1=OK: Compilar e Executar msg2=Gerados: E:\baHERO\\msx00.amx e E:\baHERO\\msx00.bmx | Falha ao iniciar openMSX
