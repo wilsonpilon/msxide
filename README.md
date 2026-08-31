@@ -1,6 +1,18 @@
-MSX TUI IDE (FreeBASIC)
+# MSX TUI IDE (FreeBASIC)
 
-Objetivo
+![MSX TUI IDE](images/msxide.png)
+
+## Sobre o projeto
+
+O MSX TUI IDE e um ambiente de desenvolvimento em modo texto para criar e editar programas MSX BASIC. Inspirado nas ferramentas classicas da Microsoft, como o QuickBasic e o EDIT do MS-DOS, o projeto combina uma interface retro com recursos modernos, incluindo multiplos documentos, persistencia em SQLite, compilacao automatizada e integracao com ferramentas do ecossistema MSX.
+
+O desenvolvimento e realizado no Windows 11 com [Visual Studio Code](https://code.visualstudio.com/), [GitHub](https://github.com/) e [PowerShell](https://learn.microsoft.com/powershell/). A aplicacao e escrita em FreeBASIC e oferece backends de console nativo do Windows e newt.
+
+## Agradecimentos
+
+Nosso agradecimento a [Fred Rique (farique)](https://github.com/farique1), autor da [Basic Dignified Suite](https://github.com/farique1/basic-dignified), que inclui as ferramentas para MSX BASIC utilizadas neste projeto.
+
+## Objetivo
 
 - IDE em modo texto (TUI) inspirada no estilo dos programas antigos da Microsoft (QuickBasic).
 - Estrutura modular para estudo.
