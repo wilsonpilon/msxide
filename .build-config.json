@@ -1,7 +1,7 @@
 {
-  "LastSourceHash": "A8D22309062B8CE8BBDCAD23E1689FAA8E962E9FE2EBAF2AFA5BD7C11EAF1951",
-  "Basic": "C:\\basic\\FreeBASIC\\",
-  "Backend": "newt",
-  "Version": "0.0.94",
-  "Compiler": "C:\\basic\\FreeBASIC\\fbc64.exe"
+  "Compiler": "C:\\basic\\FreeBASIC\\fbc64.exe",
+  "Version": "0.1.1",
+  "LastSourceHash": "D66E112759C8384C6E42B42ED5C7F06E7A21C8061D7E5569F67ABA64DE719FCD",
+  "Backend": "win",
+  "Basic": "C:\\basic\\FreeBASIC\\"
 }

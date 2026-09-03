@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $configPath = Join-Path $projectRoot ".build-config.json"
 $outputExe = Join-Path $projectRoot "msxide.exe"
+$releaseCodename = "MAMUTE.SYS"
 
 function New-DefaultConfig {
     return [ordered]@{
@@ -352,6 +353,7 @@ try {
         "src\editor.bas"
         "src\compiler.bas"
         "src\db.bas"
+        "src\project.bas"
         "src\console.bas"
         "-x"
         "msxide.exe"
@@ -359,7 +361,11 @@ try {
 
     Write-Host "Compilando com: $compilerPath" -ForegroundColor Cyan
     Write-Host "Backend: $backend" -ForegroundColor Cyan
-    Write-Host "Versao atual: $nextVersion" -ForegroundColor Cyan
+    Write-Host "Versao atual: $nextVersion ($releaseCodename)" -ForegroundColor Cyan
+
+    $versionBiPath = Join-Path $projectRoot "src\version.bi"
+    $versionBiContent = "Const MSXIDE_VERSION_STR As String = `"$nextVersion`"" + "`r`n" + "Const MSXIDE_RELEASE_CODENAME As String = `"$releaseCodename`""
+    Set-Content -Path $versionBiPath -Value $versionBiContent -Encoding utf8
 
     if ($backend -eq "newt") {
         $compileArgs += @("-d", "MSX_CONSOLE_NEWT")

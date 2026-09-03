@@ -1,5 +1,14 @@
 msxide.exe
 msxide.db
+msxide.db-shm
+msxide.db-wal
+msxide_mamute_smoke.db*
 sqlite3.dll
 third_party/sqlite/extract/
 paleobasic/
+disk/
+~tmppre.*
+*.bin
+*.sym
+*.msxproj-shm
+*.msxproj-wal

@@ -8,6 +8,8 @@ Const MSX_INPUT_MOUSE = 2
 Const MSX_MOUSE_DOWN = 1
 Const MSX_MOUSE_UP = 2
 Const MSX_MOUSE_MOVE = 3
+Const MSX_MOUSE_WHEEL_UP = 4
+Const MSX_MOUSE_WHEEL_DOWN = 5
 
 Declare Sub ConsoleInit(ByVal w As Integer, ByVal h As Integer)
 Declare Sub ConsoleGetCurrentSize(ByRef w As Integer, ByRef h As Integer)

@@ -91,6 +91,23 @@ Private Sub MarkDirtyRange(ByVal y As Integer, ByVal x1 As Integer, ByVal x2 As 
     Next x
 End Sub
 
+Private Sub RestoreInputMode()
+    If gIn = 0 Then Exit Sub
+
+    Dim inputMode As DWORD
+    If gHasOriginalInMode <> 0 Then
+        inputMode = gOriginalInMode
+    ElseIf GetConsoleMode(gIn, @inputMode) = 0 Then
+        Exit Sub
+    End If
+
+    inputMode = inputMode Or ENABLE_EXTENDED_FLAGS
+    inputMode = inputMode Or ENABLE_MOUSE_INPUT
+    inputMode = inputMode Or ENABLE_WINDOW_INPUT
+    inputMode = inputMode And Not ENABLE_QUICK_EDIT_MODE
+    SetConsoleMode(gIn, inputMode)
+End Sub
+
 Sub ConsoleInit(ByVal w As Integer, ByVal h As Integer)
     Dim y As Integer
     Dim x As Integer
@@ -103,13 +120,8 @@ Sub ConsoleInit(ByVal w As Integer, ByVal h As Integer)
     gHasOriginalInMode = 0
     If GetConsoleMode(gIn, @gOriginalInMode) <> 0 Then
         gHasOriginalInMode = -1
-        Dim newMode As DWORD = gOriginalInMode
-        newMode = newMode Or ENABLE_EXTENDED_FLAGS
-        newMode = newMode Or ENABLE_MOUSE_INPUT
-        newMode = newMode Or ENABLE_WINDOW_INPUT
-        newMode = newMode And Not ENABLE_QUICK_EDIT_MODE
-        SetConsoleMode(gIn, newMode)
     End If
+    RestoreInputMode()
 
     Dim sb As COORD
     sb.X = gW
@@ -247,6 +259,14 @@ Private Function TranslateMouseEvent(ByRef rec As MOUSE_EVENT_RECORD, ByRef mous
         End If
     ElseIf rec.dwEventFlags = DOUBLE_CLICK Then
         mouseAction = MSX_MOUSE_DOWN
+    ElseIf rec.dwEventFlags = MOUSE_WHEELED Then
+        ' Delta do wheel fica na word alta de dwButtonState (com sinal).
+        Dim wheelDelta As Short = Cast(Short, (rec.dwButtonState Shr 16) And &hFFFF)
+        If wheelDelta > 0 Then
+            mouseAction = MSX_MOUSE_WHEEL_UP
+        ElseIf wheelDelta < 0 Then
+            mouseAction = MSX_MOUSE_WHEEL_DOWN
+        End If
     ElseIf rec.dwEventFlags = 0 Then
         If leftNow <> 0 And gMouseLeftDown = 0 Then
             mouseAction = MSX_MOUSE_DOWN
@@ -296,6 +316,7 @@ End Function
 Sub ConsoleResetInputState()
     gMouseLeftDown = 0
     If gIn <> 0 Then FlushConsoleInputBuffer(gIn)
+    RestoreInputMode()
 End Sub
 
 Sub ConsoleClear(ByVal fg As UByte = 7, ByVal bg As UByte = 0)

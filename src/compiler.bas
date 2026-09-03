@@ -41,6 +41,7 @@ Private Function CompilerLogNormalizeSlashes(ByRef txt As String) As String
     Dim src As String = Trim(txt)
     If Len(src) = 0 Then Return ""
 
+    Dim pathSep As String = Chr(92)
     Dim outText As String = ""
     Dim lastSep As Integer = 0
     Dim preserveUnc As Integer = IIf(Left(src, 2) = "\\", -1, 0)
@@ -48,13 +49,13 @@ Private Function CompilerLogNormalizeSlashes(ByRef txt As String) As String
 
     For i = 1 To Len(src)
         Dim ch As String = Mid(src, i, 1)
-        If ch = "/" Then ch = "\\"
+        If ch = "/" Then ch = pathSep
 
-        If ch = "\\" Then
+        If ch = pathSep Then
             If Len(outText) = 0 Then
                 outText &= ch
                 lastSep = -1
-            ElseIf preserveUnc <> 0 And Len(outText) = 1 And Left(outText, 1) = "\\" Then
+            ElseIf preserveUnc <> 0 And Len(outText) = 1 And Left(outText, 1) = pathSep Then
                 outText &= ch
                 lastSep = -1
             ElseIf lastSep = 0 Then
@@ -186,13 +187,13 @@ End Function
 
 Private Function ClearDiskDirByPattern(ByRef diskDir As String, ByRef pattern As String, ByRef errMsg As String) As Integer
     Dim fileMask As String = diskDir
-    If Right(fileMask, 1) <> "\\" And Right(fileMask, 1) <> "/" Then fileMask &= "\\"
+    If Right(fileMask, 1) <> Chr(92) And Right(fileMask, 1) <> "/" Then fileMask &= Chr(92)
     fileMask &= pattern
 
     Dim entryName As String = Dir(fileMask)
     While Len(entryName) > 0
         Dim filePath As String = diskDir
-        If Right(filePath, 1) <> "\\" And Right(filePath, 1) <> "/" Then filePath &= "\\"
+        If Right(filePath, 1) <> Chr(92) And Right(filePath, 1) <> "/" Then filePath &= Chr(92)
         filePath &= entryName
 
         If Dir(filePath) <> "" Then
@@ -215,6 +216,8 @@ Private Function ClearRunDiskDir(ByRef diskDir As String, ByRef errMsg As String
     If ClearDiskDirByPattern(diskDir, "*.bmx", errMsg) = 0 Then Return 0
     If ClearDiskDirByPattern(diskDir, "*.dmx", errMsg) = 0 Then Return 0
     If ClearDiskDirByPattern(diskDir, "*.bas", errMsg) = 0 Then Return 0
+    If ClearDiskDirByPattern(diskDir, "*.asm", errMsg) = 0 Then Return 0
+    If ClearDiskDirByPattern(diskDir, "*.bin", errMsg) = 0 Then Return 0
     Return -1
 End Function
 
@@ -222,6 +225,7 @@ Private Function NormalizePathValue(ByRef pathValue As String) As String
     Dim src As String = Trim(pathValue)
     If Len(src) = 0 Then Return ""
 
+    Dim pathSep As String = Chr(92)
     Dim outText As String = ""
     Dim lastSep As Integer = 0
     Dim preserveUnc As Integer = IIf(Left(src, 2) = "\\", -1, 0)
@@ -229,13 +233,13 @@ Private Function NormalizePathValue(ByRef pathValue As String) As String
 
     For i = 1 To Len(src)
         Dim ch As String = Mid(src, i, 1)
-        If ch = "/" Then ch = "\\"
+        If ch = "/" Then ch = pathSep
 
-        If ch = "\\" Then
+        If ch = pathSep Then
             If Len(outText) = 0 Then
                 outText &= ch
                 lastSep = -1
-            ElseIf preserveUnc <> 0 And Len(outText) = 1 And Left(outText, 1) = "\\" Then
+            ElseIf preserveUnc <> 0 And Len(outText) = 1 And Left(outText, 1) = pathSep Then
                 outText &= ch
                 lastSep = -1
             ElseIf lastSep = 0 Then
@@ -538,7 +542,7 @@ Private Function GetExtLower(ByRef filePath As String) As String
 End Function
 
 Private Function BaseNameNoExt(ByRef filePath As String) As String
-    Dim lastSlash As Integer = InStrRev(filePath, "\\")
+    Dim lastSlash As Integer = InStrRev(filePath, Chr(92))
     Dim lastFwd As Integer = InStrRev(filePath, "/")
     If lastFwd > lastSlash Then lastSlash = lastFwd
 
@@ -557,7 +561,7 @@ Private Function BaseNameNoExt(ByRef filePath As String) As String
 End Function
 
 Private Function PathDir(ByRef filePath As String) As String
-    Dim lastSlash As Integer = InStrRev(filePath, "\\")
+    Dim lastSlash As Integer = InStrRev(filePath, Chr(92))
     Dim lastFwd As Integer = InStrRev(filePath, "/")
     If lastFwd > lastSlash Then lastSlash = lastFwd
     If lastSlash <= 0 Then Return CurDir()
@@ -568,9 +572,9 @@ Private Function ToAbsolutePathLocal(ByRef baseDir As String, ByRef pathValue As
     Dim p As String = Trim(pathValue)
     If Len(p) = 0 Then Return ""
     If Len(p) >= 2 And Mid(p, 2, 1) = ":" Then Return p
-    If Left(p, 1) = "\\" Or Left(p, 1) = "/" Then Return p
-    Dim sep As String = "\\"
-    If Right(baseDir, 1) = "\\" Or Right(baseDir, 1) = "/" Then sep = ""
+    If Left(p, 1) = Chr(92) Or Left(p, 1) = "/" Then Return p
+    Dim sep As String = Chr(92)
+    If Right(baseDir, 1) = Chr(92) Or Right(baseDir, 1) = "/" Then sep = ""
     Return baseDir & sep & p
 End Function
 
@@ -1782,19 +1786,48 @@ Private Sub Fat12SetEntry(fat() As UByte, ByVal cluster As Integer, ByVal value 
     End If
 End Sub
 
-Private Function BuildRunDisk(ByRef srcPath As String, ByRef amxPath As String, ByRef bmxPath As String, ByRef outDiskPath As String, ByRef errMsg As String, ByVal cleanDiskDir As Integer) As Integer
-    Const SECTOR_SIZE = 512
-    Const TOTAL_SECTORS = 1440
-    Const DISK_SIZE = SECTOR_SIZE * TOTAL_SECTORS
-    Const SECTORS_PER_CLUSTER = 2
-    Const RESERVED_SECTORS = 1
-    Const FAT_COUNT = 2
-    Const SECTORS_PER_FAT = 3
-    Const ROOT_ENTRIES = 112
-    Const ROOT_DIR_SECTORS = 7
+Private Function MsxDosBootCodeHex() As String
+    ' Bootstrap Z80 do setor de boot (offsets 28-509), portado byte a byte
+    ' do DefaultBootBlock de paleobasic/src/editor/core/MSXDisk.pbi (VFB-1989).
+    ' O disco anterior so escrevia o BPB e zeros aqui: sem este bootstrap,
+    ' o boot do MSX pula pro setor 0 e executa NOPs ate travar ("boot e para").
+    Dim h As String
+    h = "0000D0ED5358C032C2C036552336C0311FF5119DC00E0FCD7DF33C2828110001"
+    h &= "0E1ACD7DF321010022ABC021003F119DC00E27CD7DF3C3000157C0CD000079E6"
+    h &= "FEFE0220073AC2C0A7CA22401177C00E09CD7DF30E07CD7DF318B4426F6F7420"
+    h &= "6572726F720D0A507265737320616E79206B657920666F722072657472790D0A"
+    h &= "24004D5358444F53202053595300000000000000000000000000000000000000"
+    h &= "000000000000000000000000000000000000F32A51F3110001190100011100C1"
+    h &= "EDB03AEEC04711EFC0210000CD5152F376C918643AAF80F9CA6D48D3A50C8C2F"
+    h &= "9CCBE989D20032264094611920E6806D8A000000000000000000000000000000"
+    h &= "0000000000000000000000000000000000000000000000000000000000000000"
+    h &= "0000000000000000000000000000000000000000000000000000000000000000"
+    h &= "0000000000000000000000000000000000000000000000000000000000000000"
+    h &= "0000000000000000000000000000000000000000000000000000000000000000"
+    h &= "0000000000000000000000000000000000000000000000000000000000000000"
+    h &= "0000000000000000000000000000000000000000000000000000000000000000"
+    h &= "0000000000000000000000000000000000000000000000000000000000000000"
+    h &= "0000"
+    Return h
+End Function
 
-    Dim disk(0 To DISK_SIZE - 1) As UByte
-    Dim fat(0 To (SECTORS_PER_FAT * SECTOR_SIZE) - 1) As UByte
+Const DISK_SECTOR_SIZE = 512
+Const DISK_TOTAL_SECTORS = 1440
+Const DISK_SIZE_BYTES = DISK_SECTOR_SIZE * DISK_TOTAL_SECTORS
+Const DISK_SECTORS_PER_CLUSTER = 2
+Const DISK_RESERVED_SECTORS = 1
+Const DISK_FAT_COUNT = 2
+Const DISK_SECTORS_PER_FAT = 3
+Const DISK_ROOT_ENTRIES = 112
+Const DISK_ROOT_DIR_SECTORS = 7
+
+' Nucleo generico de montagem de disco FAT12 MSX-DOS 720KB: recebe a lista
+' de arquivos (path local + nome 8.3) ja pronta e cuida do boot sector, FAT
+' e diretorio raiz. Usado tanto pelo pipeline MSX-Basic/Basic Dignified
+' (BuildRunDisk) quanto pelo pipeline asMSX (BuildAsmRunDisk).
+Private Function BuildFat12DiskCore(filePath() As String, fileName() As String, ByVal fileCount As Integer, ByRef diskDir As String, ByRef baseName As String, ByRef outDiskPath As String, ByRef errMsg As String) As Integer
+    Dim disk(0 To DISK_SIZE_BYTES - 1) As UByte
+    Dim fat(0 To (DISK_SECTORS_PER_FAT * DISK_SECTOR_SIZE) - 1) As UByte
 
     Dim i As Integer
     For i = 0 To UBound(disk)
@@ -1815,16 +1848,16 @@ Private Function BuildRunDisk(ByRef srcPath As String, ByRef amxPath As String, 
 
     disk(11) = &H00
     disk(12) = &H02
-    disk(13) = SECTORS_PER_CLUSTER
-    disk(14) = RESERVED_SECTORS
+    disk(13) = DISK_SECTORS_PER_CLUSTER
+    disk(14) = DISK_RESERVED_SECTORS
     disk(15) = 0
-    disk(16) = FAT_COUNT
-    disk(17) = ROOT_ENTRIES And &HFF
-    disk(18) = (ROOT_ENTRIES Shr 8) And &HFF
-    disk(19) = TOTAL_SECTORS And &HFF
-    disk(20) = (TOTAL_SECTORS Shr 8) And &HFF
+    disk(16) = DISK_FAT_COUNT
+    disk(17) = DISK_ROOT_ENTRIES And &HFF
+    disk(18) = (DISK_ROOT_ENTRIES Shr 8) And &HFF
+    disk(19) = DISK_TOTAL_SECTORS And &HFF
+    disk(20) = (DISK_TOTAL_SECTORS Shr 8) And &HFF
     disk(21) = &HF9
-    disk(22) = SECTORS_PER_FAT
+    disk(22) = DISK_SECTORS_PER_FAT
     disk(23) = 0
     disk(24) = 9
     disk(25) = 0
@@ -1833,74 +1866,23 @@ Private Function BuildRunDisk(ByRef srcPath As String, ByRef amxPath As String, 
     disk(510) = &H55
     disk(511) = &HAA
 
+    Dim bootCode As String = HexToBin(MsxDosBootCodeHex())
+    For i = 0 To Len(bootCode) - 1
+        disk(28 + i) = Asc(Mid(bootCode, i + 1, 1))
+    Next i
+
     fat(0) = &HF9
     fat(1) = &HFF
     fat(2) = &HFF
 
-    Dim dmxPath As String = srcPath
-
-    Dim srcExt As String = GetExtLower(srcPath)
-    If srcExt <> ".dmx" And srcExt <> ".bad" Then
-        dmxPath = ""
-    End If
-
-    Dim workRoot As String = NormalizePathValue(PathDir(srcPath))
-    If Len(workRoot) = 0 Then workRoot = NormalizePathValue(CurDir())
-    If Right(workRoot, 1) <> "\\" And Right(workRoot, 1) <> "/" Then workRoot &= "\\"
-
-    Dim diskDir As String = NormalizePathValue(workRoot & "disk")
-    If Dir(diskDir) = "" Then MkDir diskDir
-    If Right(diskDir, 1) <> "\\" And Right(diskDir, 1) <> "/" Then diskDir &= "\\"
-
-    If cleanDiskDir <> 0 Then
-        If ClearRunDiskDir(diskDir, errMsg) = 0 Then Return 0
-    End If
-
-    Dim baseName As String = UCase(BaseNameNoExt(srcPath))
-    If Len(baseName) = 0 Then baseName = "PROGRAM"
-
-    Dim autoexecPath As String = NormalizePathValue(diskDir & "AUTOEXEC.BAS")
-    Dim autoexecText As String = "10 RUN " & Chr(34) & Left(baseName, 8) & ".BMX" & Chr(34) & Chr(13) & Chr(10)
-    If WriteTextFile(autoexecPath, autoexecText, errMsg) = 0 Then Return 0
-
-    Dim filePath(1 To 4) As String
-    Dim fileName(1 To 4) As String
-    Dim fileCount As Integer = 0
-
-    If Len(dmxPath) > 0 And Dir(dmxPath) <> "" Then
-        fileCount += 1
-        filePath(fileCount) = dmxPath
-        fileName(fileCount) = Left(baseName, 8) & ".DMX"
-    End If
-
-    If Dir(amxPath) = "" Then
-        errMsg = "Arquivo AMX nao encontrado: " & amxPath
-        Return 0
-    End If
-    fileCount += 1
-    filePath(fileCount) = amxPath
-    fileName(fileCount) = Left(baseName, 8) & ".AMX"
-
-    If Dir(bmxPath) = "" Then
-        errMsg = "Arquivo BMX nao encontrado: " & bmxPath
-        Return 0
-    End If
-    fileCount += 1
-    filePath(fileCount) = bmxPath
-    fileName(fileCount) = Left(baseName, 8) & ".BMX"
-
-    fileCount += 1
-    filePath(fileCount) = autoexecPath
-    fileName(fileCount) = "AUTOEXEC.BAS"
-
-    Dim rootOffset As Integer = (RESERVED_SECTORS + FAT_COUNT * SECTORS_PER_FAT) * SECTOR_SIZE
-    Dim dataOffset As Integer = (RESERVED_SECTORS + FAT_COUNT * SECTORS_PER_FAT + ROOT_DIR_SECTORS) * SECTOR_SIZE
-    Dim clusterSize As Integer = SECTORS_PER_CLUSTER * SECTOR_SIZE
-    Dim maxCluster As Integer = 2 + ((TOTAL_SECTORS - (RESERVED_SECTORS + FAT_COUNT * SECTORS_PER_FAT + ROOT_DIR_SECTORS)) \ SECTORS_PER_CLUSTER) - 1
+    Dim rootOffset As Integer = (DISK_RESERVED_SECTORS + DISK_FAT_COUNT * DISK_SECTORS_PER_FAT) * DISK_SECTOR_SIZE
+    Dim dataOffset As Integer = (DISK_RESERVED_SECTORS + DISK_FAT_COUNT * DISK_SECTORS_PER_FAT + DISK_ROOT_DIR_SECTORS) * DISK_SECTOR_SIZE
+    Dim clusterSize As Integer = DISK_SECTORS_PER_CLUSTER * DISK_SECTOR_SIZE
+    Dim maxCluster As Integer = 2 + ((DISK_TOTAL_SECTORS - (DISK_RESERVED_SECTORS + DISK_FAT_COUNT * DISK_SECTORS_PER_FAT + DISK_ROOT_DIR_SECTORS)) \ DISK_SECTORS_PER_CLUSTER) - 1
     Dim nextCluster As Integer = 2
 
     For i = 1 To fileCount
-        If i > ROOT_ENTRIES Then
+        If i > DISK_ROOT_ENTRIES Then
             errMsg = "Numero de arquivos excede o diretorio raiz FAT12."
             Return 0
         End If
@@ -1958,8 +1940,8 @@ Private Function BuildRunDisk(ByRef srcPath As String, ByRef amxPath As String, 
         disk(entryOffset + 31) = (sz Shr 24) And &HFF
     Next i
 
-    Dim fat1Offset As Integer = RESERVED_SECTORS * SECTOR_SIZE
-    Dim fat2Offset As Integer = (RESERVED_SECTORS + SECTORS_PER_FAT) * SECTOR_SIZE
+    Dim fat1Offset As Integer = DISK_RESERVED_SECTORS * DISK_SECTOR_SIZE
+    Dim fat2Offset As Integer = (DISK_RESERVED_SECTORS + DISK_SECTORS_PER_FAT) * DISK_SECTOR_SIZE
     For i = 0 To UBound(fat)
         disk(fat1Offset + i) = fat(i)
         disk(fat2Offset + i) = fat(i)
@@ -1979,6 +1961,109 @@ Private Function BuildRunDisk(ByRef srcPath As String, ByRef amxPath As String, 
 
     Close #ff
     Return -1
+End Function
+
+Private Function PrepareRunDiskDir(ByRef srcPath As String, ByVal cleanDiskDir As Integer, ByRef diskDir As String, ByRef errMsg As String) As Integer
+    Dim workRoot As String = NormalizePathValue(PathDir(srcPath))
+    If Len(workRoot) = 0 Then workRoot = NormalizePathValue(CurDir())
+    If Right(workRoot, 1) <> Chr(92) And Right(workRoot, 1) <> "/" Then workRoot &= Chr(92)
+
+    diskDir = NormalizePathValue(workRoot & "disk")
+    If Dir(diskDir) = "" Then MkDir diskDir
+    If Right(diskDir, 1) <> Chr(92) And Right(diskDir, 1) <> "/" Then diskDir &= Chr(92)
+
+    If cleanDiskDir <> 0 Then
+        If ClearRunDiskDir(diskDir, errMsg) = 0 Then Return 0
+    End If
+
+    Return -1
+End Function
+
+Private Function BuildRunDisk(ByRef srcPath As String, ByRef amxPath As String, ByRef bmxPath As String, ByRef outDiskPath As String, ByRef errMsg As String, ByVal cleanDiskDir As Integer) As Integer
+    Dim dmxPath As String = srcPath
+
+    Dim srcExt As String = GetExtLower(srcPath)
+    If srcExt <> ".dmx" And srcExt <> ".bad" Then
+        dmxPath = ""
+    End If
+
+    Dim diskDir As String
+    If PrepareRunDiskDir(srcPath, cleanDiskDir, diskDir, errMsg) = 0 Then Return 0
+
+    Dim baseName As String = UCase(BaseNameNoExt(srcPath))
+    If Len(baseName) = 0 Then baseName = "PROGRAM"
+
+    Dim autoexecPath As String = NormalizePathValue(diskDir & "AUTOEXEC.BAS")
+    Dim autoexecText As String = "10 RUN " & Chr(34) & Left(baseName, 8) & ".BMX" & Chr(34) & Chr(13) & Chr(10)
+    If WriteTextFile(autoexecPath, autoexecText, errMsg) = 0 Then Return 0
+
+    Dim filePath(1 To 4) As String
+    Dim fileName(1 To 4) As String
+    Dim fileCount As Integer = 0
+
+    If Len(dmxPath) > 0 And Dir(dmxPath) <> "" Then
+        fileCount += 1
+        filePath(fileCount) = dmxPath
+        fileName(fileCount) = Left(baseName, 8) & ".DMX"
+    End If
+
+    If Dir(amxPath) = "" Then
+        errMsg = "Arquivo AMX nao encontrado: " & amxPath
+        Return 0
+    End If
+    fileCount += 1
+    filePath(fileCount) = amxPath
+    fileName(fileCount) = Left(baseName, 8) & ".AMX"
+
+    If Dir(bmxPath) = "" Then
+        errMsg = "Arquivo BMX nao encontrado: " & bmxPath
+        Return 0
+    End If
+    fileCount += 1
+    filePath(fileCount) = bmxPath
+    fileName(fileCount) = Left(baseName, 8) & ".BMX"
+
+    fileCount += 1
+    filePath(fileCount) = autoexecPath
+    fileName(fileCount) = "AUTOEXEC.BAS"
+
+    Return BuildFat12DiskCore(filePath(), fileName(), fileCount, diskDir, baseName, outDiskPath, errMsg)
+End Function
+
+Private Function BuildAsmRunDisk(ByRef srcPath As String, ByRef binPath As String, ByRef outDiskPath As String, ByRef errMsg As String, ByVal cleanDiskDir As Integer) As Integer
+    Dim diskDir As String
+    If PrepareRunDiskDir(srcPath, cleanDiskDir, diskDir, errMsg) = 0 Then Return 0
+
+    Dim baseName As String = UCase(BaseNameNoExt(srcPath))
+    If Len(baseName) = 0 Then baseName = "PROGRAM"
+
+    Dim autoexecPath As String = NormalizePathValue(diskDir & "AUTOEXEC.BAS")
+    Dim autoexecText As String = "10 BLOAD " & Chr(34) & Left(baseName, 8) & ".BIN" & Chr(34) & ",R" & Chr(13) & Chr(10)
+    If WriteTextFile(autoexecPath, autoexecText, errMsg) = 0 Then Return 0
+
+    Dim filePath(1 To 3) As String
+    Dim fileName(1 To 3) As String
+    Dim fileCount As Integer = 0
+
+    If Dir(srcPath) <> "" Then
+        fileCount += 1
+        filePath(fileCount) = srcPath
+        fileName(fileCount) = Left(baseName, 8) & ".ASM"
+    End If
+
+    If Dir(binPath) = "" Then
+        errMsg = "Arquivo BIN nao encontrado: " & binPath
+        Return 0
+    End If
+    fileCount += 1
+    filePath(fileCount) = binPath
+    fileName(fileCount) = Left(baseName, 8) & ".BIN"
+
+    fileCount += 1
+    filePath(fileCount) = autoexecPath
+    fileName(fileCount) = "AUTOEXEC.BAS"
+
+    Return BuildFat12DiskCore(filePath(), fileName(), fileCount, diskDir, baseName, outDiskPath, errMsg)
 End Function
 
 Function CompilerCompileToAmx(ByRef srcPath As String, ByRef outAmxPath As String, ByRef errMsg As String) As Integer
@@ -2067,4 +2152,147 @@ Function CompilerBuildRunDisk(ByRef srcPath As String, ByRef amxPath As String, 
         CompilerDebugLog("compiler", "CompilerBuildRunDisk ok dsk=" & outDiskPath)
     End If
     Return rc
+End Function
+
+Function CompilerBuildAsmRunDisk(ByRef srcPath As String, ByRef binPath As String, ByRef outDiskPath As String, ByRef errMsg As String, ByVal cleanDiskDir As Integer = 0) As Integer
+    outDiskPath = ""
+    CompilerDebugLog("compiler", "CompilerBuildAsmRunDisk start src=" & srcPath & " bin=" & binPath & " cleanDiskDir=" & Trim(Str(cleanDiskDir)))
+    Dim rc As Integer = BuildAsmRunDisk(srcPath, binPath, outDiskPath, errMsg, cleanDiskDir)
+    If rc = 0 Then
+        CompilerDebugLog("compiler", "CompilerBuildAsmRunDisk fail err=" & errMsg)
+    Else
+        CompilerDebugLog("compiler", "CompilerBuildAsmRunDisk ok dsk=" & outDiskPath)
+    End If
+    Return rc
+End Function
+
+' Le um .bin no formato de cabecalho MSX-BASIC (BSAVE/asmsx .BASIC):
+' byte 0 = &HFE, bytes 1-2 = endereco inicial, 3-4 = endereco final,
+' 5-6 = endereco de execucao (little endian). payload = bytes apos o cabecalho.
+Private Function ReadBasicBinHeader(ByRef binPath As String, ByRef startAddr As Integer, ByRef endAddr As Integer, ByRef execAddr As Integer, ByRef payload As String, ByRef errMsg As String) As Integer
+    Dim raw As String
+    If ReadBinaryFile(binPath, raw, errMsg) = 0 Then Return 0
+
+    If Len(raw) < 7 Then
+        errMsg = "Arquivo BIN invalido (menor que o cabecalho): " & binPath
+        Return 0
+    End If
+
+    If Asc(Mid(raw, 1, 1)) <> &HFE Then
+        errMsg = "Arquivo BIN sem cabecalho MSX-BASIC (0xFE): " & binPath
+        Return 0
+    End If
+
+    startAddr = Asc(Mid(raw, 2, 1)) Or (Asc(Mid(raw, 3, 1)) Shl 8)
+    endAddr = Asc(Mid(raw, 4, 1)) Or (Asc(Mid(raw, 5, 1)) Shl 8)
+    execAddr = Asc(Mid(raw, 6, 1)) Or (Asc(Mid(raw, 7, 1)) Shl 8)
+    payload = Mid(raw, 8)
+
+    Return -1
+End Function
+
+Function CompilerReadAsmBinInfo(ByRef binPath As String, ByRef startAddr As Integer, ByRef endAddr As Integer, ByRef execAddr As Integer, ByRef errMsg As String) As Integer
+    Dim payload As String
+    Return ReadBasicBinHeader(binPath, startAddr, endAddr, execAddr, payload, errMsg)
+End Function
+
+' Gera um bloco Basic Dignified que embute os bytes do .bin (sem o cabecalho)
+' via DATA/READ/POKE e cria o DEFUSRn correspondente - alternativa ao BLOAD
+' para quando o binario precisa ficar auto-contido no proprio .dmx.
+' Byte em hex de 2 digitos maiusculos, sem prefixo (formato usado nas
+' linhas DATA do carregador: "C9,C3,...", lido de volta com VAL("&H"+A$)).
+Private Function ByteHex2(ByVal value As Integer) As String
+    Return Right("0" & Hex(value And &HFF), 2)
+End Function
+
+Function CompilerBuildAsmDataLoader(ByRef binPath As String, ByRef labelName As String, ByVal usrIndex As Integer, ByRef outCode As String, ByRef errMsg As String) As Integer
+    Dim startAddr As Integer
+    Dim endAddr As Integer
+    Dim execAddr As Integer
+    Dim payload As String
+
+    If ReadBasicBinHeader(binPath, startAddr, endAddr, execAddr, payload, errMsg) = 0 Then Return 0
+
+    Dim total As Integer = Len(payload)
+    If total <= 0 Then
+        errMsg = "Arquivo BIN sem conteudo apos o cabecalho: " & binPath
+        Return 0
+    End If
+
+    Dim usrTag As String = "USR" & Trim(Str(usrIndex))
+    Dim ind As String = "    "
+
+    Dim s As String
+    s = "{" & labelName & "}" & Chr(10)
+    s &= ind & "' Chame com: A=" & usrTag & "(0)  ou  PRINT " & usrTag & "(0)" & Chr(10)
+    s &= ind & "restore {@}" & Chr(10)
+    s &= ind & "for asmidx = 0 to &H" & Hex(total - 1) & Chr(10)
+    s &= ind & "read asmbytehex$" & Chr(10)
+    s &= ind & "poke &H" & Hex(startAddr) & "+asmidx,val(" & Chr(34) & "&h" & Chr(34) & "+asmbytehex$)" & Chr(10)
+    s &= ind & "next asmidx" & Chr(10)
+    s &= ind & "defusr" & Trim(Str(usrIndex)) & " = &H" & Hex(execAddr) & Chr(10)
+    s &= ind & "return" & Chr(10)
+
+    Dim bytePos As Integer = 1
+    While bytePos <= total
+        Dim lineVals As String = ""
+        Dim k As Integer
+        For k = 0 To 7
+            If bytePos > total Then Exit For
+            If Len(lineVals) > 0 Then lineVals &= ","
+            lineVals &= ByteHex2(Asc(Mid(payload, bytePos, 1)))
+            bytePos += 1
+        Next k
+        s &= ind & "data " & lineVals & Chr(10)
+    Wend
+
+    outCode = s
+    Return -1
+End Function
+
+' Byte em hex "seguro" pra assembler: sempre com um "0" antes (mesmo quando
+' nao precisaria) e sufixo "h", pra nunca ser confundido com um identificador
+' quando o primeiro digito hex e uma letra (ex.: C9h vira 0C9h).
+Private Function AsmHexByte(ByVal value As Integer) As String
+    Return "0" & ByteHex2(value) & "h"
+End Function
+
+' Gera um .inc no formato do asmsx (label + DEFB, 8 bytes por linha, hex) com
+' os bytes do .bin (sem o cabecalho MSX-BASIC), pra ser incluido em outros
+' programas asm via .INCLUDE - so os bytes brutos, sem endereco: a posicao
+' fica a cargo de quem inclui.
+Function CompilerBuildAsmIncFile(ByRef binPath As String, ByRef srcAsmPath As String, ByRef labelName As String, ByRef outIncPath As String, ByRef errMsg As String) As Integer
+    Dim startAddr As Integer
+    Dim endAddr As Integer
+    Dim execAddr As Integer
+    Dim payload As String
+
+    If ReadBasicBinHeader(binPath, startAddr, endAddr, execAddr, payload, errMsg) = 0 Then Return 0
+
+    Dim total As Integer = Len(payload)
+    If total <= 0 Then
+        errMsg = "Arquivo BIN sem conteudo apos o cabecalho: " & binPath
+        Return 0
+    End If
+
+    Dim s As String
+    s = labelName & ":" & Chr(10)
+
+    Dim bytePos As Integer = 1
+    While bytePos <= total
+        Dim lineVals As String = ""
+        Dim k As Integer
+        For k = 0 To 7
+            If bytePos > total Then Exit For
+            If Len(lineVals) > 0 Then lineVals &= ","
+            lineVals &= AsmHexByte(Asc(Mid(payload, bytePos, 1)))
+            bytePos += 1
+        Next k
+        s &= "    defb " & lineVals & Chr(10)
+    Wend
+
+    outIncPath = ChangeExt(srcAsmPath, ".inc")
+    If WriteTextFile(outIncPath, s, errMsg) = 0 Then Return 0
+
+    Return -1
 End Function

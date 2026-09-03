@@ -1,143 +1,91 @@
-# MSX TUI IDE (FreeBASIC)
+# msxIDE
 
-![MSX TUI IDE](images/msxide.png)
+![msxIDE](images/msxide.png)
 
-## Sobre o projeto
+**v0.1.1 — "MAMUTE.SYS"**
 
-O MSX TUI IDE e um ambiente de desenvolvimento em modo texto para criar e editar programas MSX BASIC. Inspirado nas ferramentas classicas da Microsoft, como o QuickBasic e o EDIT do MS-DOS, o projeto combina uma interface retro com recursos modernos, incluindo multiplos documentos, persistencia em SQLite, compilacao automatizada e integracao com ferramentas do ecossistema MSX.
+Um ambiente de desenvolvimento em modo texto (TUI) para MSX BASIC e Z80 Assembly, escrito em
+FreeBASIC. Inspirado nas ferramentas clássicas de MS-DOS (EDIT, QuickBasic) e nos monitores/assemblers
+interativos da era 8-bit do MSX.
 
-O desenvolvimento e realizado no Windows 11 com [Visual Studio Code](https://code.visualstudio.com/), [GitHub](https://github.com/) e [PowerShell](https://learn.microsoft.com/powershell/). A aplicacao e escrita em FreeBASIC e oferece backends de console nativo do Windows e newt.
+📖 [MANUAL.md](MANUAL.md) — instalação, compilação, atalhos.
+📐 [SPEC.md](SPEC.md) — arquitetura, decisões de projeto, o roadmap do Mamute Assembler.
+📝 [CHANGELOG.md](CHANGELOG.md) — histórico de versões.
+
+## O que já está implementado
+
+- **Editor de texto em TUI**, multi-documento, janelas MDI (arrastar/redimensionar/maximizar/fechar),
+  barras de rolagem, roda do mouse.
+- **Compilação MSX BASIC / Basic Dignified**: gera `.amx`/`.bmx`, monta disco `.dsk` (boot MSX-DOS
+  real) e lança o **openMSX** automaticamente.
+- **Z80 Assembly via asMSX**: novo documento `.asm` com um "Hello ASM World" pronto; compilar+executar
+  monta com o asMSX de verdade e oferece inserir o binário num programa BASIC aberto (`BLOAD` direto,
+  loader `DATA`/`POKE`+`DEFUSR`, ou `.inc` reaproveitável).
+- **Sistema de projetos** (`.msxproj`): um arquivo SQLite portátil que empacota fontes, binários e
+  configuração — abre extraindo pra uma pasta de trabalho, salva reimportando tudo de volta.
+- **Ajuda integrada**: Basic Dignified, Dignified, BaToken, asMSX, dicionário MSX BASIC completo
+  (verbete contextual com `Shift+F1`), e um guia do próprio editor.
+- **Menu Referência**: dez documentos técnicos MSX portados pra dentro do IDE — The MSX Red Book, MSX2
+  Technical Handbook, manuais MSX-DOS2/Z80/R800/Turbo-Basic/FM-PAC, BIOS Chamadas/Hardware/
+  Documentação, openMSX, Nestor Basic, SEE Tracker, MSXBAS2ROM.
+- **Mamute Assembler** (início): configurador de memória simulada (slots, sub-slots, páginas, RAM/ROM)
+  e um terminal `MON>` estilo ZX-81 — réplica em andamento de um monitor/assembler Z80 interativo.
+  Roadmap completo em [SPEC.md](SPEC.md#2-módulo-mamute-assembler).
+
+## Ferramentas usadas neste projeto
+
+- **[Claude Code](https://claude.com/claude-code)** (Anthropic) — pair programming, pesquisa e
+  implementação assistida por IA.
+- **FreeBASIC** — linguagem/compilador do msxIDE.
+- **[newt-freebasic](https://github.com/paul-swan/newt-freebasic)** — biblioteca de terminal usada pelo
+  backend de console alternativo (`--Backend newt`).
+- **Windows 11** + **Windows Console API** — backend nativo padrão.
+- **PowerShell** — build, versionamento e testes (`build.ps1`, `tests/`).
+- **SQLite** — persistência de configurações, projetos e métricas.
+- **Visual Studio Code** + **GitHub** — desenvolvimento e versionamento.
 
 ## Agradecimentos
 
-Nosso agradecimento a [Fred Rique (farique)](https://github.com/farique1), autor da [Basic Dignified Suite](https://github.com/farique1/basic-dignified), que inclui as ferramentas para MSX BASIC utilizadas neste projeto.
+O msxIDE se apoia em ferramentas e documentação de terceiros — nossa gratidão a quem as criou:
 
-## Objetivo
+- **[Fred Rique (farique1)](https://github.com/farique1)**, autor da
+  **[Basic Dignified Suite](https://github.com/farique1/basic-dignified)**, o compilador/tokenizer de
+  MSX BASIC usado neste projeto.
+- **Eduardo "pitpan" A. Robsy Petrus**, criador original do **[asMSX](https://www.msx.org/wiki/asMSX)**
+  (baseado na liberação GPLv3 de Lucas "cjv99", hoje mantido pelo time asMSX), o cross-assembler Z80
+  usado para Z80 Assembly.
+- **Cibertron Software**, criadores do **Mega Assembler** (1987), o monitor/assembler/desmontador
+  original em cartucho que inspira metade do Mamute Assembler.
+- **Romi**, autor original do **SUPER-X** (1994), o monitor/debugger avançado que inspira a outra
+  metade do Mamute Assembler — e **NYYRIKKI**, autor da versão estendida (2011), com tradução do
+  japonês por **JP Grobler**.
 
-- IDE em modo texto (TUI) inspirada no estilo dos programas antigos da Microsoft (QuickBasic).
-- Estrutura modular para estudo.
-- Persistencia de configuracoes/projeto em SQLite.
+## Módulos do msxIDE (nomes pré-históricos)
 
-Estado inicial implementado
+Tradição herdada do projeto-irmão `paleobasic/` (onde o próprio Mamute Assembler já nasceu com esse
+apelido): cada módulo do msxIDE tem um nome de bicho pré-histórico. Tabela completa e o porquê de cada
+um em [SPEC.md](SPEC.md#1-visão-geral-da-arquitetura).
 
-- Janela principal TUI com barra de menu simples: File -> Exit.
-- Desktop com fundo quadriculado em tons de azul.
-- Tamanho de janela do editor acompanha o tamanho visivel atual do console (com limites minimos/maximos de seguranca).
-- Suporte interno a multiplos documentos abertos ao mesmo tempo.
-- Ao iniciar sem parametros, cria automaticamente o documento `msx00.dmx`.
-- Edicao de texto basica no estilo EDIT do MS-DOS:
-  - Insercao de caracteres
-  - Enter (quebra de linha)
-  - Backspace/Delete
-  - Setas, Home/End, PgUp/PgDn
-  - Barras de rolagem vertical/horizontal com trilho quadriculado e thumb proporcional (posicao e tamanho)
-  - Canto de juncao interno (entre barras) com grip para redimensionar por clique e arraste
-- Atalhos:
-  - F10: abre/fecha menu
-  - Enter (no menu): Exit
-  - F6: alterna janela ativa
-  - F4: novo documento untitled (msxNN.dmx)
-  - F2: salva documento ativo em disco
-  - Esc: sai (fora do menu)
-  - F8 (backend newt): alterna modo de mouse virtual
-  - F7 (backend newt): centraliza ponteiro virtual
-  - F9 (backend newt): clique duplo virtual
+| Arquivo | Apelido |
+|---|---|
+| `main.bas` | Trilobita |
+| `editor.bas` | Tiranossauro |
+| `compiler.bas` | Pteranodonte |
+| `db.bas` | Arqueloni |
+| `project.bas` | Amonite |
+| `console.bas` | Ictiossauro |
+| `console_win.bas` | Anquilossauro |
+| `console_newt.bas` | Salamandra |
 
-Persistencia em SQLite
+## Início rápido
 
-- Banco: `msxide.db` (na pasta atual)
-- Tabelas:
-  - settings
-  - projects
-  - documents
-- Configuracoes default gravadas:
-  - source_base_url
-  - startup_document
-- Estado dos documentos (titulo, caminho, cursor) e salvo ao encerrar.
+```powershell
+.\build.ps1 --Basic C:\dos\freebasic --Compiler fbc64.exe --Backend win
+.\msxide.exe
+```
 
-Dependencias
+Veja [MANUAL.md](MANUAL.md) para instruções completas de instalação, compilação e uso.
 
-1. FreeBASIC (fbc)
-2. SQLite3 (biblioteca C)
+## Licença
 
-Build (Windows, exemplo)
-
-- fbc src\main.bas src\editor.bas src\db.bas src\console.bas -d MSX_CONSOLE_WIN -x msxide.exe
-
-SQLite em runtime
-
-- O projeto agora carrega `sqlite3.dll` dinamicamente em tempo de execucao.
-- Coloque `sqlite3.dll` ao lado de `msxide.exe` (ou em algum caminho do PATH do Windows).
-- Isso evita o erro de link `cannot find -lsqlite3` no build.
-- O `build.ps1` tambem baixa automaticamente a DLL oficial do SQLite para o projeto quando ela nao existir.
-
-Execucao
-
-- msxide.exe
-- msxide.exe arquivo1.bas arquivo2.bas
-
-Testes automatizados
-
-- Pipeline padrao (regressao + smoke de help):
-
-- powershell -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
-
-- Apenas regressao:
-
-- powershell -ExecutionPolicy Bypass -File .\tests\regression\run-regression.ps1
-
-- Apenas smoke de help:
-
-- powershell -ExecutionPolicy Bypass -File .\tests\smoke\run-help-smoke.ps1
-
-Build rapido com PowerShell
-
-- Script: `build.ps1`
-- O script salva configuracao padrao em `.build-config.json` apos o setup inicial.
-- O backend pode ser selecionado por `--Backend win|newt`.
-
-Exemplos:
-
-1. Setup inicial (salva compilador e pasta FreeBASIC como padrao):
-
-- powershell -ExecutionPolicy Bypass -File .\build.ps1 --Basic c:\dos\freebasic --Compiler fbc64.exe --Backend win
-
-2. Build normal usando padrao salvo:
-
-- powershell -ExecutionPolicy Bypass -File .\build.ps1
-
-  2.1 Build com backend newt:
-
-- powershell -ExecutionPolicy Bypass -File .\build.ps1 --Backend newt
-
-3. Build e executar:
-
-- powershell -ExecutionPolicy Bypass -File .\build.ps1 --Run
-
-4. Versao manual:
-
-- powershell -ExecutionPolicy Bypass -File .\build.ps1 --Version 1.2.3
-
-5. Incremento de versao:
-
-- release (patch): powershell -ExecutionPolicy Bypass -File .\build.ps1 --Version release
-- minor (feature/bugfix): powershell -ExecutionPolicy Bypass -File .\build.ps1 --Version minor
-- major (pacote fechado): powershell -ExecutionPolicy Bypass -File .\build.ps1 --Version major
-
-Regra automatica:
-
-- Se os fontes em `src` mudarem e `--Version` nao for informado, o script incrementa automaticamente a versao release (patch).
-
-Metricas de performance no SQLite
-
-- O editor grava metricas por segundo na tabela `perf_metrics_sec`.
-- Campos registrados: `frame_count`, medias e `p95` de:
-  - `char_calls` (WriteConsoleOutputCharacter)
-  - `attr_calls` (WriteConsoleOutputAttribute)
-  - `fill_calls` (FillConsoleOutputAttribute)
-- O campo `backend_version` permite comparar historico entre versoes do backend.
-
-Notas
-
-- O modulo de acesso a arquivos de internet do site especifico foi preparado via configuracao `source_base_url` no SQLite. O download em si pode ser adicionado no proximo passo para manter este primeiro marco simples e estavel.
-- No backend newt atual, o mouse e virtual: F8 liga/desliga; H/J/K/L ou setas movem o ponteiro; Espaco/Enter simulam clique; F9 faz clique duplo; F7 centraliza o ponteiro.
+GPLv3 — ver [LICENSE](LICENSE).

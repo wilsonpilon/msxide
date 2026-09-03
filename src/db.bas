@@ -8,7 +8,10 @@ Const SQLITE_ROW = 100
 Const SQLITE_DONE = 101
 
 Dim Shared gDb As sqlite3 Ptr
+Dim Shared gProjectDb As sqlite3 Ptr
 Dim Shared gSqliteDll As Any Ptr
+
+Declare Function CMemCpy Cdecl Alias "memcpy" (ByVal dest As Any Ptr, ByVal src As Any Ptr, ByVal n As Integer) As Any Ptr
 
 Dim Shared p_sqlite3_open As Function Cdecl (ByVal filename As ZString Ptr, ByVal ppDb As sqlite3 Ptr Ptr) As Integer
 Dim Shared p_sqlite3_close As Function Cdecl (ByVal db As sqlite3 Ptr) As Integer
@@ -20,7 +23,10 @@ Dim Shared p_sqlite3_finalize As Function Cdecl (ByVal pStmt As sqlite3_stmt Ptr
 Dim Shared p_sqlite3_bind_text As Function Cdecl (ByVal pStmt As sqlite3_stmt Ptr, ByVal idx As Integer, ByVal txt As ZString Ptr, ByVal n As Integer, ByVal dtor As Any Ptr) As Integer
 Dim Shared p_sqlite3_bind_int As Function Cdecl (ByVal pStmt As sqlite3_stmt Ptr, ByVal idx As Integer, ByVal value As Integer) As Integer
 Dim Shared p_sqlite3_bind_double As Function Cdecl (ByVal pStmt As sqlite3_stmt Ptr, ByVal idx As Integer, ByVal value As Double) As Integer
+Dim Shared p_sqlite3_bind_blob As Function Cdecl (ByVal pStmt As sqlite3_stmt Ptr, ByVal idx As Integer, ByVal blob As Any Ptr, ByVal n As Integer, ByVal dtor As Any Ptr) As Integer
 Dim Shared p_sqlite3_column_text As Function Cdecl (ByVal pStmt As sqlite3_stmt Ptr, ByVal col As Integer) As ZString Ptr
+Dim Shared p_sqlite3_column_blob As Function Cdecl (ByVal pStmt As sqlite3_stmt Ptr, ByVal col As Integer) As Any Ptr
+Dim Shared p_sqlite3_column_bytes As Function Cdecl (ByVal pStmt As sqlite3_stmt Ptr, ByVal col As Integer) As Integer
 
 Private Function ResolveSqliteSymbols() As Integer
     p_sqlite3_open = DyLibSymbol(gSqliteDll, "sqlite3_open")
@@ -33,7 +39,10 @@ Private Function ResolveSqliteSymbols() As Integer
     p_sqlite3_bind_text = DyLibSymbol(gSqliteDll, "sqlite3_bind_text")
     p_sqlite3_bind_int = DyLibSymbol(gSqliteDll, "sqlite3_bind_int")
     p_sqlite3_bind_double = DyLibSymbol(gSqliteDll, "sqlite3_bind_double")
+    p_sqlite3_bind_blob = DyLibSymbol(gSqliteDll, "sqlite3_bind_blob")
     p_sqlite3_column_text = DyLibSymbol(gSqliteDll, "sqlite3_column_text")
+    p_sqlite3_column_blob = DyLibSymbol(gSqliteDll, "sqlite3_column_blob")
+    p_sqlite3_column_bytes = DyLibSymbol(gSqliteDll, "sqlite3_column_bytes")
 
     If p_sqlite3_open = 0 Then Return 0
     If p_sqlite3_close = 0 Then Return 0
@@ -45,10 +54,23 @@ Private Function ResolveSqliteSymbols() As Integer
     If p_sqlite3_bind_text = 0 Then Return 0
     If p_sqlite3_bind_int = 0 Then Return 0
     If p_sqlite3_bind_double = 0 Then Return 0
+    If p_sqlite3_bind_blob = 0 Then Return 0
     If p_sqlite3_column_text = 0 Then Return 0
+    If p_sqlite3_column_blob = 0 Then Return 0
+    If p_sqlite3_column_bytes = 0 Then Return 0
 
     Return -1
 End Function
+
+Private Sub ExecSqlOn(ByVal db As sqlite3 Ptr, ByRef sql As String)
+    Dim As ZString Ptr errMsg = 0
+    Dim rc As Integer = p_sqlite3_exec(db, StrPtr(sql), 0, 0, @errMsg)
+    If rc <> SQLITE_OK Then
+        If errMsg <> 0 Then
+            p_sqlite3_free(errMsg)
+        End If
+    End If
+End Sub
 
 Private Sub ExecSql(ByRef sql As String)
     Dim As ZString Ptr errMsg = 0
@@ -372,6 +394,8 @@ Sub DbSaveConfigDocument(ByRef configGroup As String, ByRef content As String)
 End Sub
 
 Sub DbShutdown()
+    DbProjectClose()
+
     If gDb <> 0 Then
         p_sqlite3_close(gDb)
         gDb = 0
@@ -383,7 +407,211 @@ Sub DbShutdown()
     End If
 End Sub
 
+' ---------------------------------------------------------------------------
+' Projeto (.msxproj): segunda conexao SQLite, tratada como um "zip" - abrir
+' extrai project_files pro disco, salvar reimporta o que estiver no disco.
+' cfg.* enquanto um projeto estiver aberto vai pra project_config em vez da
+' tabela settings global (ver DbGetSetting/DbSetSetting mais abaixo).
+' ---------------------------------------------------------------------------
+
+Private Sub CreateProjectSchema(ByVal db As sqlite3 Ptr)
+    ExecSqlOn(db, "PRAGMA journal_mode=WAL;")
+    ExecSqlOn(db, "CREATE TABLE IF NOT EXISTS project_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+    ExecSqlOn(db, "CREATE TABLE IF NOT EXISTS project_config(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+    ExecSqlOn(db, "CREATE TABLE IF NOT EXISTS project_files(rel_path TEXT PRIMARY KEY, content BLOB NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);")
+End Sub
+
+Sub DbProjectClose()
+    If gProjectDb <> 0 Then
+        p_sqlite3_close(gProjectDb)
+        gProjectDb = 0
+    End If
+End Sub
+
+Function DbProjectOpen(ByRef dbPath As String) As Integer
+    DbProjectClose()
+    Dim rc As Integer = p_sqlite3_open(StrPtr(dbPath), @gProjectDb)
+    If rc <> SQLITE_OK Then
+        gProjectDb = 0
+        Return 0
+    End If
+    CreateProjectSchema(gProjectDb)
+    Return -1
+End Function
+
+Function DbProjectIsActive() As Integer
+    Return IIf(gProjectDb <> 0, -1, 0)
+End Function
+
+Sub DbProjectSetMeta(ByRef keyName As String, ByRef keyValue As String)
+    If gProjectDb = 0 Then Exit Sub
+    Dim sql As String = "INSERT INTO project_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;"
+    Dim stmt As sqlite3_stmt Ptr
+    If p_sqlite3_prepare_v2(gProjectDb, StrPtr(sql), -1, @stmt, 0) <> SQLITE_OK Then Exit Sub
+    p_sqlite3_bind_text(stmt, 1, StrPtr(keyName), -1, Cast(Any Ptr, -1))
+    p_sqlite3_bind_text(stmt, 2, StrPtr(keyValue), -1, Cast(Any Ptr, -1))
+    p_sqlite3_step(stmt)
+    p_sqlite3_finalize(stmt)
+End Sub
+
+Function DbProjectGetMeta(ByRef keyName As String, ByRef fallback As String = "") As String
+    If gProjectDb = 0 Then Return fallback
+    Dim sql As String = "SELECT value FROM project_meta WHERE key = ? LIMIT 1;"
+    Dim stmt As sqlite3_stmt Ptr
+    Dim result As String = fallback
+    If p_sqlite3_prepare_v2(gProjectDb, StrPtr(sql), -1, @stmt, 0) <> SQLITE_OK Then Return result
+    p_sqlite3_bind_text(stmt, 1, StrPtr(keyName), -1, Cast(Any Ptr, -1))
+    If p_sqlite3_step(stmt) = SQLITE_ROW Then
+        Dim txt As ZString Ptr = p_sqlite3_column_text(stmt, 0)
+        If txt <> 0 Then result = *txt
+    End If
+    p_sqlite3_finalize(stmt)
+    Return result
+End Function
+
+Sub DbProjectSetConfig(ByRef keyName As String, ByRef keyValue As String)
+    If gProjectDb = 0 Then Exit Sub
+    Dim sql As String = "INSERT INTO project_config(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;"
+    Dim stmt As sqlite3_stmt Ptr
+    If p_sqlite3_prepare_v2(gProjectDb, StrPtr(sql), -1, @stmt, 0) <> SQLITE_OK Then Exit Sub
+    p_sqlite3_bind_text(stmt, 1, StrPtr(keyName), -1, Cast(Any Ptr, -1))
+    p_sqlite3_bind_text(stmt, 2, StrPtr(keyValue), -1, Cast(Any Ptr, -1))
+    p_sqlite3_step(stmt)
+    p_sqlite3_finalize(stmt)
+End Sub
+
+Function DbProjectConfigExists(ByRef keyName As String) As Integer
+    If gProjectDb = 0 Then Return 0
+    Dim sql As String = "SELECT value FROM project_config WHERE key = ? LIMIT 1;"
+    Dim stmt As sqlite3_stmt Ptr
+    If p_sqlite3_prepare_v2(gProjectDb, StrPtr(sql), -1, @stmt, 0) <> SQLITE_OK Then Return 0
+    p_sqlite3_bind_text(stmt, 1, StrPtr(keyName), -1, Cast(Any Ptr, -1))
+    Dim found As Integer = IIf(p_sqlite3_step(stmt) = SQLITE_ROW, -1, 0)
+    p_sqlite3_finalize(stmt)
+    Return found
+End Function
+
+Function DbProjectGetConfig(ByRef keyName As String, ByRef fallback As String = "") As String
+    If gProjectDb = 0 Then Return fallback
+    Dim sql As String = "SELECT value FROM project_config WHERE key = ? LIMIT 1;"
+    Dim stmt As sqlite3_stmt Ptr
+    Dim result As String = fallback
+    If p_sqlite3_prepare_v2(gProjectDb, StrPtr(sql), -1, @stmt, 0) <> SQLITE_OK Then Return result
+    p_sqlite3_bind_text(stmt, 1, StrPtr(keyName), -1, Cast(Any Ptr, -1))
+    If p_sqlite3_step(stmt) = SQLITE_ROW Then
+        Dim txt As ZString Ptr = p_sqlite3_column_text(stmt, 0)
+        If txt <> 0 Then result = *txt
+    End If
+    p_sqlite3_finalize(stmt)
+    Return result
+End Function
+
+Sub DbProjectSetFile(ByRef relPath As String, ByRef content As String)
+    If gProjectDb = 0 Then Exit Sub
+    Dim sql As String = "INSERT INTO project_files(rel_path, content, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(rel_path) DO UPDATE SET content=excluded.content, updated_at=CURRENT_TIMESTAMP;"
+    Dim stmt As sqlite3_stmt Ptr
+    If p_sqlite3_prepare_v2(gProjectDb, StrPtr(sql), -1, @stmt, 0) <> SQLITE_OK Then Exit Sub
+    p_sqlite3_bind_text(stmt, 1, StrPtr(relPath), -1, Cast(Any Ptr, -1))
+    If Len(content) > 0 Then
+        p_sqlite3_bind_blob(stmt, 2, StrPtr(content), Len(content), Cast(Any Ptr, -1))
+    Else
+        p_sqlite3_bind_blob(stmt, 2, 0, 0, Cast(Any Ptr, -1))
+    End If
+    p_sqlite3_step(stmt)
+    p_sqlite3_finalize(stmt)
+End Sub
+
+Function DbProjectGetFile(ByRef relPath As String, ByRef found As Integer) As String
+    found = 0
+    If gProjectDb = 0 Then Return ""
+    Dim sql As String = "SELECT content FROM project_files WHERE rel_path = ? LIMIT 1;"
+    Dim stmt As sqlite3_stmt Ptr
+    Dim result As String = ""
+    If p_sqlite3_prepare_v2(gProjectDb, StrPtr(sql), -1, @stmt, 0) <> SQLITE_OK Then Return result
+    p_sqlite3_bind_text(stmt, 1, StrPtr(relPath), -1, Cast(Any Ptr, -1))
+    If p_sqlite3_step(stmt) = SQLITE_ROW Then
+        found = -1
+        Dim blobPtr As Any Ptr = p_sqlite3_column_blob(stmt, 0)
+        Dim blobLen As Integer = p_sqlite3_column_bytes(stmt, 0)
+        If blobPtr <> 0 And blobLen > 0 Then
+            result = Space(blobLen)
+            CMemCpy(StrPtr(result), blobPtr, blobLen)
+        End If
+    End If
+    p_sqlite3_finalize(stmt)
+    Return result
+End Function
+
+Sub DbProjectListFiles(paths() As String, ByRef count As Integer)
+    count = 0
+    If gProjectDb = 0 Then Exit Sub
+    Dim sql As String = "SELECT rel_path FROM project_files ORDER BY rel_path;"
+    Dim stmt As sqlite3_stmt Ptr
+    If p_sqlite3_prepare_v2(gProjectDb, StrPtr(sql), -1, @stmt, 0) <> SQLITE_OK Then Exit Sub
+    While p_sqlite3_step(stmt) = SQLITE_ROW
+        Dim txt As ZString Ptr = p_sqlite3_column_text(stmt, 0)
+        If txt <> 0 Then
+            count += 1
+            If count = 1 Then
+                ReDim paths(1 To 1)
+            Else
+                ReDim Preserve paths(1 To count)
+            End If
+            paths(count) = *txt
+        End If
+    Wend
+    p_sqlite3_finalize(stmt)
+End Sub
+
+' Copia project_config e project_files de um outro .msxproj (o template) pro
+' projeto atualmente aberto - usado so na criacao de um projeto novo.
+Function DbProjectCopyFromTemplate(ByRef templatePath As String) As Integer
+    If gProjectDb = 0 Then Return 0
+    If Dir(templatePath) = "" Then Return 0
+
+    Dim tmplDb As sqlite3 Ptr
+    If p_sqlite3_open(StrPtr(templatePath), @tmplDb) <> SQLITE_OK Then Return 0
+    CreateProjectSchema(tmplDb)
+
+    Dim stmt As sqlite3_stmt Ptr
+    Dim sql As String = "SELECT key, value FROM project_config;"
+    If p_sqlite3_prepare_v2(tmplDb, StrPtr(sql), -1, @stmt, 0) = SQLITE_OK Then
+        While p_sqlite3_step(stmt) = SQLITE_ROW
+            Dim kTxt As ZString Ptr = p_sqlite3_column_text(stmt, 0)
+            Dim vTxt As ZString Ptr = p_sqlite3_column_text(stmt, 1)
+            If kTxt <> 0 And vTxt <> 0 Then DbProjectSetConfig(*kTxt, *vTxt)
+        Wend
+        p_sqlite3_finalize(stmt)
+    End If
+
+    sql = "SELECT rel_path, content FROM project_files;"
+    If p_sqlite3_prepare_v2(tmplDb, StrPtr(sql), -1, @stmt, 0) = SQLITE_OK Then
+        While p_sqlite3_step(stmt) = SQLITE_ROW
+            Dim pTxt As ZString Ptr = p_sqlite3_column_text(stmt, 0)
+            Dim blobPtr As Any Ptr = p_sqlite3_column_blob(stmt, 1)
+            Dim blobLen As Integer = p_sqlite3_column_bytes(stmt, 1)
+            If pTxt <> 0 Then
+                Dim content As String = ""
+                If blobPtr <> 0 And blobLen > 0 Then
+                    content = Space(blobLen)
+                    CMemCpy(StrPtr(content), blobPtr, blobLen)
+                End If
+                DbProjectSetFile(*pTxt, content)
+            End If
+        Wend
+        p_sqlite3_finalize(stmt)
+    End If
+
+    p_sqlite3_close(tmplDb)
+    Return -1
+End Function
+
 Sub DbSetSetting(ByRef keyName As String, ByRef keyValue As String)
+    If gProjectDb <> 0 And Left(keyName, 4) = "cfg." Then
+        DbProjectSetConfig(keyName, keyValue)
+        Exit Sub
+    End If
+
     Dim sql As String = "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;"
     Dim stmt As sqlite3_stmt Ptr
 
@@ -396,6 +624,10 @@ Sub DbSetSetting(ByRef keyName As String, ByRef keyValue As String)
 End Sub
 
 Function DbGetSetting(ByRef keyName As String, ByRef fallback As String = "") As String
+    If gProjectDb <> 0 And Left(keyName, 4) = "cfg." Then
+        If DbProjectConfigExists(keyName) <> 0 Then Return DbProjectGetConfig(keyName, fallback)
+    End If
+
     Dim sql As String = "SELECT value FROM settings WHERE key = ? LIMIT 1;"
     Dim stmt As sqlite3_stmt Ptr
     Dim result As String = fallback

@@ -10,6 +10,7 @@ Type Document
     title As String
     filePath As String
     isHelp As Integer
+    isMamuteTerm As Integer
     helpTitle As String
     helpWrapWidth As Integer
     lineCount As Integer
@@ -38,5 +39,6 @@ Declare Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, 
 Declare Sub EditorSaveAllToDb()
 Declare Sub EditorShutdown()
 Declare Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
+Declare Function EditorRunMamuteSmokeTest(ByRef report As String) As Integer
 
 #endif

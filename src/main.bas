@@ -10,14 +10,12 @@ Dim argText As String
 Dim argIndex As Integer
 Dim hasArgs As Integer = 0
 Dim runHelpSmoke As Integer = 0
+Dim runMamuteSmoke As Integer = 0
 Dim needsRedraw As Integer = 1
 Dim inputType As Integer
 Dim mouseX As Integer
 Dim mouseY As Integer
 Dim mouseAction As Integer
-
-DbInit("msxide.db")
-startupName = DbGetSetting("startup_document", "msx00.dmx")
 
 argIndex = 1
 argText = Command(argIndex)
@@ -25,8 +23,21 @@ If Len(argText) > 0 Then
     hasArgs = 1
     If LCase(argText) = "--smoke-help" Then
         runHelpSmoke = -1
+    ElseIf LCase(argText) = "--smoke-mamute" Then
+        runMamuteSmoke = -1
     End If
 End If
+
+' O smoke test do Mamute grava/rele configuracao real via DbSetSetting/
+' DbGetSetting - usa um banco descartavel proprio pra nunca tocar no
+' msxide.db de verdade do usuario.
+Dim mamuteSmokeDbPath As String = "msxide_mamute_smoke.db"
+If runMamuteSmoke <> 0 Then
+    DbInit(mamuteSmokeDbPath)
+Else
+    DbInit("msxide.db")
+End If
+startupName = DbGetSetting("startup_document", "msx00.dmx")
 
 If hasArgs = 0 Then
     EditorInit(startupName)
@@ -35,7 +46,7 @@ Else
 End If
 
 If hasArgs <> 0 Then
-    If runHelpSmoke = 0 Then
+    If runHelpSmoke = 0 And runMamuteSmoke = 0 Then
         EditorOpenFromPath(argText)
         argIndex += 1
         While Len(Command(argIndex)) > 0
@@ -53,6 +64,21 @@ If runHelpSmoke <> 0 Then
     DbShutdown()
     EditorShutdown()
     If smokeOk <> 0 Then
+        End 0
+    Else
+        End 1
+    End If
+End If
+
+If runMamuteSmoke <> 0 Then
+    Dim mamuteSmokeReport As String
+    Dim mamuteSmokeOk As Integer = EditorRunMamuteSmokeTest(mamuteSmokeReport)
+    Print mamuteSmokeReport
+    EditorSaveAllToDb()
+    DbShutdown()
+    EditorShutdown()
+    If Dir(mamuteSmokeDbPath) <> "" Then Kill mamuteSmokeDbPath
+    If mamuteSmokeOk <> 0 Then
         End 0
     Else
         End 1

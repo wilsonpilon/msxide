@@ -68,7 +68,7 @@ Private Function Fat12GetEntry(ByRef fat As String, ByVal cluster As Integer) As
 End Function
 
 Private Function BaseNameNoExt(ByRef filePath As String) As String
-    Dim lastSlash As Integer = InStrRev(filePath, "\\")
+    Dim lastSlash As Integer = InStrRev(filePath, Chr(92))
     Dim lastFwd As Integer = InStrRev(filePath, "/")
     If lastFwd > lastSlash Then lastSlash = lastFwd
 
@@ -528,7 +528,7 @@ DeleteIfExists("fixtures/inputs/ns_main_big.bmx")
 DeleteIfExists("fixtures/inputs/msxbasic_modes.amx")
 DeleteIfExists("fixtures/inputs/msxbasic_modes.bmx")
 
-RunFixture("fixtures/inputs/loops_labels.dmx", _
+RunFixture(CurDir() & Chr(92) & "fixtures" & Chr(92) & "inputs" & Chr(92) & "loops_labels.dmx", _
            "fixtures/expected/loops_labels.amx", _
            "fixtures/expected/loops_labels.bmx")
 

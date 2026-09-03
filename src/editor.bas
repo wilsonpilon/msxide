@@ -2,11 +2,14 @@
 #Include Once "db.bi"
 #Include Once "console.bi"
 #Include Once "compiler.bi"
+#Include Once "project.bi"
+#Include Once "version.bi"
 
 Dim Shared docs(1 To MAX_DOCS) As Document
 Dim Shared docCount As Integer
 Dim Shared activeDoc As Integer
 Dim Shared untitledCounter As Integer = 1
+Dim Shared untitledAsmCounter As Integer = 0
 Dim Shared forceFullRedraw As Integer = 1
 Dim Shared uiW As Integer = 100
 Dim Shared uiH As Integer = 35
@@ -18,11 +21,16 @@ Const RENDER_FULL = 4
 
 Const MENU_CMD_NONE = 0
 Const MENU_CMD_NEW = 1
+Const MENU_CMD_NEW_ASMSX = 7
 Const MENU_CMD_OPEN = 2
 Const MENU_CMD_SAVE = 3
 Const MENU_CMD_SAVE_AS = 4
 Const MENU_CMD_CLOSE = 5
 Const MENU_CMD_EXIT = 6
+Const MENU_CMD_PROJECT_NEW = 8
+Const MENU_CMD_PROJECT_OPEN = 9
+Const MENU_CMD_PROJECT_SAVE = 10
+Const MENU_CMD_PROJECT_CLOSE = 27
 Const MENU_CMD_CFG_BADIG = 11
 Const MENU_CMD_CFG_MSX = 12
 Const MENU_CMD_CFG_EMULATOR = 13
@@ -36,12 +44,28 @@ Const MENU_CMD_HELP_DIGNIFIED = 22
 Const MENU_CMD_HELP_BATOKEN = 23
 Const MENU_CMD_HELP_THEME = 24
 Const MENU_CMD_HELP_MSX_DICT = 25
+Const MENU_CMD_HELP_ASMSX = 26
+Const MENU_CMD_HELP_EDITOR = 29
+Const MENU_CMD_REF_REDBOOK = 30
+Const MENU_CMD_REF_NESTOR = 31
+Const MENU_CMD_REF_HANDBOOK = 32
+Const MENU_CMD_REF_MANUALS = 33
+Const MENU_CMD_REF_BIOSCALLS = 34
+Const MENU_CMD_REF_HARDWARE = 35
+Const MENU_CMD_REF_BIOSDOC = 36
+Const MENU_CMD_REF_SEETRACKER = 37
+Const MENU_CMD_REF_OPENMSX = 38
+Const MENU_CMD_REF_MSXBAS2ROM = 39
+Const MENU_CMD_CFG_MAMUTE_MEM = 40
+Const MENU_CMD_MAMUTE_OPEN = 41
 
 Const MENU_VIEW_NONE = 0
 Const MENU_VIEW_FILE = 1
 Const MENU_VIEW_HELP = 2
 Const MENU_VIEW_CONFIG = 3
 Const MENU_VIEW_COMPILE = 4
+Const MENU_VIEW_REFERENCE = 5
+Const MENU_VIEW_MAMUTE = 6
 
 Const HELP_THEME_CLASSIC = 1
 Const HELP_THEME_EDITORIAL = 2
@@ -79,20 +103,53 @@ Dim Shared helpBgList As UByte = 0
 Dim Shared helpFgTable As UByte = 0
 Dim Shared helpBgTable As UByte = 7
 Dim Shared msxDictLineCommand(1 To MAX_DOCS, 1 To MAX_LINES) As String
+Dim Shared helpLineFg(1 To MAX_DOCS, 1 To MAX_LINES) As UByte
+Dim Shared helpLineBg(1 To MAX_DOCS, 1 To MAX_LINES) As UByte
 Dim Shared msxDictHasReturnHelp As Integer = 0
 Dim Shared msxDictReturnHelpPath As String
 Dim Shared msxDictReturnHelpTitle As String
+
+' Terminal Mamute (Mon>): buffer/cursor da linha de entrada, um por documento -
+' paralelo a msxDictLineCommand, nunca misturado com d.lines() (que e so o
+' scrollback rolavel).
+Const MAMUTE_PROMPT = "MON> "
+Dim Shared mamuteInputBuf(1 To MAX_DOCS) As String
+Dim Shared mamuteInputCursor(1 To MAX_DOCS) As Integer
 
 Const MSX_DICT_DATA_PATH = "paleobasic\\src\\editor\\help\\MsxBasicDictData.pbi"
 Const MSX_DICT_DATA_PATH_2P = "paleobasic\\src\\editor\\help\\MsxBasic2PlusDictData.pbi"
 Const MSX_MANUAL_DATA_PATH = "paleobasic\\src\\editor\\help\\MsxBasicManualData.pbi"
 Const MSX_MANUAL_DATA_PATH_2P = "paleobasic\\src\\editor\\help\\MsxBasic2PlusManualData.pbi"
 
+' Fontes dos dicionarios de referencia (Red Book, manuais, BIOS, etc.) -
+' arquivos .pbi rastreados em ajuda\, parseados em runtime com o mesmo
+' mecanismo do MSX BASIC Dictionary acima (ExtractPbCallTextFromSource /
+' SplitMsxDictArgs / EvalPbStringExpr).
+Const REFDICT_REDBOOK_PATH = "ajuda\\RedBookHelpData.pbi"
+Const REFDICT_TH2HANDBOOK_PATH = "ajuda\\Th2HandbookHelpData.pbi"
+Const REFDICT_BIOSCALLS_PATH = "ajuda\\BiosCallsHelpData.pbi"
+Const REFDICT_HARDWARE_PATH = "ajuda\\HardwareHelpData.pbi"
+Const REFDICT_BIOSDOC_PATH = "ajuda\\BiosDocHelpData.pbi"
+Const REFDICT_OPENMSX_PATH = "ajuda\\OpenMsxHelpData.pbi"
+Const REFDICT_MSXMANUALS_PATH = "ajuda\\MsxManualsHelpData.pbi"
+Const REFDICT_MSXMANUALS_SKIP_GROUP = "MSX2 Technical Handbook"
+
 Const DRAG_NONE = 0
 Const DRAG_MOVE = 1
 Const DRAG_RESIZE = 2
 Const DRAG_VSCROLL = 3
 Const DRAG_HSCROLL = 4
+
+Const COMPILE_DLG_LOG_MAX = 300
+
+Dim Shared gCompileDlgActive As Integer = 0
+Dim Shared gCompileDlgTitle As String
+Dim Shared gCompileDlgLines(1 To COMPILE_DLG_LOG_MAX) As String
+Dim Shared gCompileDlgLineCount As Integer = 0
+Dim Shared gCompileDlgX As Integer
+Dim Shared gCompileDlgY As Integer
+Dim Shared gCompileDlgW As Integer
+Dim Shared gCompileDlgH As Integer
 
 Const COL_DEFAULT = 15
 Const COL_COMMENT = 8
@@ -132,6 +189,11 @@ Const COMPILE_MODE_DIGNIFIED = 2
 Const COMPILE_MODE_TOKENIZE_AMX = 3
 Const COMPILE_MODE_RUN_EMU = 4
 
+Const ASM_LOADER_NONE = 0
+Const ASM_LOADER_BLOAD = 1
+Const ASM_LOADER_DATA = 2
+Const ASM_LOADER_INC = 3
+
 Type ConfigField
     keyName As String
     label As String
@@ -148,12 +210,22 @@ Type ConfigField
 End Type
 
 Declare Function GetClientTextWidth(ByRef d As Document) As Integer
-Declare Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As Integer, outLines() As String, outColors() As UByte, outBgs() As UByte, ByRef outCount As Integer, indexTargets() As Integer, ByRef indexCount As Integer)
+Declare Function GetMaxScrollY(ByRef d As Document) As Integer
+Declare Sub ClampScroll(ByRef d As Document)
+Declare Sub DrawMamuteInputLine(ByVal docIndex As Integer, ByVal rowY As Integer)
+Declare Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As Integer, outLines() As String, outColors() As UByte, outBgs() As UByte, ByRef outCount As Integer, indexTargets() As Integer, indexEntryLine() As Integer, ByRef indexCount As Integer)
 Declare Sub EnsureHelpRerender(ByRef d As Document)
 Declare Sub ShowConfigForm(ByRef titleText As String, ByRef configGroup As String)
 Declare Function PromptConfigExitAction(ByRef titleText As String) As Integer
 Declare Sub CompileActiveDocument(ByVal compileMode As Integer)
 Declare Sub ShowInfoDialog(ByRef titleText As String, ByRef msg1 As String, ByRef msg2 As String = "")
+Declare Sub EditorCreateAsmUntitled()
+Declare Sub EditorCreateMamuteTerm()
+Declare Sub ShowMamuteMemoryConfig()
+Declare Sub HandleMamuteTermKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+Declare Sub CompileDlgReset(ByRef titleText As String)
+Declare Sub CompileDlgLog(ByRef lineText As String)
+Declare Sub CompileDlgFinish(ByRef msg1 As String, ByRef msg2 As String, ByVal isSuccess As Integer)
 Declare Sub BringDocumentToFront(ByVal docIndex As Integer)
 Declare Sub ReflowWindows()
 Declare Sub InitBlankDocument(ByRef d As Document, ByRef docTitle As String)
@@ -179,16 +251,38 @@ Type MsxManualTopicEntry
     pageNumber As Integer
 End Type
 
+Type RefTopicEntry
+    title As String
+    groupName As String
+    bodyText As String
+End Type
+
+' Modelo de memoria simulada do Mamute Assembler: 4 slots x 4 sub-slots x 4
+' paginas de 16KB cada. Quando um slot nao tem sub-slots ligados, so o sub 0
+' e usado e representa o slot inteiro.
+Const MAMUTE_CELL_NONE = 0
+Const MAMUTE_CELL_RAM = 1
+Const MAMUTE_CELL_ROM = 2
+
+Type MamuteMemCell
+    cellType As Integer
+    romPath As String
+    romOffset As Integer
+End Type
+
+Dim Shared MamuteMemGrid(0 To 3, 0 To 3, 0 To 3) As MamuteMemCell
+Dim Shared MamuteMemSubOn(0 To 3) As Integer
+
 Private Function CompileDebugLogPath() As String
     Dim p As String = Environ("TEMP")
     If Len(p) = 0 Then p = CurDir()
-    If Right(p, 1) <> "\\" And Right(p, 1) <> "/" Then p &= "\\"
+    If Right(p, 1) <> Chr(92) And Right(p, 1) <> "/" Then p &= Chr(92)
     Return p & "bahero_compile_debug.log"
 End Function
 
 Private Function CompileDebugWorkspaceLogPath() As String
     MkDir("logs")
-    Return CurDir() & "\\logs\\bahero_compile_debug.log"
+    Return CurDir() & Chr(92) & "logs" & Chr(92) & "bahero_compile_debug.log"
 End Function
 
 Private Function CompileDebugSanitize(ByRef txt As String) As String
@@ -206,7 +300,8 @@ Private Function CompileDebugSanitize(ByRef txt As String) As String
 End Function
 
 Private Sub CompileDebugLog(ByRef area As String, ByRef messageText As String)
-    Dim lineText As String = Date & " " & Time & " [" & area & "] " & CompileDebugSanitize(messageText)
+    Dim cleanMsg As String = CompileDebugSanitize(messageText)
+    Dim lineText As String = Date & " " & Time & " [" & area & "] " & cleanMsg
 
     Dim ff As Integer = FreeFile
     If Open(CompileDebugLogPath() For Append As #ff) = 0 Then
@@ -219,6 +314,9 @@ Private Sub CompileDebugLog(ByRef area As String, ByRef messageText As String)
         Print #ff, lineText
         Close #ff
     End If
+
+    Dim dlgLine As String = "[" & area & "] " & cleanMsg
+    CompileDlgLog(dlgLine)
 End Sub
 
 Private Sub OpenCompileLogDocument()
@@ -582,6 +680,8 @@ Private Function EvalPbStringExpr(ByRef expr As String) As String
                 outText &= Chr(13) & Chr(10)
             ElseIf UCase(part) = "MSXQ" Then
                 outText &= Chr(34)
+            ElseIf UCase(part) = "CHR(34)" Then
+                outText &= Chr(34)
             End If
             chunk = ""
             i += 1
@@ -598,6 +698,8 @@ Private Function EvalPbStringExpr(ByRef expr As String) As String
     ElseIf UCase(tail) = "#CRLF$" Then
         outText &= Chr(13) & Chr(10)
     ElseIf UCase(tail) = "MSXQ" Then
+        outText &= Chr(34)
+    ElseIf UCase(tail) = "CHR(34)" Then
         outText &= Chr(34)
     End If
 
@@ -1237,6 +1339,471 @@ Private Sub LoadMsxDictIndexIntoDocument(ByRef d As Document)
     d.scrollY = 0
 End Sub
 
+' ---------------------------------------------------------------------------
+' Dicionarios de referencia (Red Book, manuais MSX, BIOS, openMSX, etc.) -
+' mesmo padrao do MSX BASIC Dictionary acima (indice agrupado + topico
+' individual), mas lendo os .pbi de ajuda\ que seguem a convencao
+' Xxx_Begin() / Xxx_L("linha") / Xxx_Commit(Titulo,Grupo) / Xxx_AddAnchor
+' (openMSX usa uma convencao mais simples, Xxx_Add(Titulo,Grupo,Corpo)).
+' ---------------------------------------------------------------------------
+
+Private Function RefDictTitle(ByRef dictId As String) As String
+    Select Case LCase(dictId)
+        Case "redbook" : Return "The MSX Red Book"
+        Case "th2handbook" : Return "MSX2 Technical Handbook"
+        Case "bioscalls" : Return "BIOS Chamadas"
+        Case "hardware" : Return "BIOS Hardware"
+        Case "biosdoc" : Return "BIOS Documentacao"
+        Case "openmsx" : Return "openMSX"
+        Case "msxmanuals" : Return "Manuais MSX"
+    End Select
+    Return "Referencia"
+End Function
+
+Private Function CollectRefTopicsBeginL(ByRef sourcePath As String, ByRef callPrefix As String, ByRef skipGroup As String, entries() As RefTopicEntry, anchorNames() As String, anchorTargets() As Integer, ByRef entryCount As Integer, ByRef anchorCount As Integer, ByRef errMsg As String) As Integer
+    errMsg = ""
+    entryCount = 0
+    anchorCount = 0
+
+    Dim src As String
+    If ReadWholeTextFile(sourcePath, src) = 0 Then
+        errMsg = "Nao foi possivel abrir base de referencia: " & sourcePath
+        Return 0
+    End If
+
+    Dim beginTag As String = callPrefix & "_L("
+    Dim commitTag As String = callPrefix & "_Commit("
+    Dim anchorTag As String = callPrefix & "_AddAnchor("
+
+    Dim p As Integer = 1
+    Do
+        Dim posCommit As Integer = InStr(p, src, commitTag)
+        If posCommit <= 0 Then Exit Do
+
+        Dim bodyText As String = ""
+        Dim q As Integer = p
+        Do
+            Dim posL As Integer = InStr(q, src, beginTag)
+            If posL <= 0 Or posL > posCommit Then Exit Do
+            Dim lCallText As String
+            If ExtractPbCallTextFromSource(src, posL, lCallText) = 0 Then Exit Do
+            Dim lArgs() As String
+            Dim lArgCount As Integer
+            If SplitMsxDictArgs(lCallText, lArgs(), lArgCount) <> 0 And lArgCount >= 1 Then
+                If Len(bodyText) > 0 Then bodyText &= Chr(13) & Chr(10)
+                bodyText &= EvalPbStringExpr(lArgs(1))
+            End If
+            q = posL + Len(beginTag)
+        Loop
+
+        Dim commitCallText As String
+        If ExtractPbCallTextFromSource(src, posCommit, commitCallText) = 0 Then Exit Do
+        Dim cArgs() As String
+        Dim cArgCount As Integer
+        If SplitMsxDictArgs(commitCallText, cArgs(), cArgCount) <> 0 And cArgCount >= 2 Then
+            Dim titleText As String = EvalPbStringExpr(cArgs(1))
+            Dim groupText As String = EvalPbStringExpr(cArgs(2))
+            If (Len(skipGroup) = 0 Or groupText <> skipGroup) And Len(titleText) > 0 Then
+                entryCount += 1
+                If entryCount = 1 Then
+                    ReDim entries(1 To 1)
+                Else
+                    ReDim Preserve entries(1 To entryCount)
+                End If
+                entries(entryCount).title = titleText
+                entries(entryCount).groupName = groupText
+                entries(entryCount).bodyText = bodyText
+            End If
+        End If
+
+        p = posCommit + Len(commitTag)
+    Loop
+
+    p = 1
+    Do
+        Dim posA As Integer = InStr(p, src, anchorTag)
+        If posA <= 0 Then Exit Do
+        Dim aCallText As String
+        If ExtractPbCallTextFromSource(src, posA, aCallText) <> 0 Then
+            Dim aArgs() As String
+            Dim aArgCount As Integer
+            If SplitMsxDictArgs(aCallText, aArgs(), aArgCount) <> 0 And aArgCount >= 2 Then
+                anchorCount += 1
+                If anchorCount = 1 Then
+                    ReDim anchorNames(1 To 1)
+                    ReDim anchorTargets(1 To 1)
+                Else
+                    ReDim Preserve anchorNames(1 To anchorCount)
+                    ReDim Preserve anchorTargets(1 To anchorCount)
+                End If
+                anchorNames(anchorCount) = EvalPbStringExpr(aArgs(1))
+                anchorTargets(anchorCount) = ValInt(TrimTokenWs(aArgs(2))) + 1
+            End If
+        End If
+        p = posA + Len(anchorTag)
+    Loop
+
+    Return IIf(entryCount > 0, -1, 0)
+End Function
+
+Private Function CollectRefTopicsAddStyle(ByRef sourcePath As String, ByRef callPrefix As String, entries() As RefTopicEntry, ByRef entryCount As Integer, ByRef errMsg As String) As Integer
+    errMsg = ""
+    entryCount = 0
+
+    Dim src As String
+    If ReadWholeTextFile(sourcePath, src) = 0 Then
+        errMsg = "Nao foi possivel abrir base de referencia: " & sourcePath
+        Return 0
+    End If
+
+    Dim findExpr As String = callPrefix & "_Add("
+    Dim p As Integer = 1
+    Do
+        p = InStr(p, src, findExpr)
+        If p <= 0 Then Exit Do
+
+        Dim callText As String
+        If ExtractPbCallTextFromSource(src, p, callText) = 0 Then Exit Do
+
+        Dim args() As String
+        Dim argCount As Integer
+        If SplitMsxDictArgs(callText, args(), argCount) <> 0 And argCount >= 3 Then
+            entryCount += 1
+            If entryCount = 1 Then
+                ReDim entries(1 To 1)
+            Else
+                ReDim Preserve entries(1 To entryCount)
+            End If
+            entries(entryCount).title = EvalPbStringExpr(args(1))
+            entries(entryCount).groupName = EvalPbStringExpr(args(2))
+            entries(entryCount).bodyText = EvalPbStringExpr(args(3))
+        End If
+
+        p += Len(findExpr)
+    Loop
+
+    Return IIf(entryCount > 0, -1, 0)
+End Function
+
+Private Function CollectRefTopics(ByRef dictId As String, entries() As RefTopicEntry, anchorNames() As String, anchorTargets() As Integer, ByRef entryCount As Integer, ByRef anchorCount As Integer, ByRef errMsg As String) As Integer
+    errMsg = ""
+    entryCount = 0
+    anchorCount = 0
+
+    Select Case LCase(dictId)
+        Case "redbook"
+            Return CollectRefTopicsBeginL(REFDICT_REDBOOK_PATH, "RedBookHelp", "", entries(), anchorNames(), anchorTargets(), entryCount, anchorCount, errMsg)
+        Case "th2handbook"
+            Return CollectRefTopicsBeginL(REFDICT_TH2HANDBOOK_PATH, "Th2HandbookHelp", "", entries(), anchorNames(), anchorTargets(), entryCount, anchorCount, errMsg)
+        Case "bioscalls"
+            Return CollectRefTopicsBeginL(REFDICT_BIOSCALLS_PATH, "BiosCallsHelp", "", entries(), anchorNames(), anchorTargets(), entryCount, anchorCount, errMsg)
+        Case "hardware"
+            Return CollectRefTopicsBeginL(REFDICT_HARDWARE_PATH, "HardwareHelp", "", entries(), anchorNames(), anchorTargets(), entryCount, anchorCount, errMsg)
+        Case "biosdoc"
+            Return CollectRefTopicsBeginL(REFDICT_BIOSDOC_PATH, "BiosDocHelp", "", entries(), anchorNames(), anchorTargets(), entryCount, anchorCount, errMsg)
+        Case "msxmanuals"
+            Return CollectRefTopicsBeginL(REFDICT_MSXMANUALS_PATH, "ManualsHelp", REFDICT_MSXMANUALS_SKIP_GROUP, entries(), anchorNames(), anchorTargets(), entryCount, anchorCount, errMsg)
+        Case "openmsx"
+            Return CollectRefTopicsAddStyle(REFDICT_OPENMSX_PATH, "OMSXHelp", entries(), entryCount, errMsg)
+    End Select
+
+    errMsg = "Dicionario de referencia desconhecido: " & dictId
+    Return 0
+End Function
+
+Private Function ResolveRefAnchor(anchorNames() As String, anchorTargets() As Integer, ByVal anchorCount As Integer, ByRef anchor As String) As Integer
+    Dim i As Integer
+    For i = 1 To anchorCount
+        If anchorNames(i) = anchor Then Return anchorTargets(i)
+    Next i
+    Return 0
+End Function
+
+Private Function StripRefInlineMarkup(ByRef lineText As String, linkTexts() As String, linkAnchors() As String, ByRef linkCount As Integer) As String
+    Dim outText As String = ""
+    Dim i As Integer = 1
+    Dim n As Integer = Len(lineText)
+
+    While i <= n
+        If Mid(lineText, i, 3) = "[[[" Then
+            Dim sepPos As Integer = InStr(i + 3, lineText, "|||")
+            Dim endPos As Integer = 0
+            If sepPos > 0 Then endPos = InStr(sepPos + 3, lineText, "]]]")
+
+            If sepPos > 0 And endPos > 0 Then
+                Dim linkText As String = Mid(lineText, i + 3, sepPos - (i + 3))
+                Dim anchorText As String = Mid(lineText, sepPos + 3, endPos - (sepPos + 3))
+
+                If Left(anchorText, 4) = "img:" Then
+                    outText &= "[Figura: " & UCase(Mid(anchorText, 5)) & "]"
+                Else
+                    outText &= linkText
+                    Dim wasEmpty As Integer = IIf(linkCount = 0, -1, 0)
+                    linkCount += 1
+                    If wasEmpty <> 0 Then
+                        ReDim linkTexts(1 To 1)
+                        ReDim linkAnchors(1 To 1)
+                    Else
+                        ReDim Preserve linkTexts(1 To linkCount)
+                        ReDim Preserve linkAnchors(1 To linkCount)
+                    End If
+                    linkTexts(linkCount) = linkText
+                    linkAnchors(linkCount) = anchorText
+                End If
+
+                i = endPos + 3
+                Continue While
+            End If
+        End If
+
+        If Mid(lineText, i, 2) = "**" Then
+            i += 2
+            Continue While
+        End If
+
+        If Mid(lineText, i, 1) = Chr(96) Then
+            i += 1
+            Continue While
+        End If
+
+        outText &= Mid(lineText, i, 1)
+        i += 1
+    Wend
+
+    Return outText
+End Function
+
+Private Sub AppendRefWrappedLine(ByRef d As Document, ByRef textLine As String, ByVal wrapW As Integer, ByVal fg As UByte, ByVal bg As UByte)
+    Dim rest As String = textLine
+    If wrapW < 8 Then wrapW = 8
+
+    If Len(rest) = 0 Then
+        If d.lineCount < MAX_LINES Then
+            d.lineCount += 1
+            d.lines(d.lineCount) = ""
+            helpLineFg(activeDoc, d.lineCount) = fg
+            helpLineBg(activeDoc, d.lineCount) = bg
+        End If
+        Exit Sub
+    End If
+
+    Do While Len(rest) > wrapW
+        Dim cutPos As Integer = wrapW
+        Dim i As Integer
+        For i = wrapW To 1 Step -1
+            If Mid(rest, i, 1) = " " Then
+                cutPos = i
+                Exit For
+            End If
+        Next i
+        If cutPos < 1 Then cutPos = wrapW
+
+        If d.lineCount < MAX_LINES Then
+            d.lineCount += 1
+            d.lines(d.lineCount) = RTrim(Left(rest, cutPos))
+            helpLineFg(activeDoc, d.lineCount) = fg
+            helpLineBg(activeDoc, d.lineCount) = bg
+        End If
+
+        If cutPos < Len(rest) And Mid(rest, cutPos, 1) = " " Then
+            rest = LTrim(Mid(rest, cutPos + 1))
+        Else
+            rest = Mid(rest, cutPos + 1)
+        End If
+    Loop
+
+    If d.lineCount < MAX_LINES Then
+        d.lineCount += 1
+        d.lines(d.lineCount) = rest
+        helpLineFg(activeDoc, d.lineCount) = fg
+        helpLineBg(activeDoc, d.lineCount) = bg
+    End If
+End Sub
+
+Private Sub LoadRefDictIndexIntoDocument(ByRef d As Document, ByRef dictId As String)
+    Dim entries() As RefTopicEntry
+    Dim entryCount As Integer
+    Dim anchorNames() As String
+    Dim anchorTargets() As Integer
+    Dim anchorCount As Integer
+    Dim errMsg As String
+    Dim titleText As String = RefDictTitle(dictId)
+
+    d.title = "HELP " & titleText
+    d.filePath = "refdict:" & LCase(dictId) & ":index"
+    d.isHelp = -1
+    d.helpTitle = titleText
+    d.helpWrapWidth = GetClientTextWidth(d)
+    d.lineCount = 0
+    ClearMsxDictLineMap(activeDoc)
+
+    If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = titleText
+    If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = ""
+
+    If CollectRefTopics(dictId, entries(), anchorNames(), anchorTargets(), entryCount, anchorCount, errMsg) = 0 Then
+        If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = errMsg
+    Else
+        Dim lastGroup As String = Chr(1)
+        Dim i As Integer
+        For i = 1 To entryCount
+            If entries(i).groupName <> lastGroup Then
+                If lastGroup <> Chr(1) Then
+                    If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = ""
+                End If
+                lastGroup = entries(i).groupName
+                If Len(lastGroup) > 0 Then
+                    If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = "{" & lastGroup & "}"
+                End If
+            End If
+
+            If d.lineCount < MAX_LINES Then
+                d.lineCount += 1
+                d.lines(d.lineCount) = "  " & entries(i).title
+                msxDictLineCommand(activeDoc, d.lineCount) = "RTOPIC:" & LCase(dictId) & ":" & Trim(Str(i))
+                helpLineFg(activeDoc, d.lineCount) = 11
+                helpLineBg(activeDoc, d.lineCount) = helpBgText
+            End If
+        Next i
+    End If
+
+    d.cursorX = 1
+    d.cursorY = 1
+    d.scrollX = 0
+    d.scrollY = 0
+End Sub
+
+Private Sub LoadRefDictTopicIntoDocument(ByRef d As Document, ByRef dictId As String, ByVal topicIdx As Integer)
+    Dim entries() As RefTopicEntry
+    Dim entryCount As Integer
+    Dim anchorNames() As String
+    Dim anchorTargets() As Integer
+    Dim anchorCount As Integer
+    Dim errMsg As String
+    Dim titleText As String = RefDictTitle(dictId)
+
+    d.filePath = "refdict:" & LCase(dictId) & ":topic:" & Trim(Str(topicIdx))
+    d.isHelp = -1
+    d.helpTitle = titleText
+    d.helpWrapWidth = GetClientTextWidth(d)
+    d.lineCount = 0
+    ClearMsxDictLineMap(activeDoc)
+
+    Dim okRc As Integer = CollectRefTopics(dictId, entries(), anchorNames(), anchorTargets(), entryCount, anchorCount, errMsg)
+    If okRc = 0 Or topicIdx < 1 Or topicIdx > entryCount Then
+        d.title = "HELP " & titleText
+        If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = titleText
+        If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = ""
+        If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = IIf(Len(errMsg) > 0, errMsg, "Topico invalido: " & Trim(Str(topicIdx)))
+        d.cursorX = 1
+        d.cursorY = 1
+        d.scrollX = 0
+        d.scrollY = 0
+        Exit Sub
+    End If
+
+    Dim e As RefTopicEntry = entries(topicIdx)
+    Dim wrapW As Integer = d.helpWrapWidth
+    If wrapW < 24 Then wrapW = 24
+
+    d.title = "HELP " & e.title
+
+    If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = e.title : helpLineFg(activeDoc, d.lineCount) = helpFgH1 : helpLineBg(activeDoc, d.lineCount) = helpBgH1
+    If Len(e.groupName) > 0 Then
+        If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = e.groupName : helpLineFg(activeDoc, d.lineCount) = 8 : helpLineBg(activeDoc, d.lineCount) = helpBgText
+    End If
+    If d.lineCount < MAX_LINES Then d.lineCount += 1 : d.lines(d.lineCount) = ""
+
+    Dim linkTexts() As String
+    Dim linkAnchors() As String
+    Dim linkCount As Integer = 0
+
+    Dim src As String = StripCR(e.bodyText)
+    Dim p As Integer = 1
+    While p <= Len(src)
+        Dim br As Integer = InStr(p, src, Chr(10))
+        Dim lineText As String
+        If br = 0 Then
+            lineText = Mid(src, p)
+            p = Len(src) + 1
+        Else
+            lineText = Mid(src, p, br - p)
+            p = br + 1
+        End If
+
+        If Left(lineText, 3) = "@@@" Then
+            AppendRefWrappedLine(d, "  " & Mid(lineText, 4), wrapW, helpFgCode, helpBgCode)
+        ElseIf Left(lineText, 3) = "## " Then
+            AppendRefWrappedLine(d, Trim(Mid(lineText, 4)), wrapW, helpFgH2, helpBgH2)
+        Else
+            Dim cleanLine As String = StripRefInlineMarkup(lineText, linkTexts(), linkAnchors(), linkCount)
+            AppendRefWrappedLine(d, cleanLine, wrapW, helpFgText, helpBgText)
+        End If
+    Wend
+
+    If linkCount > 0 Then
+        AppendRefWrappedLine(d, "", wrapW, helpFgText, helpBgText)
+        AppendRefWrappedLine(d, "Ver tambem:", wrapW, 13, helpBgText)
+
+        Dim seen As String = "|"
+        Dim k As Integer
+        For k = 1 To linkCount
+            Dim targetIdx As Integer = ResolveRefAnchor(anchorNames(), anchorTargets(), anchorCount, linkAnchors(k))
+            If targetIdx >= 1 And targetIdx <= entryCount Then
+                Dim dedupKey As String = "|" & Trim(Str(targetIdx)) & "|"
+                If InStr(seen, dedupKey) = 0 Then
+                    seen &= Trim(Str(targetIdx)) & "|"
+                    If d.lineCount < MAX_LINES Then
+                        d.lineCount += 1
+                        d.lines(d.lineCount) = "  * " & entries(targetIdx).title
+                        helpLineFg(activeDoc, d.lineCount) = 11
+                        helpLineBg(activeDoc, d.lineCount) = helpBgText
+                        msxDictLineCommand(activeDoc, d.lineCount) = "RTOPIC:" & LCase(dictId) & ":" & Trim(Str(targetIdx))
+                    End If
+                End If
+            End If
+        Next k
+    End If
+
+    d.cursorX = 1
+    d.cursorY = 1
+    d.scrollX = 0
+    d.scrollY = 0
+End Sub
+
+Private Sub OpenRefDictHelp(ByRef dictId As String)
+    Dim targetPath As String = "refdict:" & LCase(dictId) & ":index"
+    Dim i As Integer
+
+    For i = 1 To docCount
+        If docs(i).isHelp <> 0 And LCase(docs(i).filePath) = targetPath Then
+            BringDocumentToFront(i)
+            forceFullRedraw = 1
+            renderMode = RENDER_FULL
+            Exit Sub
+        End If
+    Next i
+
+    If activeDoc >= 1 And activeDoc <= docCount Then
+        If docs(activeDoc).isHelp <> 0 Then
+            LoadRefDictIndexIntoDocument(docs(activeDoc), dictId)
+            forceFullRedraw = 1
+            renderMode = RENDER_FULL
+            Exit Sub
+        End If
+    End If
+
+    If docCount >= MAX_DOCS Then Exit Sub
+
+    docCount += 1
+    activeDoc = docCount
+    InitBlankDocument(docs(docCount), RefDictTitle(dictId))
+    LayoutNewDocumentWindow(docCount)
+    LoadRefDictIndexIntoDocument(docs(docCount), dictId)
+
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
+End Sub
+
 Private Sub OpenMsxDictHelpByKeyword(ByVal requestedKey As String)
     Dim targetKey As String = UCase(Trim(requestedKey))
     If targetKey = "?" Then targetKey = "PRINT"
@@ -1287,14 +1854,40 @@ Private Sub OpenMsxDictHelp()
     OpenMsxDictHelpByKeyword("")
 End Sub
 
+' Dispara a navegacao de uma linha clicavel (indice de ajuda) sob o cursor.
+' Cobre dois esquemas: "JUMP:N" (generico - qualquer doc de ajuda markdown,
+' rola ate a linha N, usado pelo indice de secoes gerado por
+' BuildMarkdownHelpBuffer) e o indice especifico do MSX BASIC Dict
+' (msxdict:index - abre o verbete/topico).
 Private Function OpenMsxDictFromActiveIndexCursor() As Integer
     If activeDoc < 1 Or activeDoc > docCount Then Return 0
     Dim ByRef d As Document = docs(activeDoc)
-    If Left(LCase(d.filePath), 13) <> "msxdict:index" Then Return 0
     If d.cursorY < 1 Or d.cursorY > MAX_LINES Then Return 0
 
     Dim kw As String = msxDictLineCommand(activeDoc, d.cursorY)
     If Len(kw) = 0 Then Return 0
+
+    If Left(kw, 5) = "JUMP:" Then
+        Dim targetLine As Integer = ValInt(Mid(kw, 6))
+        If targetLine < 1 Then targetLine = 1
+        d.cursorY = Clamp(targetLine, 1, d.lineCount)
+        d.cursorX = 1
+        d.scrollY = Clamp(targetLine - 1, 0, GetMaxScrollY(d))
+        ClampScroll(d)
+        Return -1
+    End If
+
+    If Left(kw, 7) = "RTOPIC:" Then
+        Dim rest As String = Mid(kw, 8)
+        Dim sepPos As Integer = InStr(rest, ":")
+        If sepPos <= 0 Then Return 0
+        Dim dId As String = Left(rest, sepPos - 1)
+        Dim tIdx As Integer = ValInt(Mid(rest, sepPos + 1))
+        LoadRefDictTopicIntoDocument(d, dId, tIdx)
+        Return -1
+    End If
+
+    If Left(LCase(d.filePath), 13) <> "msxdict:index" Then Return 0
 
     If IsMsxTopicToken(kw) <> 0 Then
         Dim topicId As Integer = GetMsxTopicIdFromToken(kw)
@@ -1548,13 +2141,19 @@ Private Sub DrawHelpLine(ByVal docIndex As Integer, ByVal lineIndex As Integer, 
     Dim padded As String = Left(lineRaw & Space(clientW), clientW)
     Dim i As Integer
     Dim fg As UByte = 15
-    If Left(LCase(d.filePath), 13) = "msxdict:index" Then
-        If lineIndex >= 1 And lineIndex <= MAX_LINES Then
-            If Len(msxDictLineCommand(docIndex, lineIndex)) > 0 Then fg = 11
+    Dim bg As UByte = 0
+    If IsMsxDictDoc(d) <> 0 Then
+        If Left(LCase(d.filePath), 13) = "msxdict:index" Then
+            If lineIndex >= 1 And lineIndex <= MAX_LINES Then
+                If Len(msxDictLineCommand(docIndex, lineIndex)) > 0 Then fg = 11
+            End If
         End If
+    ElseIf lineIndex >= 1 And lineIndex <= MAX_LINES Then
+        fg = helpLineFg(docIndex, lineIndex)
+        bg = helpLineBg(docIndex, lineIndex)
     End If
     For i = 1 To clientW
-        ConsoleSetCell(d.winX + i, rowY, Asc(Mid(padded, i, 1)), fg, 0)
+        ConsoleSetCell(d.winX + i, rowY, Asc(Mid(padded, i, 1)), fg, bg)
     Next i
 End Sub
 
@@ -1566,6 +2165,7 @@ End Function
 
 Private Function GetClientTextHeight(ByRef d As Document) As Integer
     Dim h As Integer = d.winH - 3
+    If d.isMamuteTerm <> 0 Then h -= 1
     If h < 1 Then h = 1
     Return h
 End Function
@@ -1786,6 +2386,8 @@ Private Sub BringDocumentToFront(ByVal docIndex As Integer)
 
     Dim temp As Document = docs(docIndex)
     Dim tempMap(1 To MAX_LINES) As String
+    Dim tempInputBuf As String = mamuteInputBuf(docIndex)
+    Dim tempInputCursor As Integer = mamuteInputCursor(docIndex)
     Dim i As Integer
     Dim j As Integer
 
@@ -1795,12 +2397,16 @@ Private Sub BringDocumentToFront(ByVal docIndex As Integer)
 
     For i = docIndex To docCount - 1
         docs(i) = docs(i + 1)
+        mamuteInputBuf(i) = mamuteInputBuf(i + 1)
+        mamuteInputCursor(i) = mamuteInputCursor(i + 1)
         For j = 1 To MAX_LINES
             msxDictLineCommand(i, j) = msxDictLineCommand(i + 1, j)
         Next j
     Next i
 
     docs(docCount) = temp
+    mamuteInputBuf(docCount) = tempInputBuf
+    mamuteInputCursor(docCount) = tempInputCursor
     For j = 1 To MAX_LINES
         msxDictLineCommand(docCount, j) = tempMap(j)
     Next j
@@ -1814,11 +2420,15 @@ Private Sub CloseDocument(ByVal docIndex As Integer)
     Dim j As Integer
     For i = docIndex To docCount - 1
         docs(i) = docs(i + 1)
+        mamuteInputBuf(i) = mamuteInputBuf(i + 1)
+        mamuteInputCursor(i) = mamuteInputCursor(i + 1)
         For j = 1 To MAX_LINES
             msxDictLineCommand(i, j) = msxDictLineCommand(i + 1, j)
         Next j
     Next i
 
+    mamuteInputBuf(docCount) = ""
+    mamuteInputCursor(docCount) = 0
     For j = 1 To MAX_LINES
         msxDictLineCommand(docCount, j) = ""
     Next j
@@ -1860,6 +2470,17 @@ End Sub
 
 Private Sub PlaceActiveCursor()
     Dim ByRef d As Document = docs(activeDoc)
+
+    If d.isMamuteTerm <> 0 Then
+        Dim clientW2 As Integer = GetClientTextWidth(d)
+        Dim inputRow As Integer = d.winY + 1 + GetClientTextHeight(d)
+        Dim cx2 As Integer = Len(MAMUTE_PROMPT) + mamuteInputCursor(activeDoc) + 1
+        If cx2 >= 1 And cx2 <= clientW2 Then
+            ConsoleSetCursor(d.winX + cx2, inputRow, 1)
+        End If
+        Exit Sub
+    End If
+
     Dim cx As Integer = d.cursorX - d.scrollX
     Dim cy As Integer = d.cursorY - d.scrollY
     Dim clientW As Integer = GetClientTextWidth(d)
@@ -1874,6 +2495,7 @@ Private Sub InitBlankDocument(ByRef d As Document, ByRef docTitle As String)
     d.title = docTitle
     d.filePath = docTitle
     d.isHelp = 0
+    d.isMamuteTerm = 0
     d.helpTitle = ""
     d.helpWrapWidth = 0
     d.lineCount = 1
@@ -1998,60 +2620,98 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
     ConsoleWriteText(1, 1, String(uiW, " "), 15, 1)
 
     If menuOpen = MENU_VIEW_FILE Then
-        ConsoleWriteText(2, 1, "File", 0, 7)
+        ConsoleWriteText(2, 1, "Arquivo", 0, 7)
     Else
-        ConsoleWriteText(2, 1, "File", 15, 1)
+        ConsoleWriteText(2, 1, "Arquivo", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_CONFIG Then
-        ConsoleWriteText(8, 1, "Configurar", 0, 7)
+        ConsoleWriteText(11, 1, "Configurar", 0, 7)
     Else
-        ConsoleWriteText(8, 1, "Configurar", 15, 1)
+        ConsoleWriteText(11, 1, "Configurar", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_COMPILE Then
-        ConsoleWriteText(20, 1, "Compilar", 0, 7)
+        ConsoleWriteText(23, 1, "Compilar", 0, 7)
     Else
-        ConsoleWriteText(20, 1, "Compilar", 15, 1)
+        ConsoleWriteText(23, 1, "Compilar", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_HELP Then
-        ConsoleWriteText(30, 1, "Ajuda", 0, 7)
+        ConsoleWriteText(33, 1, "Ajuda", 0, 7)
     Else
-        ConsoleWriteText(30, 1, "Ajuda", 15, 1)
+        ConsoleWriteText(33, 1, "Ajuda", 15, 1)
+    End If
+
+    If menuOpen = MENU_VIEW_REFERENCE Then
+        ConsoleWriteText(40, 1, "Referencia", 0, 7)
+    Else
+        ConsoleWriteText(40, 1, "Referencia", 15, 1)
+    End If
+
+    If menuOpen = MENU_VIEW_MAMUTE Then
+        ConsoleWriteText(52, 1, "Mamute", 0, 7)
+    Else
+        ConsoleWriteText(52, 1, "Mamute", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_FILE Then
-        ConsoleWriteText(2, 2, Chr(201) & String(24, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(2, 3, Chr(186) & " N Novo        F4       " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 4, Chr(186) & " O Abrir...    F3       " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 5, Chr(186) & " S Salvar      F2       " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 6, Chr(186) & " A Salvar Como         " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 7, Chr(186) & " F Fechar      F5       " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 8, Chr(186) & " X Exit                 " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 9, Chr(200) & String(24, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(2, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
+        ConsoleWriteText(2, 3, Chr(186) & " N Novo Basic Dignified    F4   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 4, Chr(186) & " Z Novo asMSX                   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 5, Chr(186) & " O Abrir...                F3   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 6, Chr(186) & " S Salvar                  F2   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 7, Chr(186) & " A Salvar Como                  " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 8, Chr(186) & " F Fechar                  F5   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 9, Chr(186) & " X Exit                         " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 10, Chr(186) & "                                " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 11, Chr(186) & " P Novo Projeto                 " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 12, Chr(186) & " J Abrir Projeto...             " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 13, Chr(186) & " K Salvar Projeto               " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 14, Chr(186) & " W Fechar Projeto               " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 15, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_CONFIG Then
-        ConsoleWriteText(8, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(8, 3, Chr(186) & " B Basic Dignified               " & Chr(186), 0, 7)
-        ConsoleWriteText(8, 4, Chr(186) & " M MSX Basic                     " & Chr(186), 0, 7)
-        ConsoleWriteText(8, 5, Chr(186) & " E Emulador                      " & Chr(186), 0, 7)
-        ConsoleWriteText(8, 7, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(11, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
+        ConsoleWriteText(11, 3, Chr(186) & " B Basic Dignified               " & Chr(186), 0, 7)
+        ConsoleWriteText(11, 4, Chr(186) & " M MSX Basic                     " & Chr(186), 0, 7)
+        ConsoleWriteText(11, 5, Chr(186) & " E Emulador                      " & Chr(186), 0, 7)
+        ConsoleWriteText(11, 6, Chr(186) & Left(" A Mamute (Memoria)" & Space(32), 32) & Chr(186), 0, 7)
+        ConsoleWriteText(11, 7, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_COMPILE Then
-        ConsoleWriteText(20, 2, Chr(201) & String(42, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(20, 3, Chr(186) & " M MSX-Basic (gera .amx + .bmx)             " & Chr(186), 0, 7)
-        ConsoleWriteText(20, 4, Chr(186) & " D Basic Dignified (gera .amx)              " & Chr(186), 0, 7)
-        ConsoleWriteText(20, 5, Chr(186) & " A Tokenizar AMX atual (forca modo classico)" & Chr(186), 0, 7)
-        ConsoleWriteText(20, 6, Chr(186) & " E Compilar + Executar no emulador          " & Chr(186), 0, 7)
-        ConsoleWriteText(20, 7, Chr(186) & " L Abrir log de compilacao                  " & Chr(186), 0, 7)
-        ConsoleWriteText(20, 8, Chr(200) & String(42, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(23, 2, Chr(201) & String(42, Chr(205)) & Chr(187), 15, 1)
+        ConsoleWriteText(23, 3, Chr(186) & " M MSX-Basic (gera .amx + .bmx)             " & Chr(186), 0, 7)
+        ConsoleWriteText(23, 4, Chr(186) & " D Basic Dignified (gera .amx)              " & Chr(186), 0, 7)
+        ConsoleWriteText(23, 5, Chr(186) & " A Tokenizar AMX atual (forca modo classico)" & Chr(186), 0, 7)
+        ConsoleWriteText(23, 6, Chr(186) & " E Compilar + Executar no emulador          " & Chr(186), 0, 7)
+        ConsoleWriteText(23, 7, Chr(186) & " L Abrir log de compilacao                  " & Chr(186), 0, 7)
+        ConsoleWriteText(23, 8, Chr(200) & String(42, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_HELP Then
-        ConsoleWriteText(30, 2, Chr(201) & String(34, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(30, 3, Chr(186) & " B Basic Dignified                  " & Chr(186), 0, 7)
-        ConsoleWriteText(30, 4, Chr(186) & " D Dignified                        " & Chr(186), 0, 7)
-        ConsoleWriteText(30, 5, Chr(186) & " T BaToken                          " & Chr(186), 0, 7)
-        ConsoleWriteText(30, 6, Chr(186) & " M MSX BASIC Dictionary             " & Chr(186), 0, 7)
-        ConsoleWriteText(30, 7, Chr(186) & IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    ") & Chr(186), 0, 7)
-        ConsoleWriteText(30, 8, Chr(200) & String(34, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(33, 2, Chr(201) & String(34, Chr(205)) & Chr(187), 15, 1)
+        ConsoleWriteText(33, 3, Chr(186) & " B Basic Dignified                  " & Chr(186), 0, 7)
+        ConsoleWriteText(33, 4, Chr(186) & " D Dignified                        " & Chr(186), 0, 7)
+        ConsoleWriteText(33, 5, Chr(186) & " T BaToken                          " & Chr(186), 0, 7)
+        ConsoleWriteText(33, 6, Chr(186) & " A asMSX                            " & Chr(186), 0, 7)
+        ConsoleWriteText(33, 7, Chr(186) & " M MSX BASIC Dictionary             " & Chr(186), 0, 7)
+        ConsoleWriteText(33, 8, Chr(186) & " E Editor                           " & Chr(186), 0, 7)
+        ConsoleWriteText(33, 9, Chr(186) & IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    ") & Chr(186), 0, 7)
+        ConsoleWriteText(33, 10, Chr(200) & String(34, Chr(205)) & Chr(188), 15, 1)
+    ElseIf menuOpen = MENU_VIEW_REFERENCE Then
+        ConsoleWriteText(40, 2, Chr(201) & String(40, Chr(205)) & Chr(187), 15, 1)
+        ConsoleWriteText(40, 3, Chr(186) & Left(" R The MSX Red Book" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 4, Chr(186) & Left(" N Nestor Basic" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 5, Chr(186) & Left(" T MSX2 Technical Handbook" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 6, Chr(186) & Left(" M Manuais MSX" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 7, Chr(186) & Left(" C BIOS Chamadas" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 8, Chr(186) & Left(" W BIOS Hardware" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 9, Chr(186) & Left(" D BIOS Documentacao" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 10, Chr(186) & Left(" S SEE Tracker" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 11, Chr(186) & Left(" O openMSX" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 12, Chr(186) & Left(" X MSXBAS2ROM" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(40, 13, Chr(200) & String(40, Chr(205)) & Chr(188), 15, 1)
+    ElseIf menuOpen = MENU_VIEW_MAMUTE Then
+        ConsoleWriteText(52, 2, Chr(201) & String(30, Chr(205)) & Chr(187), 15, 1)
+        ConsoleWriteText(52, 3, Chr(186) & Left(" A Abrir Mamute Assembler" & Space(30), 30) & Chr(186), 0, 7)
+        ConsoleWriteText(52, 4, Chr(200) & String(30, Chr(205)) & Chr(188), 15, 1)
     End If
 End Sub
 
@@ -2092,9 +2752,15 @@ Private Sub DrawStatusBar()
     End If
 
     statusLine &= " | " & d.title
+    If ProjectIsActive() <> 0 Then statusLine &= " | proj:" & ProjectActiveName()
+
+    Dim versionBlock As String = " | v" & MSXIDE_VERSION_STR
+    Dim mainAreaW As Integer = uiW - 2 - Len(versionBlock)
+    If mainAreaW < 1 Then mainAreaW = uiW - 2
 
     ConsoleWriteText(1, uiH, String(uiW, " "), 0, 7)
-    ConsoleWriteText(2, uiH, statusLine, 0, 7, uiW - 2)
+    ConsoleWriteText(2, uiH, statusLine, 0, 7, mainAreaW)
+    ConsoleWriteText(uiW - Len(versionBlock) + 1, uiH, versionBlock, 8, 7)
 End Sub
 
 Private Sub DrawDocumentClient(ByVal docIndex As Integer)
@@ -2114,6 +2780,8 @@ Private Sub DrawDocumentClient(ByVal docIndex As Integer)
             DrawSyntaxLine(docIndex, lineIndex, d.winY + 1 + row)
         End If
     Next row
+
+    If d.isMamuteTerm <> 0 Then DrawMamuteInputLine(docIndex, d.winY + 1 + clientH)
 
     DrawScrollBars(docIndex)
 End Sub
@@ -2257,8 +2925,7 @@ Private Sub DeleteAtCursor(ByRef d As Document)
     End If
 End Sub
 
-Private Sub SaveActiveDocumentToDisk()
-    Dim ByRef d As Document = docs(activeDoc)
+Private Sub SaveDocumentToDisk(ByRef d As Document)
     If d.isHelp <> 0 Then Exit Sub
 
     If Left(LCase(d.filePath), 4) = "cfg:" Then
@@ -2283,6 +2950,10 @@ Private Sub SaveActiveDocumentToDisk()
     Next i
 
     Close #ff
+End Sub
+
+Private Sub SaveActiveDocumentToDisk()
+    SaveDocumentToDisk(docs(activeDoc))
 End Sub
 
 Private Sub FinalizeModalInputState()
@@ -2430,6 +3101,7 @@ Private Sub LoadHelpIntoDocument(ByRef d As Document, ByRef helpTitle As String,
     Dim renderBgs() As UByte
     Dim renderCount As Integer
     Dim indexTargets() As Integer
+    Dim indexEntryLine() As Integer
     Dim indexCount As Integer
     Dim wrapW As Integer = GetClientTextWidth(d)
     If wrapW < 24 Then wrapW = 24
@@ -2439,7 +3111,7 @@ Private Sub LoadHelpIntoDocument(ByRef d As Document, ByRef helpTitle As String,
     Dim oldCursorY As Integer = d.cursorY
     Dim oldCursorX As Integer = d.cursorX
 
-    BuildMarkdownHelpBuffer(filePath, wrapW, renderLines(), renderColors(), renderBgs(), renderCount, indexTargets(), indexCount)
+    BuildMarkdownHelpBuffer(filePath, wrapW, renderLines(), renderColors(), renderBgs(), renderCount, indexTargets(), indexEntryLine(), indexCount)
 
     d.title = "HELP " & helpTitle
     d.filePath = filePath
@@ -2447,11 +3119,22 @@ Private Sub LoadHelpIntoDocument(ByRef d As Document, ByRef helpTitle As String,
     d.helpTitle = helpTitle
     d.helpWrapWidth = wrapW
     d.lineCount = 0
+    ClearMsxDictLineMap(activeDoc)
 
     For i = 1 To renderCount
         If d.lineCount >= MAX_LINES Then Exit For
         d.lineCount = d.lineCount + 1
         d.lines(d.lineCount) = renderLines(i)
+        helpLineFg(activeDoc, d.lineCount) = renderColors(i)
+        helpLineBg(activeDoc, d.lineCount) = renderBgs(i)
+    Next i
+
+    ' As entradas do INDICE (topo do texto) viram alvo clicavel: clicar ou
+    ' dar Enter numa delas rola o documento ate o cabecalho correspondente.
+    For i = 1 To indexCount
+        If indexEntryLine(i) >= 1 And indexEntryLine(i) <= d.lineCount Then
+            msxDictLineCommand(activeDoc, indexEntryLine(i)) = "JUMP:" & Trim(Str(indexTargets(i)))
+        End If
     Next i
 
     If d.lineCount <= 0 Then
@@ -2523,6 +3206,40 @@ Private Sub EnsureHelpRerender(ByRef d As Document)
                 If d.cursorX < 1 Then d.cursorX = 1
                 Dim lineLen As Integer = Len(d.lines(d.cursorY)) + 1
                 If d.cursorX > lineLen Then d.cursorX = lineLen
+                d.scrollX = 0
+                ClampScroll(d)
+            End If
+        ElseIf Left(LCase(d.filePath), 8) = "refdict:" Then
+            Dim oldLineCount2 As Integer = d.lineCount
+            Dim oldScrollY2 As Integer = d.scrollY
+            Dim oldCursorY2 As Integer = d.cursorY
+            Dim oldCursorX2 As Integer = d.cursorX
+
+            Dim afterPrefix As String = Mid(d.filePath, 9)
+            Dim colonPos As Integer = InStr(afterPrefix, ":")
+            Dim dId As String = IIf(colonPos > 0, Left(afterPrefix, colonPos - 1), afterPrefix)
+            Dim tail As String = IIf(colonPos > 0, Mid(afterPrefix, colonPos + 1), "")
+
+            If Left(tail, 6) = "topic:" Then
+                LoadRefDictTopicIntoDocument(d, dId, ValInt(Mid(tail, 7)))
+            Else
+                LoadRefDictIndexIntoDocument(d, dId)
+            End If
+
+            If oldLineCount2 > 0 Then
+                Dim oldMax2 As Integer = oldLineCount2 - 1
+                If oldMax2 < 1 Then oldMax2 = 1
+                Dim newMax2 As Integer = d.lineCount - 1
+                If newMax2 < 1 Then newMax2 = 1
+
+                d.scrollY = (oldScrollY2 * newMax2) \ oldMax2
+                d.cursorY = (oldCursorY2 * d.lineCount) \ oldLineCount2
+                d.cursorX = oldCursorX2
+                If d.cursorY < 1 Then d.cursorY = 1
+                If d.cursorY > d.lineCount Then d.cursorY = d.lineCount
+                If d.cursorX < 1 Then d.cursorX = 1
+                Dim lineLen2 As Integer = Len(d.lines(d.cursorY)) + 1
+                If d.cursorX > lineLen2 Then d.cursorX = lineLen2
                 d.scrollX = 0
                 ClampScroll(d)
             End If
@@ -2853,7 +3570,7 @@ Private Function BuildTableVisualRowAligned(ByRef rawLine As String, colWidths()
     Return outLine
 End Function
 
-Private Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As Integer, outLines() As String, outColors() As UByte, outBgs() As UByte, ByRef outCount As Integer, indexTargets() As Integer, ByRef indexCount As Integer)
+Private Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As Integer, outLines() As String, outColors() As UByte, outBgs() As UByte, ByRef outCount As Integer, indexTargets() As Integer, indexEntryLine() As Integer, ByRef indexCount As Integer)
     Dim srcLines() As String
     Dim srcCount As Integer = 0
     Dim headingTitles() As String
@@ -2951,12 +3668,14 @@ Private Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As
     Else
         indexCount = headingCount
         ReDim indexTargets(1 To headingCount)
+        ReDim indexEntryLine(1 To headingCount)
         For i = 1 To headingCount
             Dim item As String = Trim(Str(i)) & ". "
             If headingLevels(i) > 1 Then
                 item &= String((headingLevels(i) - 1) * 2, " ")
             End If
             item &= headingTitles(i)
+            indexEntryLine(i) = outCount + 1
             AddWrappedHelpLine(outLines(), outColors(), outBgs(), outCount, item, 11, helpBgText, wrapWidth)
         Next i
     End If
@@ -3184,10 +3903,11 @@ Private Sub ShowMarkdownHelp(ByRef helpTitle As String, ByRef filePath As String
     Dim bgs() As UByte
     Dim lineCount As Integer
     Dim indexTargets() As Integer
+    Dim indexEntryLine() As Integer
     Dim indexCount As Integer
     Dim topLine As Integer = 1
 
-    BuildMarkdownHelpBuffer(filePath, viewW, lines(), colors(), bgs(), lineCount, indexTargets(), indexCount)
+    BuildMarkdownHelpBuffer(filePath, viewW, lines(), colors(), bgs(), lineCount, indexTargets(), indexEntryLine(), indexCount)
     If lineCount <= 0 Then Exit Sub
 
     Do
@@ -3608,6 +4328,123 @@ Private Function PromptConfigExitAction(ByRef titleText As String) As Integer
     Return result
 End Function
 
+Private Sub CompileDlgDraw(ByRef statusLine1 As String, ByVal statusColor1 As UByte, ByRef statusLine2 As String, ByVal statusColor2 As UByte, ByRef hintText As String)
+    Dim x As Integer = gCompileDlgX
+    Dim y As Integer = gCompileDlgY
+    Dim w As Integer = gCompileDlgW
+    Dim h As Integer = gCompileDlgH
+    Dim logH As Integer = h - 6
+    If logH < 1 Then logH = 1
+
+    ConsoleBeginFrame()
+    DrawDesktop()
+    DrawDocumentsFull()
+    DrawMenuBar(MENU_VIEW_NONE)
+    DrawStatusBar()
+
+    ConsoleWriteText(x, y, Chr(201) & String(w - 2, Chr(205)) & Chr(187), 15, 1)
+    Dim i As Integer
+    For i = 1 To h - 2
+        ConsoleWriteText(x, y + i, Chr(186) & String(w - 2, " ") & Chr(186), 15, 1)
+    Next i
+    ConsoleWriteText(x, y + h - 1, Chr(200) & String(w - 2, Chr(205)) & Chr(188), 15, 1)
+
+    ' Botao de fechar (quadradinho), igual as janelas de documento.
+    ConsoleSetCell(x + 2, y, 254, 15, 1)
+
+    Dim label As String = " " & gCompileDlgTitle & " "
+    If Len(label) > w - 8 Then label = Left(label, w - 8)
+    ConsoleWriteText(x + 4, y, label, 15, 1)
+
+    Dim firstLine As Integer = gCompileDlgLineCount - logH + 1
+    If firstLine < 1 Then firstLine = 1
+
+    Dim row As Integer
+    For row = 0 To logH - 1
+        Dim lineIdx As Integer = firstLine + row
+        Dim lineText As String = ""
+        If lineIdx >= 1 And lineIdx <= gCompileDlgLineCount Then lineText = gCompileDlgLines(lineIdx)
+        ConsoleWriteText(x + 2, y + 1 + row, Left(lineText & String(w - 4, " "), w - 4), 8, 1)
+    Next row
+
+    ConsoleWriteText(x + 2, y + 1 + logH, String(w - 4, Chr(196)), 8, 1)
+    ConsoleWriteText(x + 2, y + 2 + logH, Left(statusLine1 & String(w - 4, " "), w - 4), statusColor1, 1)
+    ConsoleWriteText(x + 2, y + 3 + logH, Left(statusLine2 & String(w - 4, " "), w - 4), statusColor2, 1)
+    ConsoleWriteText(x + 2, y + 4 + logH, Left(hintText & String(w - 4, " "), w - 4), 8, 1)
+
+    ConsoleSetCursor(1, 1, 0)
+    ConsoleFlush()
+    ConsoleEndFrame()
+End Sub
+
+Private Sub CompileDlgReset(ByRef titleText As String)
+    gCompileDlgTitle = titleText
+    gCompileDlgLineCount = 0
+    gCompileDlgW = Clamp(uiW - 24, 44, 60)
+    gCompileDlgH = 13
+    gCompileDlgX = ((uiW - gCompileDlgW) \ 2) + 1
+    gCompileDlgY = ((uiH - gCompileDlgH) \ 2) + 1
+    gCompileDlgActive = -1
+
+    ConsoleResetInputState()
+    CompileDlgDraw("Processando...", 14, "", 7, "")
+End Sub
+
+Private Sub CompileDlgLog(ByRef lineText As String)
+    If gCompileDlgActive = 0 Then Exit Sub
+
+    If gCompileDlgLineCount < COMPILE_DLG_LOG_MAX Then
+        gCompileDlgLineCount += 1
+        gCompileDlgLines(gCompileDlgLineCount) = lineText
+    Else
+        Dim i As Integer
+        For i = 1 To COMPILE_DLG_LOG_MAX - 1
+            gCompileDlgLines(i) = gCompileDlgLines(i + 1)
+        Next i
+        gCompileDlgLines(COMPILE_DLG_LOG_MAX) = lineText
+    End If
+
+    CompileDlgDraw("Processando...", 14, "", 7, "")
+    Sleep 30, 1
+End Sub
+
+Private Sub CompileDlgFinish(ByRef msg1 As String, ByRef msg2 As String, ByVal isSuccess As Integer)
+    If gCompileDlgActive = 0 Then Exit Sub
+
+    Dim statusColor As UByte = IIf(isSuccess <> 0, 10, 12)
+    Dim hintText As String = "Enter / Esc / clique em [" & Chr(254) & "] fecha"
+
+    ConsoleResetInputState()
+
+    Do
+        CompileDlgDraw(msg1, statusColor, msg2, 7, hintText)
+
+        Dim eventType As Integer
+        Dim keyText As String
+        Dim mouseX As Integer
+        Dim mouseY As Integer
+        Dim mouseAction As Integer
+        If ConsolePollInput(eventType, keyText, mouseX, mouseY, mouseAction) = 0 Then
+            Sleep 5, 1
+            Continue Do
+        End If
+
+        If eventType = MSX_INPUT_KEY Then
+            keyText = NormalizeKey(keyText)
+            If keyText = Chr(13) Or keyText = Chr(27) Then Exit Do
+        ElseIf eventType = MSX_INPUT_MOUSE Then
+            If mouseAction = MSX_MOUSE_DOWN Then
+                If mouseY = gCompileDlgY And mouseX = gCompileDlgX + 2 Then Exit Do
+            End If
+        End If
+    Loop
+
+    gCompileDlgActive = 0
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
+    FinalizeModalInputState()
+End Sub
+
 Private Sub ShowInfoDialog(ByRef titleText As String, ByRef msg1 As String, ByRef msg2 As String = "")
     Dim dialogW As Integer = Clamp(uiW - 12, 40, 90)
     Dim dialogH As Integer = 7
@@ -3628,10 +4465,12 @@ Private Sub ShowInfoDialog(ByRef titleText As String, ByRef msg1 As String, ByRe
         Next i
         ConsoleWriteText(dialogX, dialogY + dialogH - 1, Chr(200) & String(dialogW - 2, Chr(205)) & Chr(188), 15, 1)
 
-        ConsoleWriteText(dialogX + 2, dialogY, " " & titleText & " ", 0, 7, dialogW - 4)
+        ConsoleWriteText(dialogX + 2, dialogY, String(dialogW - 4, " "), 0, 7)
+        ConsoleSetCell(dialogX + 2, dialogY, 254, 0, 7)
+        ConsoleWriteText(dialogX + 4, dialogY, titleText, 0, 7, dialogW - 8)
         ConsoleWriteText(dialogX + 2, dialogY + 2, Left(msg1 & String(dialogW - 4, " "), dialogW - 4), 15, 1)
         ConsoleWriteText(dialogX + 2, dialogY + 3, Left(msg2 & String(dialogW - 4, " "), dialogW - 4), 11, 1)
-        ConsoleWriteText(dialogX + 2, dialogY + 5, "Enter/Esc fecha", 8, 1)
+        ConsoleWriteText(dialogX + 2, dialogY + 5, "Enter / Esc / clique em [" & Chr(254) & "] fecha", 8, 1)
 
         ConsoleSetCursor(1, 1, 0)
         ConsoleFlush()
@@ -3646,9 +4485,14 @@ Private Sub ShowInfoDialog(ByRef titleText As String, ByRef msg1 As String, ByRe
             Sleep 5, 1
             Continue Do
         End If
-        If eventType <> MSX_INPUT_KEY Then Continue Do
-        keyText = NormalizeKey(keyText)
-        If keyText = Chr(13) Or keyText = Chr(27) Then Exit Do
+        If eventType = MSX_INPUT_KEY Then
+            keyText = NormalizeKey(keyText)
+            If keyText = Chr(13) Or keyText = Chr(27) Then Exit Do
+        ElseIf eventType = MSX_INPUT_MOUSE Then
+            If mouseAction = MSX_MOUSE_DOWN Then
+                If mouseY = dialogY And mouseX = dialogX + 2 Then Exit Do
+            End If
+        End If
     Loop
 
     FinalizeModalInputState()
@@ -3668,12 +4512,49 @@ End Function
 
 Private Function ToAbsolutePath(ByRef path As String) As String
     If Len(path) >= 2 And Mid(path, 2, 1) = ":" Then Return path
-    If Len(path) >= 1 And (Left(path, 1) = "\\" Or Left(path, 1) = "/") Then Return path
-    Return CurDir() & "\\" & path
+    If Len(path) >= 1 And (Left(path, 1) = Chr(92) Or Left(path, 1) = "/") Then Return path
+    Return CurDir() & Chr(92) & path
+End Function
+
+' Retorna o diretorio de filePath incluindo a barra final (ou "" se nao houver
+' separador). Usado para trocar o diretorio de trabalho antes de invocar
+' ferramentas externas (ex.: asmsx) que resolvem nomes de saida contra o CWD.
+Private Function PathDirOf(ByRef filePath As String) As String
+    Dim lastSlash As Integer = InStrRev(filePath, Chr(92))
+    Dim lastFwd As Integer = InStrRev(filePath, "/")
+    If lastFwd > lastSlash Then lastSlash = lastFwd
+    If lastSlash <= 0 Then Return ""
+    Return Left(filePath, lastSlash)
 End Function
 
 Private Function Q(ByRef value As String) As String
     Return Chr(34) & value & Chr(34)
+End Function
+
+Private Function BaseNameNoExtOf(ByRef filePath As String) As String
+    Dim dirPart As String = PathDirOf(filePath)
+    Dim filePart As String = Mid(filePath, Len(dirPart) + 1)
+    Dim dotPos As Integer = InStrRev(filePart, ".")
+    If dotPos > 0 Then Return Left(filePart, dotPos - 1)
+    Return filePart
+End Function
+
+' Converte um nome de arquivo num label valido de Basic Dignified (so
+' letras, numeros e underscore, nao pode comecar com numero).
+Private Function SanitizeLabelName(ByRef rawName As String) As String
+    Dim outText As String = ""
+    Dim i As Integer
+    For i = 1 To Len(rawName)
+        Dim c As Integer = Asc(Mid(rawName, i, 1))
+        If (c >= 65 And c <= 90) Or (c >= 97 And c <= 122) Or (c >= 48 And c <= 57) Or c = 95 Then
+            outText &= Chr(c)
+        Else
+            outText &= "_"
+        End If
+    Next i
+    If Len(outText) = 0 Then outText = "asmrotina"
+    If Asc(Left(outText, 1)) >= 48 And Asc(Left(outText, 1)) <= 57 Then outText = "r" & outText
+    Return outText
 End Function
 
 Private Function CleanPathEntry(ByRef rawValue As String) As String
@@ -3684,10 +4565,17 @@ Private Function CleanPathEntry(ByRef rawValue As String) As String
     Return Trim(t)
 End Function
 
+Private Function CommandLineArg(ByRef rawValue As String) As String
+    Dim value As String = CleanPathEntry(rawValue)
+    If InStr(value, " ") = 0 And InStr(value, Chr(9)) = 0 Then Return value
+    Return Q(value)
+End Function
+
 Private Function NormalizePathForDisplay(ByRef pathValue As String) As String
     Dim src As String = Trim(pathValue)
     If Len(src) = 0 Then Return ""
 
+    Dim pathSep As String = Chr(92)
     Dim outText As String = ""
     Dim lastSep As Integer = 0
     Dim preserveUnc As Integer = IIf(Left(src, 2) = "\\", -1, 0)
@@ -3695,13 +4583,13 @@ Private Function NormalizePathForDisplay(ByRef pathValue As String) As String
 
     For i = 1 To Len(src)
         Dim ch As String = Mid(src, i, 1)
-        If ch = "/" Then ch = "\\"
+        If ch = "/" Then ch = pathSep
 
-        If ch = "\\" Then
+        If ch = pathSep Then
             If Len(outText) = 0 Then
                 outText &= ch
                 lastSep = -1
-            ElseIf preserveUnc <> 0 And Len(outText) = 1 And Left(outText, 1) = "\\" Then
+            ElseIf preserveUnc <> 0 And Len(outText) = 1 And Left(outText, 1) = pathSep Then
                 outText &= ch
                 lastSep = -1
             ElseIf lastSep = 0 Then
@@ -3771,6 +4659,358 @@ Private Function ResolveOpenMsxPath(ByRef resolvedPath As String) As Integer
     Return 0
 End Function
 
+Private Function ResolveAsmsxPath(ByRef resolvedPath As String) As Integer
+    resolvedPath = ""
+
+    Dim cfgPath As String = CleanPathEntry(Trim(DbGetSetting("cfg.assembler.asmsx_path", "")))
+    If Len(cfgPath) > 0 Then
+        Dim candidate As String = ToAbsolutePath(cfgPath)
+        If Dir(candidate) <> "" Then
+            resolvedPath = candidate
+            Return -1
+        End If
+    End If
+
+    Dim bundled As String = ToAbsolutePath("asmsx" & Chr(92) & "asmsx.exe")
+    If Dir(bundled) <> "" Then
+        resolvedPath = bundled
+        Return -1
+    End If
+
+    If FindExeInPath("asmsx.exe", resolvedPath) <> 0 Then Return -1
+    If FindExeInPath("asmsx", resolvedPath) <> 0 Then Return -1
+
+    Return 0
+End Function
+
+' Lista todas as janelas de programa Basic Dignified (.dmx/.bad) ja abertas,
+' ideal para oferecer "incluir a chamada da rotina asMSX nesse arquivo".
+' Varre de tras pra frente (docCount ate 1) pra listar a mais recentemente
+' usada primeiro, excluindo o documento indicado (o .asm recem montado).
+Private Sub CollectOpenBasicDocs(ByVal excludeDocIndex As Integer, candidates() As Integer, ByRef candidateCount As Integer)
+    candidateCount = 0
+    Dim i As Integer
+    For i = docCount To 1 Step -1
+        If i <> excludeDocIndex Then
+            If docs(i).isHelp = 0 Then
+                Dim ext As String = GetExtLower(docs(i).filePath)
+                If ext = ".dmx" Or ext = ".bad" Then
+                    candidateCount += 1
+                    If candidateCount <= UBound(candidates) Then candidates(candidateCount) = i
+                End If
+            End If
+        End If
+    Next i
+End Sub
+
+' Deixa o usuario escolher em qual das janelas BASIC abertas incluir a
+' chamada da rotina, quando ha mais de uma candidata. Retorna o indice em
+' docs() escolhido, ou 0 se cancelado.
+Private Function PromptPickBasicDoc(candidates() As Integer, ByVal candidateCount As Integer) As Integer
+    If candidateCount <= 0 Then Return 0
+
+    Dim dialogW As Integer = Clamp(uiW - 16, 50, 84)
+    Dim dialogH As Integer = candidateCount + 7
+    Dim dialogX As Integer = ((uiW - dialogW) \ 2) + 1
+    Dim dialogY As Integer = ((uiH - dialogH) \ 2) + 1
+    Dim selected As Integer = 1
+    Dim result As Integer = 0
+
+    Do
+        ConsoleBeginFrame()
+        DrawDesktop()
+        DrawDocumentsFull()
+        DrawMenuBar(MENU_VIEW_NONE)
+        DrawStatusBar()
+
+        ConsoleWriteText(dialogX, dialogY, Chr(201) & String(dialogW - 2, Chr(205)) & Chr(187), 15, 1)
+        Dim i As Integer
+        For i = 1 To dialogH - 2
+            ConsoleWriteText(dialogX, dialogY + i, Chr(186) & String(dialogW - 2, " ") & Chr(186), 15, 1)
+        Next i
+        ConsoleWriteText(dialogX, dialogY + dialogH - 1, Chr(200) & String(dialogW - 2, Chr(205)) & Chr(188), 15, 1)
+
+        ConsoleWriteText(dialogX + 2, dialogY, String(dialogW - 4, " "), 0, 7)
+        ConsoleSetCell(dialogX + 2, dialogY, 254, 0, 7)
+        ConsoleWriteText(dialogX + 4, dialogY, "Incluir em qual arquivo?", 0, 7, dialogW - 8)
+        ConsoleWriteText(dialogX + 2, dialogY + 2, "Ha mais de um BASIC aberto. Escolha o destino:", 15, 1, dialogW - 4)
+
+        For i = 1 To candidateCount
+            Dim itemFg As UByte = IIf(i = selected, 0, 10)
+            Dim itemBg As UByte = IIf(i = selected, 7, 1)
+            Dim itemText As String = Trim(Str(i)) & " " & docs(candidates(i)).title
+            ConsoleWriteText(dialogX + 2, dialogY + 3 + i, itemText, itemFg, itemBg, dialogW - 4)
+        Next i
+
+        ConsoleWriteText(dialogX + 2, dialogY + dialogH - 2, "Numero ou setas + Enter | Esc cancela", 8, 1, dialogW - 4)
+
+        ConsoleSetCursor(1, 1, 0)
+        ConsoleFlush()
+        ConsoleEndFrame()
+
+        Dim eventType As Integer
+        Dim keyText As String
+        Dim mouseX As Integer
+        Dim mouseY As Integer
+        Dim mouseAction As Integer
+
+        If ConsolePollInput(eventType, keyText, mouseX, mouseY, mouseAction) = 0 Then
+            Sleep 5, 1
+            Continue Do
+        End If
+
+        If eventType = MSX_INPUT_KEY Then
+            keyText = NormalizeKey(keyText)
+
+            If keyText = Chr(27) Then
+                result = 0
+                Exit Do
+            End If
+            If keyText = Chr(13) Then
+                result = candidates(selected)
+                Exit Do
+            End If
+            If Len(keyText) = 1 And keyText >= "1" And keyText <= "9" Then
+                Dim picked As Integer = Val(keyText)
+                If picked >= 1 And picked <= candidateCount Then
+                    result = candidates(picked)
+                    Exit Do
+                End If
+            End If
+            If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+                Select Case Asc(Right(keyText, 1))
+                    Case 75, 72
+                        selected -= 1
+                        If selected < 1 Then selected = candidateCount
+                    Case 77, 80
+                        selected += 1
+                        If selected > candidateCount Then selected = 1
+                End Select
+            End If
+        ElseIf eventType = MSX_INPUT_MOUSE Then
+            If mouseAction = MSX_MOUSE_DOWN Then
+                If mouseY = dialogY And mouseX = dialogX + 2 Then
+                    result = 0
+                    Exit Do
+                End If
+                If mouseY >= dialogY + 4 And mouseY <= dialogY + 3 + candidateCount Then
+                    result = candidates(mouseY - (dialogY + 3))
+                    Exit Do
+                End If
+            End If
+        End If
+    Loop
+
+    FinalizeModalInputState()
+    Return result
+End Function
+
+Private Function DocHasLabel(ByRef d As Document, ByRef tag As String) As Integer
+    Dim i As Integer
+    For i = 1 To d.lineCount
+        If InStr(d.lines(i), tag) > 0 Then Return -1
+    Next i
+    Return 0
+End Function
+
+Private Function UniqueLabelForDoc(ByRef d As Document, ByRef baseLabel As String) As String
+    Dim candidate As String = baseLabel
+    Dim suffix As Integer = 1
+    Dim tag As String = "{" & candidate & "}"
+    While DocHasLabel(d, tag) <> 0
+        suffix += 1
+        candidate = baseLabel & "_" & Trim(Str(suffix))
+        tag = "{" & candidate & "}"
+    Wend
+    Return candidate
+End Function
+
+' Insere "gosub {labelName}" bem no inicio do programa, logo apos qualquer
+' bloco de gosubs de rotinas asm ja inseridos anteriormente (pra empilhar
+' varias rotinas em sequencia, uma apos a outra, sem perder a ordem de
+' insercao) e antes do resto do codigo original do usuario.
+Private Sub InsertGosubAtTop(ByRef d As Document, ByRef labelName As String)
+    If d.lineCount >= MAX_LINES Then Exit Sub
+
+    Dim insertPos As Integer = 0
+    Dim i As Integer
+    For i = 1 To d.lineCount
+        If Left(LCase(Trim(d.lines(i))), 7) = "gosub {" Then
+            insertPos = i
+        Else
+            Exit For
+        End If
+    Next i
+
+    Dim j As Integer
+    For j = d.lineCount To insertPos + 1 Step -1
+        d.lines(j + 1) = d.lines(j)
+    Next j
+    d.lines(insertPos + 1) = "gosub {" & labelName & "}"
+    d.lineCount += 1
+End Sub
+
+' Acha o proximo indice DEFUSR livre (1-9) no documento, olhando pro maior
+' DEFUSRn ja usado no texto. MSX-Basic so tem USR0-USR9.
+Private Function NextUsrIndexForDoc(ByRef d As Document) As Integer
+    Dim maxUsed As Integer = 0
+    Dim i As Integer
+    For i = 1 To d.lineCount
+        Dim upLine As String = UCase(d.lines(i))
+        Dim p As Integer = InStr(upLine, "DEFUSR")
+        While p > 0
+            Dim digitPos As Integer = p + 6
+            If digitPos <= Len(upLine) Then
+                Dim ch As String = Mid(upLine, digitPos, 1)
+                If ch >= "0" And ch <= "9" Then
+                    Dim n As Integer = Val(ch)
+                    If n > maxUsed Then maxUsed = n
+                End If
+            End If
+            p = InStr(p + 6, upLine, "DEFUSR")
+        Wend
+    Next i
+    Return maxUsed + 1
+End Function
+
+Private Function PromptAsmLoaderChoice(ByVal hasBasicTarget As Integer) As Integer
+    Dim dialogW As Integer = Clamp(uiW - 16, 50, 84)
+    Dim dialogH As Integer = 11
+    Dim dialogX As Integer = ((uiW - dialogW) \ 2) + 1
+    Dim dialogY As Integer = ((uiH - dialogH) \ 2) + 1
+    Dim selected As Integer = ASM_LOADER_INC
+    Dim result As Integer = ASM_LOADER_NONE
+
+    Do
+        ConsoleBeginFrame()
+        DrawDesktop()
+        DrawDocumentsFull()
+        DrawMenuBar(MENU_VIEW_NONE)
+        DrawStatusBar()
+
+        ConsoleWriteText(dialogX, dialogY, Chr(201) & String(dialogW - 2, Chr(205)) & Chr(187), 15, 1)
+        Dim i As Integer
+        For i = 1 To dialogH - 2
+            ConsoleWriteText(dialogX, dialogY + i, Chr(186) & String(dialogW - 2, " ") & Chr(186), 15, 1)
+        Next i
+        ConsoleWriteText(dialogX, dialogY + dialogH - 1, Chr(200) & String(dialogW - 2, Chr(205)) & Chr(188), 15, 1)
+
+        ConsoleWriteText(dialogX + 2, dialogY, String(dialogW - 4, " "), 0, 7)
+        ConsoleSetCell(dialogX + 2, dialogY, 254, 0, 7)
+        ConsoleWriteText(dialogX + 4, dialogY, "Rotina montada", 0, 7, dialogW - 8)
+        ConsoleWriteText(dialogX + 2, dialogY + 2, "O que deseja fazer com a rotina?", 15, 1, dialogW - 4)
+
+        Dim bloadDim As UByte = IIf(hasBasicTarget <> 0, 14, 8)
+        Dim dataDim As UByte = IIf(hasBasicTarget <> 0, 10, 8)
+        Dim optBloadFg As UByte = IIf(selected = ASM_LOADER_BLOAD And hasBasicTarget <> 0, 0, bloadDim)
+        Dim optBloadBg As UByte = IIf(selected = ASM_LOADER_BLOAD And hasBasicTarget <> 0, 7, 1)
+        Dim optDataFg As UByte = IIf(selected = ASM_LOADER_DATA And hasBasicTarget <> 0, 0, dataDim)
+        Dim optDataBg As UByte = IIf(selected = ASM_LOADER_DATA And hasBasicTarget <> 0, 7, 1)
+        Dim optIncFg As UByte = IIf(selected = ASM_LOADER_INC, 0, 13)
+        Dim optIncBg As UByte = IIf(selected = ASM_LOADER_INC, 7, 1)
+        Dim optNoneFg As UByte = IIf(selected = ASM_LOADER_NONE, 0, 11)
+        Dim optNoneBg As UByte = IIf(selected = ASM_LOADER_NONE, 7, 1)
+
+        Dim bloadLabel As String = "B BLOAD (usa o .bin externo)"
+        Dim dataLabel As String = "C Carregador (embute os bytes via DATA)"
+        If hasBasicTarget = 0 Then
+            bloadLabel &= " - nenhum BASIC aberto"
+            dataLabel &= " - nenhum BASIC aberto"
+        End If
+
+        ConsoleWriteText(dialogX + 2, dialogY + 4, bloadLabel, optBloadFg, optBloadBg, dialogW - 4)
+        ConsoleWriteText(dialogX + 2, dialogY + 5, dataLabel, optDataFg, optDataBg, dialogW - 4)
+        ConsoleWriteText(dialogX + 2, dialogY + 6, "I Gerar .INC (pra incluir em outro ASM)", optIncFg, optIncBg, dialogW - 4)
+        ConsoleWriteText(dialogX + 2, dialogY + 7, "N Nao incluir", optNoneFg, optNoneBg, dialogW - 4)
+        ConsoleWriteText(dialogX + 2, dialogY + 9, "Setas escolhem | Enter confirma | Esc = Nao incluir", 8, 1, dialogW - 4)
+
+        ConsoleSetCursor(1, 1, 0)
+        ConsoleFlush()
+        ConsoleEndFrame()
+
+        Dim eventType As Integer
+        Dim keyText As String
+        Dim mouseX As Integer
+        Dim mouseY As Integer
+        Dim mouseAction As Integer
+
+        If ConsolePollInput(eventType, keyText, mouseX, mouseY, mouseAction) = 0 Then
+            Sleep 5, 1
+            Continue Do
+        End If
+
+        If eventType = MSX_INPUT_KEY Then
+            keyText = NormalizeKey(keyText)
+
+            If keyText = Chr(27) Then
+                result = ASM_LOADER_NONE
+                Exit Do
+            End If
+            If keyText = Chr(13) Then
+                result = selected
+                Exit Do
+            End If
+            If Len(keyText) = 1 Then
+                Select Case UCase(keyText)
+                    Case "B"
+                        If hasBasicTarget <> 0 Then
+                            result = ASM_LOADER_BLOAD
+                            Exit Do
+                        End If
+                    Case "C"
+                        If hasBasicTarget <> 0 Then
+                            result = ASM_LOADER_DATA
+                            Exit Do
+                        End If
+                    Case "I"
+                        result = ASM_LOADER_INC
+                        Exit Do
+                    Case "N"
+                        result = ASM_LOADER_NONE
+                        Exit Do
+                End Select
+            End If
+            If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+                Select Case Asc(Right(keyText, 1))
+                    Case 75, 72
+                        Do
+                            selected -= 1
+                            If selected < ASM_LOADER_NONE Then selected = ASM_LOADER_INC
+                        Loop While selected <> ASM_LOADER_INC And selected <> ASM_LOADER_NONE And hasBasicTarget = 0
+                    Case 77, 80
+                        Do
+                            selected += 1
+                            If selected > ASM_LOADER_INC Then selected = ASM_LOADER_NONE
+                        Loop While selected <> ASM_LOADER_INC And selected <> ASM_LOADER_NONE And hasBasicTarget = 0
+                End Select
+            End If
+        ElseIf eventType = MSX_INPUT_MOUSE Then
+            If mouseAction = MSX_MOUSE_DOWN Then
+                If mouseY = dialogY And mouseX = dialogX + 2 Then
+                    result = ASM_LOADER_NONE
+                    Exit Do
+                End If
+                If mouseY = dialogY + 4 And hasBasicTarget <> 0 Then
+                    result = ASM_LOADER_BLOAD
+                    Exit Do
+                ElseIf mouseY = dialogY + 5 And hasBasicTarget <> 0 Then
+                    result = ASM_LOADER_DATA
+                    Exit Do
+                ElseIf mouseY = dialogY + 6 Then
+                    result = ASM_LOADER_INC
+                    Exit Do
+                ElseIf mouseY = dialogY + 7 Then
+                    result = ASM_LOADER_NONE
+                    Exit Do
+                End If
+            End If
+        End If
+    Loop
+
+    FinalizeModalInputState()
+    Return result
+End Function
+
 Private Function DbBoolSetting(ByRef keyName As String, ByVal fallbackValue As Integer = 0) As Integer
     Dim fb As String = IIf(fallbackValue <> 0, "True", "False")
     Dim rawValue As String = LCase(Trim(DbGetSetting(keyName, fb)))
@@ -3789,38 +5029,38 @@ Private Function BuildOpenMsxLaunchArgs(ByRef diskPath As String) As String
     Dim outArgs As String = ""
 
     Dim settingFile As String = Trim(DbGetSetting("cfg.emulator.setting", ""))
-    If Len(settingFile) > 0 Then outArgs &= " -setting " & Q(settingFile)
+    If Len(settingFile) > 0 Then outArgs &= " -setting " & CommandLineArg(settingFile)
 
     Dim machineName As String = Trim(DbGetSetting("cfg.emulator.machine", ""))
-    If Len(machineName) > 0 Then outArgs &= " -machine " & Q(machineName)
+    If Len(machineName) > 0 Then outArgs &= " -machine " & CommandLineArg(machineName)
 
     Dim extensionName As String = Trim(DbGetSetting("cfg.emulator.extension", ""))
-    If Len(extensionName) > 0 Then outArgs &= " -ext " & Q(extensionName)
+    If Len(extensionName) > 0 Then outArgs &= " -ext " & CommandLineArg(extensionName)
 
     If DbBoolSetting("cfg.emulator.nothrottle", 0) <> 0 Then outArgs &= " -no-throttle"
     If DbBoolSetting("cfg.emulator.monitor", 0) <> 0 Then
         Dim scriptPath As String = "basic-dignified\\msx\\openmsx_output.tcl"
-        If Dir(scriptPath) <> "" Then outArgs &= " -script " & Q(ToAbsolutePath(scriptPath))
+        If Dir(scriptPath) <> "" Then outArgs &= " -script " & CommandLineArg(ToAbsolutePath(scriptPath))
     End If
 
-    outArgs &= " -diska " & Q(diskPath)
+    outArgs &= " -diska " & CommandLineArg(diskPath)
     Return outArgs
 End Function
 
 Sub CompileActiveDocument(ByVal compileMode As Integer)
     If activeDoc < 1 Or activeDoc > docCount Then Exit Sub
     Dim ByRef d As Document = docs(activeDoc)
+
+    CompileDlgReset("Compilar")
     CompileDebugLog("compile", "start mode=" & Trim(Str(compileMode)) & " file=" & d.filePath)
 
     If d.isHelp <> 0 Then
-        Dim m As String = "Ajuda nao pode ser compilada."
-        ShowInfoDialog("Compilar", m)
+        CompileDlgFinish("Ajuda nao pode ser compilada.", "", 0)
         Exit Sub
     End If
 
     If Left(LCase(d.filePath), 4) = "cfg:" Then
-        Dim m As String = "Tela de configuracao nao pode ser compilada."
-        ShowInfoDialog("Compilar", m)
+        CompileDlgFinish("Tela de configuracao nao pode ser compilada.", "", 0)
         Exit Sub
     End If
 
@@ -3836,11 +5076,150 @@ Sub CompileActiveDocument(ByVal compileMode As Integer)
     Dim rc As Integer = 0
     CompileDebugLog("compile", "resolved src=" & srcPathDisp & " ext=" & ext)
 
+    If ext = ".asm" Then
+        If compileMode <> COMPILE_MODE_RUN_EMU Then
+            CompileDlgFinish("Arquivos .asm sao montados com Compilar e Executar (E).", "", 0)
+            Exit Sub
+        End If
+
+        Dim asmsxPath As String = ""
+        If ResolveAsmsxPath(asmsxPath) = 0 Then
+            CompileDlgFinish("asmsx nao encontrado.", "Configure cfg.assembler.asmsx_path, coloque asmsx.exe em asmsx\ ou inclua no PATH.", 0)
+            Exit Sub
+        End If
+
+        Dim srcDir As String = PathDirOf(srcPath)
+        Dim srcFile As String = Mid(srcPath, Len(srcDir) + 1)
+        Dim origDir As String = CurDir()
+
+        ChDir srcDir
+        Dim asmCmd As String = CommandLineArg(asmsxPath) & " " & CommandLineArg(srcFile)
+        Dim asmRc As Integer = Shell(asmCmd)
+        ChDir origDir
+        CompileDebugLog("compile", "asmsx rc=" & Trim(Str(asmRc)) & " cmd=" & NormalizePathForDisplay(asmCmd) & " cwd=" & NormalizePathForDisplay(srcDir))
+
+        Dim binOut As String = ChangeExt(srcPath, ".bin")
+        If Dir(binOut) = "" Then
+            CompileDlgFinish("Falha ao montar com asmsx.", "Nao gerou " & NormalizePathForDisplay(binOut) & ". Veja o log: " & CompileDebugLogPath(), 0)
+            Exit Sub
+        End If
+
+        Dim binOutDisp As String = NormalizePathForDisplay(binOut)
+
+        ' Oferece o que fazer com a rotina montada: incluir num BASIC aberto
+        ' (BLOAD ou carregador embutido via DATA/READ/POKE, escolhendo o
+        ' arquivo se houver mais de um .dmx/.bad aberto), gerar um .inc pra
+        ' incluir em outro programa asm, ou nao fazer nada.
+        Dim loaderNote As String = ""
+        Dim basicCandidates(1 To MAX_DOCS) As Integer
+        Dim basicCandidateCount As Integer = 0
+        CollectOpenBasicDocs(activeDoc, basicCandidates(), basicCandidateCount)
+
+        Dim loaderChoice As Integer = PromptAsmLoaderChoice(IIf(basicCandidateCount > 0, -1, 0))
+
+        If loaderChoice = ASM_LOADER_INC Then
+            Dim labelBaseInc As String = SanitizeLabelName(BaseNameNoExtOf(srcPath))
+            Dim incPath As String = ""
+            Dim incErr As String = ""
+            If CompilerBuildAsmIncFile(binOut, srcPath, labelBaseInc, incPath, incErr) = 0 Then
+                loaderNote = " | Falha ao gerar .inc: " & incErr
+                CompileDebugLog("compile", "asm inc gen fail err=" & incErr)
+            Else
+                loaderNote = " | Gerado: " & NormalizePathForDisplay(incPath)
+                CompileDebugLog("compile", "asm inc generated: " & incPath)
+            End If
+        ElseIf loaderChoice = ASM_LOADER_BLOAD Or loaderChoice = ASM_LOADER_DATA Then
+            Dim targetDocIdx As Integer = 0
+            If basicCandidateCount = 1 Then
+                targetDocIdx = basicCandidates(1)
+            ElseIf basicCandidateCount > 1 Then
+                targetDocIdx = PromptPickBasicDoc(basicCandidates(), basicCandidateCount)
+            End If
+
+            If targetDocIdx > 0 Then
+                Dim ByRef targetDoc As Document = docs(targetDocIdx)
+                Dim usrIdx As Integer = NextUsrIndexForDoc(targetDoc)
+                If usrIdx > 9 Then
+                    loaderNote = " | Nao incluido em " & targetDoc.title & ": DEFUSR0-9 ja em uso"
+                    CompileDebugLog("compile", "asm loader skipped: no DEFUSR slot free in " & targetDoc.title)
+                Else
+                    Dim labelBase As String = SanitizeLabelName(BaseNameNoExtOf(srcPath))
+                    Dim labelName As String = UniqueLabelForDoc(targetDoc, labelBase)
+                    Dim loaderErr As String = ""
+                    Dim loaderCode As String = ""
+                    Dim loaderOk As Integer = 0
+
+                    If loaderChoice = ASM_LOADER_DATA Then
+                        loaderOk = CompilerBuildAsmDataLoader(binOut, labelName, usrIdx, loaderCode, loaderErr)
+                    Else
+                        Dim startA As Integer
+                        Dim endA As Integer
+                        Dim execA As Integer
+                        loaderOk = CompilerReadAsmBinInfo(binOut, startA, endA, execA, loaderErr)
+                        If loaderOk <> 0 Then
+                            Dim binBaseName As String = UCase(Left(BaseNameNoExtOf(srcPath), 8))
+                            Dim usrTag As String = "USR" & Trim(Str(usrIdx))
+                            Dim ind As String = "    "
+                            loaderCode = "{" & labelName & "}" & Chr(10)
+                            loaderCode &= ind & "' Chame com: A=" & usrTag & "(0)  ou  PRINT " & usrTag & "(0)" & Chr(10)
+                            loaderCode &= ind & "bload " & Chr(34) & binBaseName & ".BIN" & Chr(34) & Chr(10)
+                            loaderCode &= ind & "defusr" & Trim(Str(usrIdx)) & " = &H" & Hex(execA) & Chr(10)
+                            loaderCode &= ind & "return" & Chr(10)
+                        End If
+                    End If
+
+                    If loaderOk = 0 Then
+                        loaderNote = " | Falha ao gerar carregador: " & loaderErr
+                        CompileDebugLog("compile", "asm loader gen fail err=" & loaderErr)
+                    Else
+                        InsertGosubAtTop(targetDoc, labelName)
+                        AppendDocTextLines(targetDoc, loaderCode)
+                        SaveDocumentToDisk(targetDoc)
+                        forceFullRedraw = 1
+                        renderMode = RENDER_FULL
+                        loaderNote = " | Incluido em " & targetDoc.title & ": {" & labelName & "} DEFUSR" & Trim(Str(usrIdx))
+                        CompileDebugLog("compile", "asm loader added to " & targetDoc.title & " label=" & labelName & " usr=" & Trim(Str(usrIdx)))
+                    End If
+                End If
+            End If
+        End If
+
+        Dim emuPathAsm As String = ""
+        If ResolveOpenMsxPath(emuPathAsm) <> 0 Then
+            Dim diskPathAsm As String = ""
+            Dim cleanDiskDirAsm As Integer = DbBoolSetting("cfg.emulator.clean_disk_dir", 0)
+            If CompilerBuildAsmRunDisk(srcPath, binOut, diskPathAsm, errMsg, cleanDiskDirAsm) = 0 Then
+                Dim msgA As String = errMsg
+                If Len(Trim(msgA)) = 0 Then msgA = "Sem detalhes no retorno. Veja log: " & CompileDebugLogPath()
+                CompileDebugLog("compile", "asm disk build fail err=" & msgA)
+                CompileDlgFinish("Falha ao montar disco de execucao", msgA, 0)
+                Exit Sub
+            End If
+
+            Dim diskPathAsmDisp As String = NormalizePathForDisplay(diskPathAsm)
+            Dim runCmdAsm As String = CommandLineArg(emuPathAsm) & BuildOpenMsxLaunchArgs(diskPathAsm)
+            Dim runRcAsm As Integer = Shell(runCmdAsm)
+            CompileDebugLog("compile", "asm run emu rc=" & Trim(Str(runRcAsm)) & " cmd=" & NormalizePathForDisplay(runCmdAsm))
+
+            Dim msg2Asm As String
+            If runRcAsm = 0 Then
+                msg2Asm = "Gerado: " & binOutDisp & " | Disco: " & diskPathAsmDisp & " | openMSX iniciado" & loaderNote
+            Else
+                msg2Asm = "Gerado: " & binOutDisp & " | Falha ao iniciar openMSX" & loaderNote
+            End If
+            CompileDebugLog("compile", "asm success msg2=" & msg2Asm)
+            CompileDlgFinish("OK: asMSX Montar e Executar", msg2Asm, 1)
+        Else
+            CompileDlgFinish("OK: asMSX Montar e Executar", "Gerado: " & binOutDisp & " | openMSX nao encontrado (configure cfg.emulator.windows.emulator_path ou inclua no PATH)" & loaderNote, 1)
+        End If
+
+        Exit Sub
+    End If
+
     If compileMode = COMPILE_MODE_TOKENIZE_AMX Then
         modeLabel = "Tokenizar AMX"
         If ext <> ".amx" And ext <> ".asc" Then
-            Dim m As String = "Abra um arquivo .amx/.asc para tokenizar."
-            ShowInfoDialog("Compilar", m)
+            CompileDlgFinish("Abra um arquivo .amx/.asc para tokenizar.", "", 0)
             Exit Sub
         End If
         rc = CompilerTokenizeAmx(srcPath, bmxOut, errMsg)
@@ -3848,8 +5227,7 @@ Sub CompileActiveDocument(ByVal compileMode As Integer)
     ElseIf compileMode = COMPILE_MODE_DIGNIFIED Then
         modeLabel = "Basic Dignified"
         If ext = ".amx" Or ext = ".asc" Then
-            Dim m As String = "Use este modo com fonte .dmx/.bad."
-            ShowInfoDialog("Compilar", m)
+            CompileDlgFinish("Use este modo com fonte .dmx/.bad.", "", 0)
             Exit Sub
         End If
         rc = CompilerCompileToAmx(srcPath, amxOut, errMsg)
@@ -3869,7 +5247,7 @@ Sub CompileActiveDocument(ByVal compileMode As Integer)
         Dim msg2 As String = errMsg
         If Len(Trim(msg2)) = 0 Then msg2 = "Sem detalhes no retorno. Veja log: " & CompileDebugLogPath()
         CompileDebugLog("compile", "fail shown msg2=" & msg2)
-        ShowInfoDialog("Compilar", msg1, msg2)
+        CompileDlgFinish(msg1, msg2, 0)
         Exit Sub
     End If
 
@@ -3891,12 +5269,12 @@ Sub CompileActiveDocument(ByVal compileMode As Integer)
                 msg2 = errMsg
                 If Len(Trim(msg2)) = 0 Then msg2 = "Sem detalhes no retorno. Veja log: " & CompileDebugLogPath()
                 CompileDebugLog("compile", "disk build fail err=" & msg2)
-                ShowInfoDialog("Compilar", msg1, msg2)
+                CompileDlgFinish(msg1, msg2, 0)
                 Exit Sub
             End If
 
             Dim diskPathDisp As String = NormalizePathForDisplay(diskPath)
-            Dim runCmd As String = Q(emuPath) & BuildOpenMsxLaunchArgs(diskPath)
+            Dim runCmd As String = CommandLineArg(emuPath) & BuildOpenMsxLaunchArgs(diskPath)
             Dim runRc As Integer = Shell(runCmd)
             CompileDebugLog("compile", "run emu rc=" & Trim(Str(runRc)) & " cmd=" & NormalizePathForDisplay(runCmd))
             msg1 = "OK: " & modeLabel
@@ -3914,7 +5292,305 @@ Sub CompileActiveDocument(ByVal compileMode As Integer)
         msg2 = "Gerados: " & amxOutDisp & " e " & NormalizePathForDisplay(ChangeExt(srcPath, ".bmx"))
     End If
     CompileDebugLog("compile", "success msg1=" & msg1 & " msg2=" & msg2)
-    ShowInfoDialog("Compilar", msg1, msg2)
+    CompileDlgFinish(msg1, msg2, 1)
+End Sub
+
+Private Function MamuteCellTypeLabel(ByVal cellType As Integer) As String
+    Select Case cellType
+        Case MAMUTE_CELL_RAM
+            Return "RAM"
+        Case MAMUTE_CELL_ROM
+            Return "ROM"
+    End Select
+    Return "."
+End Function
+
+Private Sub LoadMamuteMemConfig()
+    Dim slot As Integer
+    Dim subIdx As Integer
+    Dim pageIdx As Integer
+
+    For slot = 0 To 3
+        Dim subKey As String = "cfg.mamute.mem.slot" & Trim(Str(slot)) & ".subslots"
+        MamuteMemSubOn(slot) = IIf(LCase(DbGetSetting(subKey, "False")) = "true", -1, 0)
+
+        For subIdx = 0 To 3
+            For pageIdx = 0 To 3
+                Dim prefix As String = "cfg.mamute.mem.slot" & Trim(Str(slot)) & ".sub" & Trim(Str(subIdx)) & ".page" & Trim(Str(pageIdx)) & "."
+                Dim typeText As String = LCase(DbGetSetting(prefix & "type", "none"))
+                Dim cellType As Integer = MAMUTE_CELL_NONE
+                If typeText = "ram" Then
+                    cellType = MAMUTE_CELL_RAM
+                ElseIf typeText = "rom" Then
+                    cellType = MAMUTE_CELL_ROM
+                End If
+                MamuteMemGrid(slot, subIdx, pageIdx).cellType = cellType
+                MamuteMemGrid(slot, subIdx, pageIdx).romPath = DbGetSetting(prefix & "rompath", "")
+                MamuteMemGrid(slot, subIdx, pageIdx).romOffset = ValInt(DbGetSetting(prefix & "romoffset", "0"))
+            Next pageIdx
+        Next subIdx
+    Next slot
+End Sub
+
+Private Sub SaveMamuteMemConfig()
+    Dim slot As Integer
+    Dim subIdx As Integer
+    Dim pageIdx As Integer
+
+    For slot = 0 To 3
+        Dim subKey As String = "cfg.mamute.mem.slot" & Trim(Str(slot)) & ".subslots"
+        DbSetSetting(subKey, IIf(MamuteMemSubOn(slot) <> 0, "True", "False"))
+
+        For subIdx = 0 To 3
+            For pageIdx = 0 To 3
+                Dim prefix As String = "cfg.mamute.mem.slot" & Trim(Str(slot)) & ".sub" & Trim(Str(subIdx)) & ".page" & Trim(Str(pageIdx)) & "."
+                Dim ByRef cell As MamuteMemCell = MamuteMemGrid(slot, subIdx, pageIdx)
+                Dim typeText As String = "none"
+                If cell.cellType = MAMUTE_CELL_RAM Then typeText = "ram"
+                If cell.cellType = MAMUTE_CELL_ROM Then typeText = "rom"
+                DbSetSetting(prefix & "type", typeText)
+                DbSetSetting(prefix & "rompath", cell.romPath)
+                DbSetSetting(prefix & "romoffset", Trim(Str(cell.romOffset)))
+            Next pageIdx
+        Next subIdx
+    Next slot
+End Sub
+
+' Reconstroi a lista de linhas visiveis da grade (1 linha por slot sem
+' sub-slots, ou 4 linhas Slot N.0-N.3 quando ligados) - chamado a cada volta
+' do loop, ja que "T" pode mudar isso a qualquer momento.
+Private Sub BuildMamuteMemVisibleRows(visSlot() As Integer, visSub() As Integer, ByRef visCount As Integer)
+    ReDim visSlot(1 To 16)
+    ReDim visSub(1 To 16)
+    visCount = 0
+    Dim slot As Integer
+    For slot = 0 To 3
+        If MamuteMemSubOn(slot) <> 0 Then
+            Dim subIdx As Integer
+            For subIdx = 0 To 3
+                visCount += 1
+                visSlot(visCount) = slot
+                visSub(visCount) = subIdx
+            Next subIdx
+        Else
+            visCount += 1
+            visSlot(visCount) = slot
+            visSub(visCount) = 0
+        End If
+    Next slot
+End Sub
+
+Private Sub ShowMamuteMemoryConfig()
+    LoadMamuteMemConfig()
+    Dim memDirty As Integer = 0
+
+    Dim visSlot() As Integer
+    Dim visSub() As Integer
+    Dim visCount As Integer
+
+    Dim selRowIdx As Integer = 1
+    Dim selCol As Integer = 0
+    Dim message As String = "Setas navega | Espaco/Enter tipo | T sub-slots | L Carregar ROM 32KB | F2 salva | Esc cancela"
+
+    Dim dialogW As Integer = Clamp(uiW - 8, 66, uiW)
+    Dim dialogH As Integer = Clamp(uiH - 4, 20, uiH - 1)
+    Dim dialogX As Integer = ((uiW - dialogW) \ 2) + 1
+    Dim dialogY As Integer = ((uiH - dialogH) \ 2) + 1
+    Dim listX As Integer = dialogX + 2
+    Dim listY As Integer = dialogY + 4
+    Dim listH As Integer = dialogH - 9
+    Dim colW As Integer = 11
+
+    Do
+        BuildMamuteMemVisibleRows(visSlot(), visSub(), visCount)
+        If selRowIdx < 1 Then selRowIdx = 1
+        If selRowIdx > visCount Then selRowIdx = visCount
+        Dim topIdx As Integer = 1
+        If selRowIdx > listH Then topIdx = selRowIdx - listH + 1
+
+        Dim curSlot As Integer = visSlot(selRowIdx)
+        Dim curSub As Integer = visSub(selRowIdx)
+
+        ConsoleBeginFrame()
+        DrawDesktop()
+        DrawDocumentsFull()
+        DrawMenuBar(MENU_VIEW_NONE)
+        DrawStatusBar()
+
+        ConsoleWriteText(dialogX, dialogY, Chr(201) & String(dialogW - 2, Chr(205)) & Chr(187), 15, 1)
+        Dim r As Integer
+        For r = 1 To dialogH - 2
+            ConsoleWriteText(dialogX, dialogY + r, Chr(186) & String(dialogW - 2, " ") & Chr(186), 15, 1)
+        Next r
+        ConsoleWriteText(dialogX, dialogY + dialogH - 1, Chr(200) & String(dialogW - 2, Chr(205)) & Chr(188), 15, 1)
+
+        Dim titleStatus As String = ""
+        If memDirty <> 0 Then titleStatus = " *NAO SALVO*"
+        ConsoleWriteText(dialogX + 2, dialogY, " Configurar: Mamute (Memoria)" & titleStatus & " ", 0, 7, dialogW - 4)
+        ConsoleWriteText(dialogX + 2, dialogY + 2, "Slot       Pag.0      Pag.1      Pag.2      Pag.3", 14, 1, dialogW - 4)
+
+        For r = 0 To listH - 1
+            Dim idx As Integer = topIdx + r
+            Dim rowY As Integer = listY + r
+            ConsoleWriteText(listX, rowY, String(dialogW - 4, " "), 15, 1)
+            If idx <= visCount Then
+                Dim rSlot As Integer = visSlot(idx)
+                Dim rSub As Integer = visSub(idx)
+                Dim rowLabel As String
+                If MamuteMemSubOn(rSlot) <> 0 Then
+                    rowLabel = "Slot " & Trim(Str(rSlot)) & "." & Trim(Str(rSub))
+                Else
+                    rowLabel = "Slot " & Trim(Str(rSlot))
+                End If
+                ConsoleWriteText(listX, rowY, Left(rowLabel & Space(colW), colW), 15, 1)
+
+                Dim c As Integer
+                For c = 0 To 3
+                    Dim cellFg As UByte = 15
+                    Dim cellBg As UByte = 1
+                    If idx = selRowIdx And c = selCol Then
+                        cellFg = 0
+                        cellBg = 7
+                    End If
+                    Dim cellText As String = MamuteCellTypeLabel(MamuteMemGrid(rSlot, rSub, c).cellType)
+                    ConsoleWriteText(listX + colW + c * colW, rowY, Left(cellText & Space(colW), colW), cellFg, cellBg)
+                Next c
+            End If
+        Next r
+
+        Dim ByRef selCell As MamuteMemCell = MamuteMemGrid(curSlot, curSub, selCol)
+        Dim detailText As String = "Selecionado: Slot " & Trim(Str(curSlot))
+        If MamuteMemSubOn(curSlot) <> 0 Then detailText &= "." & Trim(Str(curSub))
+        detailText &= " Pag." & Trim(Str(selCol)) & " = " & MamuteCellTypeLabel(selCell.cellType)
+        If selCell.cellType = MAMUTE_CELL_ROM Then
+            detailText &= " (" & NormalizePathForDisplay(selCell.romPath) & ", offset " & Trim(Str(selCell.romOffset)) & ")"
+        End If
+        ConsoleWriteText(dialogX + 2, dialogY + dialogH - 4, Left(detailText & String(dialogW - 4, " "), dialogW - 4), 11, 1)
+        ConsoleWriteText(dialogX + 2, dialogY + dialogH - 3, Left("Sub-slots deste slot: " & IIf(MamuteMemSubOn(curSlot) <> 0, "ligados", "desligados") & String(dialogW - 4, " "), dialogW - 4), 8, 1)
+        ConsoleWriteText(dialogX + 2, dialogY + dialogH - 2, Left(message & String(dialogW - 4, " "), dialogW - 4), 8, 1)
+
+        ConsoleSetCursor(1, 1, 0)
+        ConsoleFlush()
+        ConsoleEndFrame()
+
+        Dim eventType As Integer
+        Dim keyText As String
+        Dim mouseX As Integer
+        Dim mouseY As Integer
+        Dim mouseAction As Integer
+
+        If ConsolePollInput(eventType, keyText, mouseX, mouseY, mouseAction) = 0 Then
+            Sleep 5, 1
+            Continue Do
+        End If
+
+        If eventType <> MSX_INPUT_KEY Then Continue Do
+        keyText = NormalizeKey(keyText)
+
+        If keyText = Chr(27) Then
+            If memDirty <> 0 Then
+                Dim action As Integer = PromptConfigExitAction("Mamute (Memoria)")
+                Select Case action
+                    Case CFG_EXIT_SAVE
+                        SaveMamuteMemConfig()
+                        message = "Mapa de memoria salvo."
+                        Exit Do
+                    Case CFG_EXIT_DISCARD
+                        message = "Alteracoes descartadas."
+                        Exit Do
+                    Case Else
+                        Continue Do
+                End Select
+            Else
+                Exit Do
+            End If
+        End If
+
+        If UCase(keyText) = "T" Then
+            MamuteMemSubOn(curSlot) = IIf(MamuteMemSubOn(curSlot) <> 0, 0, -1)
+            memDirty = -1
+            message = "Sub-slots do Slot " & Trim(Str(curSlot)) & ": " & IIf(MamuteMemSubOn(curSlot) <> 0, "ligados", "desligados")
+            Continue Do
+        End If
+
+        If UCase(keyText) = "L" Then
+            Dim canceled4 As Integer
+            Dim romFile As String = PromptPathDialog("Carregar ROM 32KB", "Arquivo .rom (32KB, BIOS+BASIC):", "", canceled4)
+            If canceled4 = 0 And Len(romFile) > 0 Then
+                MamuteMemGrid(curSlot, curSub, 0).cellType = MAMUTE_CELL_ROM
+                MamuteMemGrid(curSlot, curSub, 0).romPath = romFile
+                MamuteMemGrid(curSlot, curSub, 0).romOffset = 0
+                MamuteMemGrid(curSlot, curSub, 1).cellType = MAMUTE_CELL_ROM
+                MamuteMemGrid(curSlot, curSub, 1).romPath = romFile
+                MamuteMemGrid(curSlot, curSub, 1).romOffset = 16384
+                memDirty = -1
+                message = "ROM 32KB carregada no Slot " & Trim(Str(curSlot)) & " (BIOS pag.0 / BASIC pag.1)."
+            End If
+            Continue Do
+        End If
+
+        If keyText = " " Or keyText = Chr(13) Then
+            Dim ByRef cell As MamuteMemCell = MamuteMemGrid(curSlot, curSub, selCol)
+
+            If keyText = Chr(13) And cell.cellType = MAMUTE_CELL_ROM Then
+                Dim canceled2 As Integer
+                Dim newPath As String = PromptPathDialog("ROM da pagina", "Arquivo .rom:", cell.romPath, canceled2)
+                If canceled2 = 0 Then
+                    cell.romPath = newPath
+                    Dim offCanceled As Integer
+                    Dim offText As String = PromptPathDialog("Offset no arquivo", "Offset em bytes:", Trim(Str(cell.romOffset)), offCanceled)
+                    If offCanceled = 0 Then cell.romOffset = ValInt(offText)
+                    memDirty = -1
+                End If
+            Else
+                Select Case cell.cellType
+                    Case MAMUTE_CELL_NONE
+                        cell.cellType = MAMUTE_CELL_RAM
+                        memDirty = -1
+                    Case MAMUTE_CELL_RAM
+                        Dim canceled3 As Integer
+                        Dim romPath3 As String = PromptPathDialog("ROM da pagina", "Arquivo .rom:", "", canceled3)
+                        If canceled3 = 0 And Len(romPath3) > 0 Then
+                            cell.cellType = MAMUTE_CELL_ROM
+                            cell.romPath = romPath3
+                            cell.romOffset = 0
+                            memDirty = -1
+                        End If
+                    Case Else
+                        cell.cellType = MAMUTE_CELL_NONE
+                        cell.romPath = ""
+                        cell.romOffset = 0
+                        memDirty = -1
+                End Select
+            End If
+            Continue Do
+        End If
+
+        If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+            Select Case Asc(Right(keyText, 1))
+                Case 72
+                    selRowIdx -= 1
+                Case 80
+                    selRowIdx += 1
+                Case 75
+                    selCol = Clamp(selCol - 1, 0, 3)
+                Case 77
+                    selCol = Clamp(selCol + 1, 0, 3)
+                Case 71
+                    selRowIdx = 1
+                Case 79
+                    selRowIdx = visCount
+                Case 60
+                    SaveMamuteMemConfig()
+                    message = "Mapa de memoria salvo."
+                    Exit Do
+            End Select
+        End If
+    Loop
+
+    FinalizeModalInputState()
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
 End Sub
 
 Sub ShowConfigForm(ByRef titleText As String, ByRef configGroup As String)
@@ -4212,6 +5888,8 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                     Return MENU_CMD_CFG_MSX
                 Case "E"
                     Return MENU_CMD_CFG_EMULATOR
+                Case "A"
+                    Return MENU_CMD_CFG_MAMUTE_MEM
             End Select
         End If
         Return MENU_CMD_NONE
@@ -4226,10 +5904,52 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                     Return MENU_CMD_HELP_DIGNIFIED
                 Case "T"
                     Return MENU_CMD_HELP_BATOKEN
+                Case "A"
+                    Return MENU_CMD_HELP_ASMSX
                 Case "M"
                     Return MENU_CMD_HELP_MSX_DICT
+                Case "E"
+                    Return MENU_CMD_HELP_EDITOR
                 Case "C"
                     Return MENU_CMD_HELP_THEME
+            End Select
+        End If
+        Return MENU_CMD_NONE
+    End If
+
+    If menuView = MENU_VIEW_REFERENCE Then
+        If Len(keyText) = 1 Then
+            Select Case UCase(keyText)
+                Case "R"
+                    Return MENU_CMD_REF_REDBOOK
+                Case "N"
+                    Return MENU_CMD_REF_NESTOR
+                Case "T"
+                    Return MENU_CMD_REF_HANDBOOK
+                Case "M"
+                    Return MENU_CMD_REF_MANUALS
+                Case "C"
+                    Return MENU_CMD_REF_BIOSCALLS
+                Case "W"
+                    Return MENU_CMD_REF_HARDWARE
+                Case "D"
+                    Return MENU_CMD_REF_BIOSDOC
+                Case "S"
+                    Return MENU_CMD_REF_SEETRACKER
+                Case "O"
+                    Return MENU_CMD_REF_OPENMSX
+                Case "X"
+                    Return MENU_CMD_REF_MSXBAS2ROM
+            End Select
+        End If
+        Return MENU_CMD_NONE
+    End If
+
+    If menuView = MENU_VIEW_MAMUTE Then
+        If Len(keyText) = 1 Then
+            Select Case UCase(keyText)
+                Case "A"
+                    Return MENU_CMD_MAMUTE_OPEN
             End Select
         End If
         Return MENU_CMD_NONE
@@ -4239,6 +5959,8 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
         Select Case UCase(keyText)
             Case "N"
                 Return MENU_CMD_NEW
+            Case "Z"
+                Return MENU_CMD_NEW_ASMSX
             Case "O"
                 Return MENU_CMD_OPEN
             Case "S"
@@ -4249,6 +5971,14 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                 Return MENU_CMD_CLOSE
             Case "X"
                 Return MENU_CMD_EXIT
+            Case "P"
+                Return MENU_CMD_PROJECT_NEW
+            Case "J"
+                Return MENU_CMD_PROJECT_OPEN
+            Case "K"
+                Return MENU_CMD_PROJECT_SAVE
+            Case "W"
+                Return MENU_CMD_PROJECT_CLOSE
         End Select
     End If
 
@@ -4268,10 +5998,75 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
     Return MENU_CMD_NONE
 End Function
 
+Private Sub ExecuteProjectNew()
+    Dim canceled As Integer
+    Dim initial As String = "projeto.msxproj"
+    Dim path As String = PromptPathDialog("Novo Projeto", "Caminho do projeto (.msxproj):", initial, canceled)
+    If canceled <> 0 Or Len(path) = 0 Then Exit Sub
+
+    path = ToAbsolutePath(path)
+    Dim errMsg As String = ""
+    If ProjectNew(path, errMsg) = 0 Then
+        ShowInfoDialog("Projeto", "Falha ao criar projeto.", errMsg)
+        Exit Sub
+    End If
+
+    ShowInfoDialog("Projeto", "Projeto criado: " & ProjectActiveName(), NormalizePathForDisplay(ProjectActivePath()))
+End Sub
+
+Private Sub ExecuteProjectOpen()
+    Dim canceled As Integer
+    Dim initial As String = ""
+    Dim path As String = PromptPathDialog("Abrir Projeto", "Caminho do projeto (.msxproj):", initial, canceled)
+    If canceled <> 0 Or Len(path) = 0 Then Exit Sub
+
+    path = ToAbsolutePath(path)
+    Dim errMsg As String = ""
+    If ProjectOpen(path, errMsg) = 0 Then
+        ShowInfoDialog("Projeto", "Falha ao abrir projeto.", errMsg)
+        Exit Sub
+    End If
+
+    ShowInfoDialog("Projeto", "Projeto aberto: " & ProjectActiveName(), NormalizePathForDisplay(ProjectActivePath()))
+End Sub
+
+Private Sub ExecuteProjectSave()
+    If ProjectIsActive() = 0 Then
+        ShowInfoDialog("Projeto", "Nenhum projeto aberto.", "")
+        Exit Sub
+    End If
+
+    Dim errMsg As String = ""
+    Dim savedCount As Integer = 0
+    If ProjectSave(errMsg, savedCount) = 0 Then
+        ShowInfoDialog("Projeto", "Falha ao salvar projeto.", errMsg)
+        Exit Sub
+    End If
+
+    ShowInfoDialog("Projeto", "Projeto salvo: " & ProjectActiveName(), Trim(Str(savedCount)) & " arquivo(s) reimportado(s).")
+End Sub
+
+Private Sub ExecuteProjectClose()
+    If ProjectIsActive() = 0 Then
+        ShowInfoDialog("Projeto", "Nenhum projeto aberto.", "")
+        Exit Sub
+    End If
+
+    Dim projName As String = ProjectActiveName()
+    Dim errMsg As String = ""
+    Dim savedCount As Integer = 0
+    ProjectSave(errMsg, savedCount)
+    ProjectClose()
+
+    ShowInfoDialog("Projeto", "Projeto fechado: " & projName, "")
+End Sub
+
 Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Integer, ByRef menuOpen As Integer)
     Select Case commandId
         Case MENU_CMD_NEW
             EditorCreateUntitled()
+        Case MENU_CMD_NEW_ASMSX
+            EditorCreateAsmUntitled()
         Case MENU_CMD_OPEN
             OpenDocumentDialog()
         Case MENU_CMD_SAVE
@@ -4282,6 +6077,14 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             CloseActiveDocument()
         Case MENU_CMD_EXIT
             running = 0
+        Case MENU_CMD_PROJECT_NEW
+            ExecuteProjectNew()
+        Case MENU_CMD_PROJECT_OPEN
+            ExecuteProjectOpen()
+        Case MENU_CMD_PROJECT_SAVE
+            ExecuteProjectSave()
+        Case MENU_CMD_PROJECT_CLOSE
+            ExecuteProjectClose()
         Case MENU_CMD_CFG_BADIG
             ShowConfigForm("Basic Dignified", "badig")
         Case MENU_CMD_CFG_MSX
@@ -4304,8 +6107,12 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             OpenHelpDocument("Dignified", "dbhelp:DIGNIFIED|basic-dignified\documentation\DIGNIFIED.md")
         Case MENU_CMD_HELP_BATOKEN
             OpenHelpDocument("BaToken", "dbhelp:BATOKEN|basic-dignified\documentation\BATOKEN.md")
+        Case MENU_CMD_HELP_ASMSX
+            OpenHelpDocument("asMSX", "dbhelp:ASMSX|asMSX\doc\asmsx.md")
         Case MENU_CMD_HELP_MSX_DICT
             OpenMsxDictHelp()
+        Case MENU_CMD_HELP_EDITOR
+            OpenHelpDocument("Editor", "dbhelp:EDITOR|docs\help\editor.md")
         Case MENU_CMD_HELP_THEME
             If helpTheme = HELP_THEME_EDITORIAL Then
                 helpTheme = HELP_THEME_CLASSIC
@@ -4313,6 +6120,30 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
                 helpTheme = HELP_THEME_EDITORIAL
             End If
             ApplyHelpTheme()
+        Case MENU_CMD_REF_REDBOOK
+            OpenRefDictHelp("redbook")
+        Case MENU_CMD_REF_HANDBOOK
+            OpenRefDictHelp("th2handbook")
+        Case MENU_CMD_REF_MANUALS
+            OpenRefDictHelp("msxmanuals")
+        Case MENU_CMD_REF_BIOSCALLS
+            OpenRefDictHelp("bioscalls")
+        Case MENU_CMD_REF_HARDWARE
+            OpenRefDictHelp("hardware")
+        Case MENU_CMD_REF_BIOSDOC
+            OpenRefDictHelp("biosdoc")
+        Case MENU_CMD_REF_OPENMSX
+            OpenRefDictHelp("openmsx")
+        Case MENU_CMD_REF_NESTOR
+            OpenHelpDocument("Nestor Basic", "dbhelp:NESTORBASIC|docs\help\nestorbasic.md")
+        Case MENU_CMD_REF_SEETRACKER
+            OpenHelpDocument("SEE Tracker", "dbhelp:SEETRACKER|docs\help\seetracker.md")
+        Case MENU_CMD_REF_MSXBAS2ROM
+            OpenHelpDocument("MSXBAS2ROM", "dbhelp:MSXBAS2ROM|docs\help\msxbas2rom.md")
+        Case MENU_CMD_CFG_MAMUTE_MEM
+            ShowMamuteMemoryConfig()
+        Case MENU_CMD_MAMUTE_OPEN
+            EditorCreateMamuteTerm()
     End Select
 
     menuOpen = 0
@@ -4326,6 +6157,11 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
 
     If keyText = Chr(27) Then
         running = 0
+        Exit Sub
+    End If
+
+    If d.isMamuteTerm <> 0 Then
+        HandleMamuteTermKey(d, keyText, renderHint)
         Exit Sub
     End If
 
@@ -4427,6 +6263,7 @@ Sub EditorInit(ByRef startupName As String)
     docCount = 0
     activeDoc = 0
     untitledCounter = 1
+    untitledAsmCounter = 0
     forceFullRedraw = 1
     renderMode = RENDER_FULL
     perfBackendVersion = DbGetSetting("backend_version", "win32-buffer-v3")
@@ -4462,6 +6299,233 @@ Sub EditorCreateUntitled()
     Loop While untitledCounter < 100 And docName = "msx00.dmx"
 
     EditorOpenFromPath(docName)
+End Sub
+
+Private Function BuildAsmHelloWorldTemplate(ByRef baseName As String) As String
+    Dim s As String
+
+    s = "; ------------------------------------------------------------------" & Chr(10)
+    s &= "; " & baseName & ".asm - Hello ASM World" & Chr(10)
+    s &= "; Modelo inicial gerado pelo msxIDE para o assembler asMSX (Z80/MSX)." & Chr(10)
+    s &= ";" & Chr(10)
+    s &= "; Monta com o asmsx para um binario MSX-BASIC (.bin), carregavel com:" & Chr(10)
+    s &= ";   BLOAD " & Chr(34) & UCase(baseName) & ".BIN" & Chr(34) & ",R" & Chr(10)
+    s &= "; ------------------------------------------------------------------" & Chr(10)
+    s &= Chr(10)
+    s &= "    .BIOS                       ; nomes oficiais das rotinas da BIOS" & Chr(10)
+    s &= "    .BIOSVARS                   ; nomes oficiais das variaveis de sistema" & Chr(10)
+    s &= "    .BASIC                      ; gera cabecalho de binario MSX-BASIC (.bin)" & Chr(10)
+    s &= "    .ORG 0xC000                 ; endereco de montagem/execucao" & Chr(10)
+    s &= Chr(10)
+    s &= "MAIN:" & Chr(10)
+    s &= "    ld a,40                     ; SCREEN 0 : WIDTH 40" & Chr(10)
+    s &= "    ld [LINL40],a" & Chr(10)
+    s &= "    call INITXT" & Chr(10)
+    s &= Chr(10)
+    s &= "    ld a,15                     ; COLOR 15,1,1" & Chr(10)
+    s &= "    ld [FORCLR],a" & Chr(10)
+    s &= "    ld a,1" & Chr(10)
+    s &= "    ld [BAKCLR],a" & Chr(10)
+    s &= "    ld a,1" & Chr(10)
+    s &= "    ld [BDRCLR],a" & Chr(10)
+    s &= "    call CHGCLR" & Chr(10)
+    s &= Chr(10)
+    s &= "    call ERAFNK                 ; KEY OFF" & Chr(10)
+    s &= Chr(10)
+    s &= "    call CLS                    ; CLS" & Chr(10)
+    s &= Chr(10)
+    s &= "    ld hl,MSG                   ; PRINT " & Chr(34) & "Hello ASM World" & Chr(34) & Chr(10)
+    s &= "    call PUTSTR" & Chr(10)
+    s &= Chr(10)
+    s &= "    ret                         ; encerra e volta ao MSX-BASIC" & Chr(10)
+    s &= Chr(10)
+    s &= "; ------------------------------------------------------------------" & Chr(10)
+    s &= "; Imprime uma string terminada em 24h (" & Chr(34) & "$" & Chr(34) & "), padrao classico da BIOS" & Chr(10)
+    s &= "; ------------------------------------------------------------------" & Chr(10)
+    s &= "PUTSTR:" & Chr(10)
+    s &= "    ld a,[hl]" & Chr(10)
+    s &= "    cp 24h" & Chr(10)
+    s &= "    ret z" & Chr(10)
+    s &= "    call CHPUT" & Chr(10)
+    s &= "    inc hl" & Chr(10)
+    s &= "    jr PUTSTR" & Chr(10)
+    s &= Chr(10)
+    s &= "MSG:" & Chr(10)
+    s &= "    db " & Chr(34) & "Hello ASM World" & Chr(34) & ",13,10," & Chr(34) & "$" & Chr(34) & Chr(10)
+
+    Return s
+End Function
+
+Private Sub EditorCreateAsmUntitled()
+    Dim baseName As String = "asmsx" & Right("00" & Trim(Str(untitledAsmCounter)), 2)
+    Dim docName As String = baseName & ".asm"
+    untitledAsmCounter += 1
+
+    EditorOpenFromPath(docName)
+
+    If activeDoc >= 1 And activeDoc <= docCount Then
+        Dim ByRef d As Document = docs(activeDoc)
+        d.lineCount = 0
+        AppendDocTextLines(d, BuildAsmHelloWorldTemplate(baseName))
+        d.cursorX = 1
+        d.cursorY = 1
+        d.scrollX = 0
+        d.scrollY = 0
+    End If
+End Sub
+
+Private Sub AppendMamuteLine(ByRef d As Document, ByRef textLine As String)
+    If d.lineCount < MAX_LINES Then
+        d.lineCount += 1
+        d.lines(d.lineCount) = textLine
+    Else
+        Dim i As Integer
+        For i = 1 To MAX_LINES - 1
+            d.lines(i) = d.lines(i + 1)
+        Next i
+        d.lines(MAX_LINES) = textLine
+    End If
+    d.scrollY = GetMaxScrollY(d)
+End Sub
+
+Private Function MamutePageRowText(ByVal slot As Integer, ByVal subIdx As Integer) As String
+    Dim label As String = "Slot " & Trim(Str(slot))
+    If MamuteMemSubOn(slot) <> 0 Then label &= "." & Trim(Str(subIdx))
+    Dim txt As String = Left(label & Space(10), 10)
+    Dim c As Integer
+    For c = 0 To 3
+        txt &= Left(MamuteCellTypeLabel(MamuteMemGrid(slot, subIdx, c).cellType) & Space(6), 6)
+    Next c
+    Return txt
+End Function
+
+Private Sub ExecuteMamuteCommand(ByRef d As Document, ByRef cmdTextIn As String)
+    Dim cmdText As String = Trim(cmdTextIn)
+    If Len(cmdText) = 0 Then Exit Sub
+
+    Dim verb As String = cmdText
+    Dim spacePos As Integer = InStr(cmdText, " ")
+    If spacePos > 0 Then verb = Left(cmdText, spacePos - 1)
+    verb = UCase(verb)
+
+    Select Case verb
+        Case "CLS"
+            d.lineCount = 1
+            d.lines(1) = ""
+            d.scrollY = 0
+        Case "PAGE"
+            LoadMamuteMemConfig()
+            AppendMamuteLine(d, "")
+            Dim slot As Integer
+            For slot = 0 To 3
+                If MamuteMemSubOn(slot) <> 0 Then
+                    Dim subIdx As Integer
+                    For subIdx = 0 To 3
+                        AppendMamuteLine(d, MamutePageRowText(slot, subIdx))
+                    Next subIdx
+                Else
+                    AppendMamuteLine(d, MamutePageRowText(slot, 0))
+                End If
+            Next slot
+        Case "BA", "QUIT"
+            CloseDocument(activeDoc)
+        Case Else
+            AppendMamuteLine(d, "?COMANDO INVALIDO")
+    End Select
+End Sub
+
+Private Sub HandleMamuteTermKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+    renderHint = RENDER_CLIENT
+
+    If keyText = Chr(13) Then
+        Dim cmdText As String = mamuteInputBuf(activeDoc)
+        mamuteInputBuf(activeDoc) = ""
+        mamuteInputCursor(activeDoc) = 0
+        AppendMamuteLine(d, MAMUTE_PROMPT & cmdText)
+        ExecuteMamuteCommand(d, cmdText)
+        Exit Sub
+    End If
+
+    If keyText = Chr(8) Then
+        Dim caretPos As Integer = mamuteInputCursor(activeDoc)
+        If caretPos > 0 Then
+            Dim txt As String = mamuteInputBuf(activeDoc)
+            mamuteInputBuf(activeDoc) = Left(txt, caretPos - 1) & Mid(txt, caretPos + 1)
+            mamuteInputCursor(activeDoc) = caretPos - 1
+        End If
+        Exit Sub
+    End If
+
+    If Len(keyText) = 1 Then
+        Dim c As Integer = Asc(keyText)
+        If c >= 32 And c <= 126 Then
+            Dim caretPos2 As Integer = mamuteInputCursor(activeDoc)
+            Dim txt2 As String = mamuteInputBuf(activeDoc)
+            mamuteInputBuf(activeDoc) = Left(txt2, caretPos2) & keyText & Mid(txt2, caretPos2 + 1)
+            mamuteInputCursor(activeDoc) = caretPos2 + 1
+        End If
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+        Select Case Asc(Right(keyText, 1))
+            Case 75
+                If mamuteInputCursor(activeDoc) > 0 Then mamuteInputCursor(activeDoc) -= 1
+            Case 77
+                If mamuteInputCursor(activeDoc) < Len(mamuteInputBuf(activeDoc)) Then mamuteInputCursor(activeDoc) += 1
+            Case 71
+                mamuteInputCursor(activeDoc) = 0
+            Case 79
+                mamuteInputCursor(activeDoc) = Len(mamuteInputBuf(activeDoc))
+            Case 83
+                Dim caretPos3 As Integer = mamuteInputCursor(activeDoc)
+                Dim txt3 As String = mamuteInputBuf(activeDoc)
+                If caretPos3 < Len(txt3) Then
+                    mamuteInputBuf(activeDoc) = Left(txt3, caretPos3) & Mid(txt3, caretPos3 + 2)
+                End If
+            Case 72
+                d.scrollY = Clamp(d.scrollY - 1, 0, GetMaxScrollY(d))
+            Case 80
+                d.scrollY = Clamp(d.scrollY + 1, 0, GetMaxScrollY(d))
+            Case 73
+                d.scrollY = Clamp(d.scrollY - GetClientTextHeight(d), 0, GetMaxScrollY(d))
+            Case 81
+                d.scrollY = Clamp(d.scrollY + GetClientTextHeight(d), 0, GetMaxScrollY(d))
+        End Select
+    End If
+End Sub
+
+Private Sub DrawMamuteInputLine(ByVal docIndex As Integer, ByVal rowY As Integer)
+    Dim ByRef d As Document = docs(docIndex)
+    Dim clientW As Integer = GetClientTextWidth(d)
+    If clientW > MAX_SYNTAX_W Then clientW = MAX_SYNTAX_W
+    Dim lineText As String = MAMUTE_PROMPT & mamuteInputBuf(docIndex)
+    Dim padded As String = Left(lineText & Space(clientW), clientW)
+    Dim i As Integer
+    For i = 1 To clientW
+        ConsoleSetCell(d.winX + i, rowY, Asc(Mid(padded, i, 1)), 10, 0)
+    Next i
+End Sub
+
+Private Sub EditorCreateMamuteTerm()
+    If docCount >= MAX_DOCS Then Exit Sub
+
+    docCount += 1
+    activeDoc = docCount
+
+    InitBlankDocument(docs(docCount), "Mamute Assembler")
+    docs(docCount).isMamuteTerm = -1
+    docs(docCount).lineCount = 3
+    docs(docCount).lines(1) = "Mamute Assembler - MON>"
+    docs(docCount).lines(2) = "Comandos disponiveis nesta fase: CLS, PAGE, BA/QUIT."
+    docs(docCount).lines(3) = ""
+    mamuteInputBuf(docCount) = ""
+    mamuteInputCursor(docCount) = 0
+
+    LayoutNewDocumentWindow(docCount)
+
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
 End Sub
 
 Sub EditorDraw(ByVal menuOpen As Integer)
@@ -4571,6 +6635,10 @@ Sub EditorHandleKey(ByRef keyText As String, ByRef running As Integer, ByRef men
                     menuCmd = MENU_CMD_CFG_BADIG
                 ElseIf menuOpen = MENU_VIEW_COMPILE Then
                     menuCmd = MENU_CMD_COMPILE_MSX
+                ElseIf menuOpen = MENU_VIEW_REFERENCE Then
+                    menuCmd = MENU_CMD_REF_REDBOOK
+                ElseIf menuOpen = MENU_VIEW_MAMUTE Then
+                    menuCmd = MENU_CMD_MAMUTE_OPEN
                 Else
                     menuCmd = MENU_CMD_EXIT
                 End If
@@ -4602,6 +6670,26 @@ End Sub
 Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mouseAction As Integer, ByRef running As Integer, ByRef menuOpen As Integer)
     If mouseAction = MSX_MOUSE_UP Then
         dragMode = DRAG_NONE
+        Exit Sub
+    End If
+
+    If mouseAction = MSX_MOUSE_WHEEL_UP Or mouseAction = MSX_MOUSE_WHEEL_DOWN Then
+        Dim hitWheel As Integer = FindTopWindowAt(mouseX, mouseY)
+        If hitWheel = 0 Then Exit Sub
+
+        BringDocumentToFront(hitWheel)
+        Dim ByRef dw As Document = docs(activeDoc)
+        Dim wheelStep As Integer = 3
+
+        If mouseAction = MSX_MOUSE_WHEEL_UP Then
+            dw.scrollY -= wheelStep
+        Else
+            dw.scrollY += wheelStep
+        End If
+        ClampScroll(dw)
+
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
         Exit Sub
     End If
 
@@ -4641,8 +6729,8 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
 
     If mouseAction <> MSX_MOUSE_DOWN Then Exit Sub
 
-    ' Clique na barra de menu (File)
-    If mouseY = 1 And mouseX >= 2 And mouseX <= 5 Then
+    ' Clique na barra de menu (Arquivo)
+    If mouseY = 1 And mouseX >= 2 And mouseX <= 8 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_FILE, MENU_VIEW_NONE, MENU_VIEW_FILE)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -4651,7 +6739,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     End If
 
     ' Clique na barra de menu (Configurar)
-    If mouseY = 1 And mouseX >= 8 And mouseX <= 16 Then
+    If mouseY = 1 And mouseX >= 11 And mouseX <= 20 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_CONFIG, MENU_VIEW_NONE, MENU_VIEW_CONFIG)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -4660,7 +6748,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     End If
 
     ' Clique na barra de menu (Compilar)
-    If mouseY = 1 And mouseX >= 20 And mouseX <= 27 Then
+    If mouseY = 1 And mouseX >= 23 And mouseX <= 30 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_COMPILE, MENU_VIEW_NONE, MENU_VIEW_COMPILE)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -4669,8 +6757,26 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     End If
 
     ' Clique na barra de menu (Ajuda)
-    If mouseY = 1 And mouseX >= 30 And mouseX <= 34 Then
+    If mouseY = 1 And mouseX >= 33 And mouseX <= 37 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_HELP, MENU_VIEW_NONE, MENU_VIEW_HELP)
+        dragMode = DRAG_NONE
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    ' Clique na barra de menu (Referencia)
+    If mouseY = 1 And mouseX >= 40 And mouseX <= 49 Then
+        menuOpen = IIf(menuOpen = MENU_VIEW_REFERENCE, MENU_VIEW_NONE, MENU_VIEW_REFERENCE)
+        dragMode = DRAG_NONE
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    ' Clique na barra de menu (Mamute)
+    If mouseY = 1 And mouseX >= 52 And mouseX <= 58 Then
+        menuOpen = IIf(menuOpen = MENU_VIEW_MAMUTE, MENU_VIEW_NONE, MENU_VIEW_MAMUTE)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
         renderMode = RENDER_FULL
@@ -4680,24 +6786,34 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     If menuOpen <> 0 Then
         Dim menuCmd As Integer = MENU_CMD_NONE
         If menuOpen = MENU_VIEW_FILE Then
-            If mouseX >= 3 And mouseX <= 25 Then
+            If mouseX >= 3 And mouseX <= 34 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_NEW
                     Case 4
-                        menuCmd = MENU_CMD_OPEN
+                        menuCmd = MENU_CMD_NEW_ASMSX
                     Case 5
-                        menuCmd = MENU_CMD_SAVE
+                        menuCmd = MENU_CMD_OPEN
                     Case 6
-                        menuCmd = MENU_CMD_SAVE_AS
+                        menuCmd = MENU_CMD_SAVE
                     Case 7
-                        menuCmd = MENU_CMD_CLOSE
+                        menuCmd = MENU_CMD_SAVE_AS
                     Case 8
+                        menuCmd = MENU_CMD_CLOSE
+                    Case 9
                         menuCmd = MENU_CMD_EXIT
+                    Case 11
+                        menuCmd = MENU_CMD_PROJECT_NEW
+                    Case 12
+                        menuCmd = MENU_CMD_PROJECT_OPEN
+                    Case 13
+                        menuCmd = MENU_CMD_PROJECT_SAVE
+                    Case 14
+                        menuCmd = MENU_CMD_PROJECT_CLOSE
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_CONFIG Then
-            If mouseX >= 9 And mouseX <= 40 Then
+            If mouseX >= 12 And mouseX <= 43 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_CFG_BADIG
@@ -4705,10 +6821,12 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                         menuCmd = MENU_CMD_CFG_MSX
                     Case 5
                         menuCmd = MENU_CMD_CFG_EMULATOR
+                    Case 6
+                        menuCmd = MENU_CMD_CFG_MAMUTE_MEM
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_COMPILE Then
-            If mouseX >= 21 And mouseX <= 62 Then
+            If mouseX >= 24 And mouseX <= 65 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_COMPILE_MSX
@@ -4723,7 +6841,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_HELP Then
-            If mouseX >= 31 And mouseX <= 64 Then
+            If mouseX >= 34 And mouseX <= 67 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_HELP_BASIC
@@ -4732,9 +6850,45 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                     Case 5
                         menuCmd = MENU_CMD_HELP_BATOKEN
                     Case 6
-                        menuCmd = MENU_CMD_HELP_MSX_DICT
+                        menuCmd = MENU_CMD_HELP_ASMSX
                     Case 7
+                        menuCmd = MENU_CMD_HELP_MSX_DICT
+                    Case 8
+                        menuCmd = MENU_CMD_HELP_EDITOR
+                    Case 9
                         menuCmd = MENU_CMD_HELP_THEME
+                End Select
+            End If
+        ElseIf menuOpen = MENU_VIEW_REFERENCE Then
+            If mouseX >= 40 And mouseX <= 81 Then
+                Select Case mouseY
+                    Case 3
+                        menuCmd = MENU_CMD_REF_REDBOOK
+                    Case 4
+                        menuCmd = MENU_CMD_REF_NESTOR
+                    Case 5
+                        menuCmd = MENU_CMD_REF_HANDBOOK
+                    Case 6
+                        menuCmd = MENU_CMD_REF_MANUALS
+                    Case 7
+                        menuCmd = MENU_CMD_REF_BIOSCALLS
+                    Case 8
+                        menuCmd = MENU_CMD_REF_HARDWARE
+                    Case 9
+                        menuCmd = MENU_CMD_REF_BIOSDOC
+                    Case 10
+                        menuCmd = MENU_CMD_REF_SEETRACKER
+                    Case 11
+                        menuCmd = MENU_CMD_REF_OPENMSX
+                    Case 12
+                        menuCmd = MENU_CMD_REF_MSXBAS2ROM
+                End Select
+            End If
+        ElseIf menuOpen = MENU_VIEW_MAMUTE Then
+            If mouseX >= 52 And mouseX <= 82 Then
+                Select Case mouseY
+                    Case 3
+                        menuCmd = MENU_CMD_MAMUTE_OPEN
                 End Select
             End If
         End If
@@ -5160,7 +7314,244 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
-    report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword
+    ' Smoke do dicionario de referencia novo (piloto: BIOS Documentacao, sem grupos/anchors).
+    OpenRefDictHelp("biosdoc")
+    Dim refIdxDoc As Integer = activeDoc
+    If Left(LCase(docs(refIdxDoc).filePath), 8) <> "refdict:" Then
+        report = "SMOKE HELP FAIL: refdict biosdoc nao abriu indice (" & docs(refIdxDoc).filePath & ")"
+        Return 0
+    End If
+
+    Dim refFirstLine As Integer = 0
+    For i = 1 To docs(refIdxDoc).lineCount
+        If Left(msxDictLineCommand(refIdxDoc, i), 7) = "RTOPIC:" Then
+            refFirstLine = i
+            Exit For
+        End If
+    Next i
+    If refFirstLine = 0 Then
+        report = "SMOKE HELP FAIL: refdict biosdoc sem topicos no indice"
+        Return 0
+    End If
+
+    docs(refIdxDoc).cursorY = refFirstLine
+    docs(refIdxDoc).cursorX = 1
+    Dim refOpenRc As Integer = OpenMsxDictFromActiveIndexCursor()
+    If refOpenRc = 0 Or Left(LCase(docs(activeDoc).filePath), 15) <> "refdict:biosdoc" Then
+        report = "SMOKE HELP FAIL: RTOPIC nao abriu topico do refdict biosdoc (" & docs(activeDoc).filePath & ", rc=" & Trim(Str(refOpenRc)) & ")"
+        Return 0
+    End If
+    If docs(activeDoc).lineCount < 2 Then
+        report = "SMOKE HELP FAIL: topico do refdict biosdoc veio vazio"
+        Return 0
+    End If
+    Dim biosdocLineCount As Integer = docs(activeDoc).lineCount
+
+    ' Smoke do dicionario com Begin/L/Commit/AddAnchor (Red Book) - conta topicos,
+    ' acha um com links e confere a secao "Ver tambem" resolvendo pelo menos 1 alvo.
+    OpenRefDictHelp("redbook")
+    Dim rbIdxDoc As Integer = activeDoc
+    Dim rbTopicCount As Integer = 0
+    Dim rbGroupHeaders As Integer = 0
+    For i = 1 To docs(rbIdxDoc).lineCount
+        If Left(msxDictLineCommand(rbIdxDoc, i), 7) = "RTOPIC:" Then rbTopicCount += 1
+        If Left(LTrim(docs(rbIdxDoc).lines(i)), 1) = "{" Then rbGroupHeaders += 1
+    Next i
+    If rbTopicCount < 900 Or rbTopicCount > 1000 Then
+        report = "SMOKE HELP FAIL: refdict redbook com contagem de topicos fora do esperado (" & Trim(Str(rbTopicCount)) & ")"
+        Return 0
+    End If
+    If rbGroupHeaders < 8 Then
+        report = "SMOKE HELP FAIL: refdict redbook com poucos grupos de capitulo (" & Trim(Str(rbGroupHeaders)) & ")"
+        Return 0
+    End If
+
+    Dim rbLinkedTopic As Integer = 0
+    Dim rbProbeMax As Integer = 40
+    If rbProbeMax > rbTopicCount Then rbProbeMax = rbTopicCount
+    Dim rbTopicIdx As Integer
+    For rbTopicIdx = 1 To rbProbeMax
+        LoadRefDictTopicIntoDocument(docs(rbIdxDoc), "redbook", rbTopicIdx)
+        Dim j As Integer
+        Dim hasSeeAlso As Integer = 0
+        For j = 1 To docs(rbIdxDoc).lineCount
+            If InStr(docs(rbIdxDoc).lines(j), "Ver tambem:") > 0 Then hasSeeAlso = -1 : Exit For
+        Next j
+        If hasSeeAlso <> 0 Then
+            rbLinkedTopic = rbTopicIdx
+            Exit For
+        End If
+    Next rbTopicIdx
+    If rbLinkedTopic = 0 Then
+        report = "SMOKE HELP FAIL: nenhum dos primeiros " & Trim(Str(rbProbeMax)) & " topicos do redbook produziu secao Ver tambem"
+        Return 0
+    End If
+
+    ' Smoke do dicionario com grupo filtrado (msxmanuals nao deve trazer o bloco
+    ' "MSX2 Technical Handbook" embutido no mesmo .pbi).
+    OpenRefDictHelp("msxmanuals")
+    Dim mmIdxDoc As Integer = activeDoc
+    Dim mmTopicCount As Integer = 0
+    For i = 1 To docs(mmIdxDoc).lineCount
+        If Left(msxDictLineCommand(mmIdxDoc, i), 7) = "RTOPIC:" Then mmTopicCount += 1
+        If InStr(docs(mmIdxDoc).lines(i), "MSX2 Technical Handbook") > 0 Then
+            report = "SMOKE HELP FAIL: refdict msxmanuals nao filtrou o grupo duplicado do Handbook"
+            Return 0
+        End If
+    Next i
+    If mmTopicCount < 8 Or mmTopicCount > 12 Then
+        report = "SMOKE HELP FAIL: refdict msxmanuals com contagem de topicos fora do esperado (" & Trim(Str(mmTopicCount)) & ")"
+        Return 0
+    End If
+
+    ' Smoke do parser estilo Add (openMSX, sem Begin/L/Commit).
+    OpenRefDictHelp("openmsx")
+    Dim omIdxDoc As Integer = activeDoc
+    Dim omTopicCount As Integer = 0
+    For i = 1 To docs(omIdxDoc).lineCount
+        If Left(msxDictLineCommand(omIdxDoc, i), 7) = "RTOPIC:" Then omTopicCount += 1
+    Next i
+    If omTopicCount < 50 Then
+        report = "SMOKE HELP FAIL: refdict openmsx com poucos topicos (" & Trim(Str(omTopicCount)) & ")"
+        Return 0
+    End If
+
+    ' Smoke rapido dos 3 refdicts restantes (mesmo parser ja provado acima).
+    OpenRefDictHelp("th2handbook")
+    Dim thTopicCount As Integer = 0
+    For i = 1 To docs(activeDoc).lineCount
+        If Left(msxDictLineCommand(activeDoc, i), 7) = "RTOPIC:" Then thTopicCount += 1
+    Next i
+    If thTopicCount < 1200 Or thTopicCount > 1400 Then
+        report = "SMOKE HELP FAIL: refdict th2handbook com contagem de topicos fora do esperado (" & Trim(Str(thTopicCount)) & ")"
+        Return 0
+    End If
+
+    OpenRefDictHelp("bioscalls")
+    Dim bcTopicCount As Integer = 0
+    For i = 1 To docs(activeDoc).lineCount
+        If Left(msxDictLineCommand(activeDoc, i), 7) = "RTOPIC:" Then bcTopicCount += 1
+    Next i
+    If bcTopicCount < 10 Then
+        report = "SMOKE HELP FAIL: refdict bioscalls com poucos topicos (" & Trim(Str(bcTopicCount)) & ")"
+        Return 0
+    End If
+
+    OpenRefDictHelp("hardware")
+    Dim hwTopicCount As Integer = 0
+    For i = 1 To docs(activeDoc).lineCount
+        If Left(msxDictLineCommand(activeDoc, i), 7) = "RTOPIC:" Then hwTopicCount += 1
+    Next i
+    If hwTopicCount < 10 Then
+        report = "SMOKE HELP FAIL: refdict hardware com poucos topicos (" & Trim(Str(hwTopicCount)) & ")"
+        Return 0
+    End If
+
+    ' Smoke dos 3 helps markdown simples (docs\help\*.md, rota dbhelp: ja existente).
+    OpenHelpDocument("Nestor Basic", "dbhelp:NESTORBASIC|docs\help\nestorbasic.md")
+    If docs(activeDoc).lineCount < 20 Then
+        report = "SMOKE HELP FAIL: docs\help\nestorbasic.md nao carregou (" & Trim(Str(docs(activeDoc).lineCount)) & " linhas)"
+        Return 0
+    End If
+
+    OpenHelpDocument("SEE Tracker", "dbhelp:SEETRACKER|docs\help\seetracker.md")
+    If docs(activeDoc).lineCount < 20 Then
+        report = "SMOKE HELP FAIL: docs\help\seetracker.md nao carregou (" & Trim(Str(docs(activeDoc).lineCount)) & " linhas)"
+        Return 0
+    End If
+
+    OpenHelpDocument("MSXBAS2ROM", "dbhelp:MSXBAS2ROM|docs\help\msxbas2rom.md")
+    If docs(activeDoc).lineCount < 20 Then
+        report = "SMOKE HELP FAIL: docs\help\msxbas2rom.md nao carregou (" & Trim(Str(docs(activeDoc).lineCount)) & " linhas)"
+        Return 0
+    End If
+
+    OpenHelpDocument("Editor", "dbhelp:EDITOR|docs\help\editor.md")
+    If docs(activeDoc).lineCount < 15 Then
+        report = "SMOKE HELP FAIL: docs\help\editor.md nao carregou (" & Trim(Str(docs(activeDoc).lineCount)) & " linhas)"
+        Return 0
+    End If
+
+    report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword & ", refdict biosdoc (" & Trim(Str(biosdocLineCount)) & " linhas), redbook (" & Trim(Str(rbTopicCount)) & " topicos/" & Trim(Str(rbGroupHeaders)) & " grupos, Ver tambem OK), msxmanuals (" & Trim(Str(mmTopicCount)) & " topicos, sem duplicata), openmsx (" & Trim(Str(omTopicCount)) & " topicos), nestorbasic/seetracker/msxbas2rom/editor OK, th2handbook (" & Trim(Str(thTopicCount)) & "), bioscalls (" & Trim(Str(bcTopicCount)) & "), hardware (" & Trim(Str(hwTopicCount)) & ")"
+    Return -1
+End Function
+
+Function EditorRunMamuteSmokeTest(ByRef report As String) As Integer
+    report = ""
+
+    ' Monta uma configuracao conhecida: Slot 0 sem sub-slots, ROM de 32KB nas
+    ' paginas 0-1 (BIOS/BASIC); Slot 2 com sub-slots ligados, RAM na 2.3.
+    Dim slot As Integer
+    Dim subIdx As Integer
+    Dim pageIdx As Integer
+    For slot = 0 To 3
+        MamuteMemSubOn(slot) = 0
+        For subIdx = 0 To 3
+            For pageIdx = 0 To 3
+                MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_NONE
+                MamuteMemGrid(slot, subIdx, pageIdx).romPath = ""
+                MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 0
+            Next pageIdx
+        Next subIdx
+    Next slot
+
+    MamuteMemGrid(0, 0, 0).cellType = MAMUTE_CELL_ROM
+    MamuteMemGrid(0, 0, 0).romPath = "bios.rom"
+    MamuteMemGrid(0, 0, 0).romOffset = 0
+    MamuteMemGrid(0, 0, 1).cellType = MAMUTE_CELL_ROM
+    MamuteMemGrid(0, 0, 1).romPath = "bios.rom"
+    MamuteMemGrid(0, 0, 1).romOffset = 16384
+
+    MamuteMemSubOn(2) = -1
+    MamuteMemGrid(2, 3, 2).cellType = MAMUTE_CELL_RAM
+
+    SaveMamuteMemConfig()
+
+    ' Suja a memoria antes de reler, pra garantir que o load nao esta so
+    ' "acertando por acidente" com o que ja estava la.
+    For slot = 0 To 3
+        MamuteMemSubOn(slot) = -1
+        For subIdx = 0 To 3
+            For pageIdx = 0 To 3
+                MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_ROM
+                MamuteMemGrid(slot, subIdx, pageIdx).romPath = "lixo"
+                MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 999
+            Next pageIdx
+        Next subIdx
+    Next slot
+
+    LoadMamuteMemConfig()
+
+    If MamuteMemSubOn(0) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: Slot 0 deveria estar sem sub-slots apos reler"
+        Return 0
+    End If
+    If MamuteMemGrid(0, 0, 0).cellType <> MAMUTE_CELL_ROM Or MamuteMemGrid(0, 0, 0).romPath <> "bios.rom" Or MamuteMemGrid(0, 0, 0).romOffset <> 0 Then
+        report = "SMOKE MAMUTE FAIL: Slot 0 pagina 0 nao voltou como ROM bios.rom offset 0"
+        Return 0
+    End If
+    If MamuteMemGrid(0, 0, 1).cellType <> MAMUTE_CELL_ROM Or MamuteMemGrid(0, 0, 1).romOffset <> 16384 Then
+        report = "SMOKE MAMUTE FAIL: Slot 0 pagina 1 nao voltou como ROM offset 16384"
+        Return 0
+    End If
+    If MamuteMemGrid(0, 0, 2).cellType <> MAMUTE_CELL_NONE Then
+        report = "SMOKE MAMUTE FAIL: Slot 0 pagina 2 deveria ter voltado vazia"
+        Return 0
+    End If
+    If MamuteMemSubOn(2) = 0 Then
+        report = "SMOKE MAMUTE FAIL: Slot 2 deveria estar com sub-slots ligados apos reler"
+        Return 0
+    End If
+    If MamuteMemGrid(2, 3, 2).cellType <> MAMUTE_CELL_RAM Then
+        report = "SMOKE MAMUTE FAIL: Slot 2 sub 3 pagina 2 deveria ter voltado como RAM"
+        Return 0
+    End If
+    If MamuteMemGrid(1, 0, 0).cellType <> MAMUTE_CELL_NONE Then
+        report = "SMOKE MAMUTE FAIL: Slot 1 (nunca tocado) deveria ter voltado vazio"
+        Return 0
+    End If
+
+    report = "SMOKE MAMUTE OK: round-trip do mapa de memoria (ROM 32KB no Slot 0, sub-slots + RAM no Slot 2.3)"
     Return -1
 End Function
 

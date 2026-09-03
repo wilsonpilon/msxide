@@ -1,0 +1,2 @@
+Const MSXIDE_VERSION_STR As String = "0.1.1"
+Const MSXIDE_RELEASE_CODENAME As String = "MAMUTE.SYS"
