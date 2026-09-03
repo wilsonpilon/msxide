@@ -116,10 +116,10 @@ Const MAMUTE_PROMPT = "MON> "
 Dim Shared mamuteInputBuf(1 To MAX_DOCS) As String
 Dim Shared mamuteInputCursor(1 To MAX_DOCS) As Integer
 
-Const MSX_DICT_DATA_PATH = "paleobasic\\src\\editor\\help\\MsxBasicDictData.pbi"
-Const MSX_DICT_DATA_PATH_2P = "paleobasic\\src\\editor\\help\\MsxBasic2PlusDictData.pbi"
-Const MSX_MANUAL_DATA_PATH = "paleobasic\\src\\editor\\help\\MsxBasicManualData.pbi"
-Const MSX_MANUAL_DATA_PATH_2P = "paleobasic\\src\\editor\\help\\MsxBasic2PlusManualData.pbi"
+Const MSX_DICT_DATA_PATH = "ajuda\\MsxBasicDictData.pbi"
+Const MSX_DICT_DATA_PATH_2P = "ajuda\\MsxBasic2PlusDictData.pbi"
+Const MSX_MANUAL_DATA_PATH = "ajuda\\MsxBasicManualData.pbi"
+Const MSX_MANUAL_DATA_PATH_2P = "ajuda\\MsxBasic2PlusManualData.pbi"
 
 ' Fontes dos dicionarios de referencia (Red Book, manuais, BIOS, etc.) -
 ' arquivos .pbi rastreados em ajuda\, parseados em runtime com o mesmo

@@ -1,4 +1,6 @@
 msxide.exe
+installer.exe
+distribute/
 msxide.db
 msxide.db-shm
 msxide.db-wal

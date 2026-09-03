@@ -42,6 +42,40 @@ Persistência: `msxide.db` (SQLite, carregado via `sqlite3.dll` em runtime, bind
 Chaves de configuração prefixadas com `cfg.` são automaticamente espelhadas para o projeto ativo
 (`.msxproj`) quando houver um aberto — ver seção 4.
 
+### 1.1. O que o msxIDE lê em runtime (manifesto de distribuição)
+
+Além de `msxide.exe` + `sqlite3.dll`, o programa lê estes caminhos relativos ao seu próprio diretório
+de trabalho — é exatamente isso que `build-distribute.ps1` empacota em `distribute/`:
+
+| Caminho | Usado por |
+|---|---|
+| `ajuda\*.pbi` | Menu `Referência` (Red Book, Handbook, BIOS, manuais, openMSX) e o dicionário MSX BASIC (`Ajuda -> MSX BASIC Dictionary`) — lidos diretamente em runtime, ver seção 3. |
+| `docs\help\*.md` | `Ajuda -> Editor`, e os itens `Referência` que são markdown simples (Nestor Basic, SEE Tracker, MSXBAS2ROM). |
+| `basic-dignified\documentation\*.md` | `Ajuda -> Basic Dignified/Dignified/BaToken`. |
+| `basic-dignified\support\*.ini`, `basic-dignified\msx\*.ini`, `basic-dignified\msx\msxbatoken\*.ini` | Valores padrão semeados no banco no primeiro uso (`SeedConfigFromIni`, `db.bas`) — opcional, se ausente o msxIDE usa os defaults embutidos no código. |
+| `basic-dignified\msx\openmsx_output.tcl` | Ponte de monitoramento de saída do openMSX (`Compilar + Executar`). |
+| `asMSX\asmsx.exe`, `asMSX\doc\asmsx.md` | Compilação de Z80 Assembly e `Ajuda -> asMSX`. |
+| `openmsx.exe` (externo, não empacotado) | `Compilar + Executar no emulador` — caminho configurado em `Configurar -> Emulador`. |
+
+Instalador nativo (`installer/installer.bas` → `installer.exe`, aceita `instalador.exe <pasta>` pra
+instalação silenciosa): copia `distribute\` pra pasta escolhida, cria atalho no Menu Iniciar e
+**tenta** registrar entrada de desinstalação em "Aplicativos e recursos" (`HKCU\...\Uninstall\msxIDE`,
+via um `.bat` gerado com `reg add` linha a linha — não um `.reg` importado por `regedit /s`, que se
+mostrou pouco confiável nos testes: às vezes criava a chave mas deixava os valores vazios, sem erro
+nenhum). Esse registro é **best-effort**: o instalador confere depois (`reg query .../v DisplayName`)
+se realmente colou e avisa com uma mensagem honesta em vez de fingir sucesso — em algumas máquinas
+(confirmado nesta sessão) um antivírus/EDR bloqueia silenciosamente (`Access is denied`) escrita nesse
+ramo específico do registro vinda de um `.exe` recém-compilado e não assinado. O core da instalação
+(copiar arquivos + criar atalho) nunca depende desse registro — se ele falhar, o msxIDE funciona
+normalmente do mesmo jeito, só não some da lista de "Aplicativos e recursos" (o `desinstalar.bat`
+dentro da pasta instalada continua removendo tudo manualmente).
+
+O script de desinstalação gerado **não** usa o truque clássico de "copiar pra `%TEMP%` e re-executar"
+pra apagar a própria pasta — esse padrão de auto-cópia+auto-deleção também foi flagrado pelo Windows
+Defender como suspeito durante os testes desta sessão (colocou o `.bat` em quarentena, bloqueando até
+leitura). Em vez disso, o script só troca o diretório de trabalho pra `%TEMP%` antes do `rmdir /s /q`
+— suficiente no NTFS, sem acionar heurística nenhuma.
+
 ---
 
 ## 2. Módulo: Mamute Assembler

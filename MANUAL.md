@@ -18,7 +18,7 @@ interativo (**Mamute Assembler**).
 | **PowerShell** | Rodar `build.ps1` e os scripts de teste | Já vem no Windows 10/11 |
 | **sqlite3.dll** | Rodar o msxIDE (persistência) | Baixado automaticamente pelo `build.ps1` na primeira execução |
 | **asMSX** (`asmsx.exe`) | Compilar Z80 Assembly | Já incluso em `asMSX/` |
-| **Basic Dignified Suite** | Compilar/tokenizar MSX BASIC | Já incluso em `basic-dignified/` |
+| **Basic Dignified Suite** | Documentação (`Ajuda`) e arquivos de configuração padrão — o pipeline de compilação MSX BASIC em si é nativo do msxIDE, não chama a suíte Python | Já incluso em `basic-dignified/` |
 | **openMSX** | Executar os programas compilados | Instalar à parte e apontar o caminho em `Configurar -> Emulador` |
 | **newt-freebasic** | Só se for compilar com `--Backend newt` | Já incluso em `newt-freebasic/` |
 
@@ -33,6 +33,23 @@ backend `newt` (mouse virtual por teclado — `F8` liga/desliga, setas/HJKL move
    compilação, se ela ainda não existir na pasta do projeto.
 4. (Opcional, pra rodar programas) instale o [openMSX](https://openmsx.org/) e configure o caminho em
    `Configurar -> Emulador` dentro do próprio msxIDE, ou na chave `cfg.emulator.windows.emulator_path`.
+
+### 3.1. Instalação simples (sem compilar nada)
+
+Quem só quer usar o msxIDE, sem mexer no código-fonte, tem dois caminhos prontos (gerados por
+`.\build-distribute.ps1` — ver seção 4.1):
+
+- **`distribute/`** — uma cópia portátil já pronta: só descompactar em qualquer pasta e rodar
+  `msxide.exe` de dentro dela. Sem instalação nenhuma.
+- **`installer.exe`** — instalador guiado: copia os arquivos pra
+  `%LOCALAPPDATA%\msxIDE` (ou outro caminho à sua escolha), cria um atalho no Menu Iniciar e registra
+  uma entrada em "Aplicativos e recursos" do Windows (com desinstalador). Rode `installer.exe` e
+  responda a pergunta de pasta de instalação (Enter aceita o padrão sugerido), ou passe o caminho
+  direto por linha de comando pra uma instalação silenciosa: `installer.exe C:\caminho\desejado`.
+
+Nenhum dos dois precisa de FreeBASIC, Python ou qualquer outra dependência instalada — `distribute/`
+já vem com tudo que o msxIDE lê em tempo de execução (ver manifesto completo em
+[SPEC.md](SPEC.md#1-visão-geral-da-arquitetura)).
 
 ## 4. Compilação
 
@@ -67,6 +84,19 @@ barra de status do editor.
 O build compila `src/main.bas src/editor.bas src/compiler.bas src/db.bas src/project.bas
 src/console.bas` (os backends `console_win.bas`/`console_newt.bas` entram via `#Include` dentro de
 `console.bas`) e gera `msxide.exe` na raiz do projeto.
+
+### 4.1. Gerando a distribuição (`distribute/` + `installer.exe`)
+
+Depois de um `.\build.ps1` normal (precisa de `msxide.exe`/`sqlite3.dll` já gerados):
+
+```powershell
+.\build-distribute.ps1
+```
+
+Isso recria `distribute/` do zero (cópia portátil com tudo que o msxIDE lê em runtime — `ajuda/`,
+`docs/`, `basic-dignified/`, `asMSX/`, já sem os arquivos que só servem pra compilar/desenvolver essas
+ferramentas) e compila `installer.exe` a partir de `installer/installer.bas`. Nenhum dos dois arquivos
+vai pro controle de versão (`.gitignore`) — são gerados a cada release.
 
 ## 5. Executando
 
