@@ -124,6 +124,32 @@ Dim Shared mamuteInputCursor(1 To MAX_DOCS) As Integer
 Dim Shared MamuteXWalking(1 To MAX_DOCS) As Integer
 Dim Shared MamuteXWalkIdx(1 To MAX_DOCS) As Integer
 
+' Estado do editor interativo de memoria do comando M (grade de 128 bytes,
+' 16 linhas x 8 colunas em hexa, adaptado pro terminal em modo texto a
+' partir de MamuteM_Open do paleobasic - la e' uma janela GUI com grade
+' clicavel, aqui e' o proprio corpo do documento do terminal em modo
+' especial) - um por documento, mesmo motivo/mesmo padrao de shift em
+' lockstep do bloco acima.
+Dim Shared mamuteMEditActive(1 To MAX_DOCS) As Integer
+Dim Shared mamuteMEditBaseAddr(1 To MAX_DOCS) As Integer
+Dim Shared mamuteMEditCursorRow(1 To MAX_DOCS) As Integer
+Dim Shared mamuteMEditCursorCol(1 To MAX_DOCS) As Integer
+Dim Shared mamuteMEditNibbleStage(1 To MAX_DOCS) As Integer
+Dim Shared mamuteMEditPendingHigh(1 To MAX_DOCS) As Integer
+
+' Estado de UI de uma janela EDIT (comando EDIT do MON>, editor de linhas do
+' programa-fonte Z80 estilo ZX-81) - um por documento (varias janelas EDIT
+' podem coexistir, todas olhando o MESMO MamuteAsmProgram() global, ver perto
+' de CompileDebugLogPath). mamuteInputBuf/mamuteInputCursor (ja declarados
+' acima) sao reaproveitados pro campo "ASM>" - um documento e' terminal MON>
+' OU janela EDIT, nunca os dois, sem colisao possivel.
+Dim Shared mamuteEditTopIndex(1 To MAX_DOCS) As Integer
+Dim Shared mamuteEditCursorIndex(1 To MAX_DOCS) As Integer
+Dim Shared mamuteEditPendingScroll(1 To MAX_DOCS) As Integer
+Dim Shared mamuteEditFilterMode(1 To MAX_DOCS) As Integer
+Dim Shared mamuteEditListingMode(1 To MAX_DOCS) As Integer
+Dim Shared mamuteEditStatusText(1 To MAX_DOCS) As String
+
 Const MSX_DICT_DATA_PATH = "ajuda\\MsxBasicDictData.pbi"
 Const MSX_DICT_DATA_PATH_2P = "ajuda\\MsxBasic2PlusDictData.pbi"
 Const MSX_MANUAL_DATA_PATH = "ajuda\\MsxBasicManualData.pbi"
@@ -231,6 +257,12 @@ Declare Sub EditorCreateAsmUntitled()
 Declare Sub EditorCreateMamuteTerm()
 Declare Sub ShowMamuteMemoryConfig()
 Declare Sub HandleMamuteTermKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+Declare Sub HandleMamuteMEditKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+Declare Sub DrawMamuteMEditGrid(ByVal docIndex As Integer)
+Declare Sub MamuteMEditOpen(ByVal docIndex As Integer, ByVal startAddr As Integer)
+Declare Sub HandleMamuteEditKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+Declare Sub DrawMamuteEditView(ByVal docIndex As Integer)
+Declare Sub EditorCreateMamuteEdit()
 Declare Function MamuteCurrentPromptText(ByVal docIndex As Integer) As String
 Declare Sub CompileDlgReset(ByRef titleText As String)
 Declare Sub CompileDlgLog(ByRef lineText As String)
@@ -336,6 +368,35 @@ Dim Shared MamuteLastSAddr As Integer
 Dim Shared MamuteLastSValid As Integer
 Dim Shared MamuteLastDisasmAddr As Integer
 Dim Shared MamuteLastDisasmValid As Integer
+
+' Programa-fonte Z80 do comando EDIT (editor de linhas estilo ZX-81) - um
+' array so, Global/Shared (nao por documento): varias janelas EDIT podem
+' estar abertas ao mesmo tempo, todas editando o MESMO programa (mesmo
+' espirito do "o programa fica na memoria do EMA" do manual original -
+' fechar a janela com QUIT nao apaga nada, so' NEW apaga). Mantido sempre
+' ordenado por lineNum (Mamute_AsmStoreLine insere/substitui na posicao
+' certa por deslocamento de array, ja que FreeBASIC nao tem lista ligada
+' nativa aqui) - MAX_LINES (2000) e' o mesmo teto usado por Document.lines().
+Const MAMUTE_ASM_MAX_LINES = MAX_LINES
+
+Type MamuteAsmLine
+    lineNum As Integer
+    rawText As String   ' corpo completo digitado (sem o NN) - o que SAVE grava e SEARCH/CHANGE varrem
+    labelText As String ' sem o ":" final; "" se nao tiver
+    instr As String     ' mnemonico/pseudo-instrucao, sempre maiusculo
+    operand As String   ' texto cru do operando (antes do ";")
+    comment As String   ' texto depois do ";", sem o ";"; "" se nao tiver
+End Type
+
+Dim Shared MamuteAsmProgram(1 To MAMUTE_ASM_MAX_LINES) As MamuteAsmLine
+Dim Shared MamuteAsmProgramCount As Integer
+
+' Resultados do ultimo SEARCH/LSEARCH bem-sucedido (comando EDIT) - indices
+' (1-based) dentro de MamuteAsmProgram(), em ordem crescente. Global, mesmo
+' espirito do array acima - consumido pelo "modo filtro" de qualquer janela
+' EDIT com mamuteEditFilterMode(doc)<>0.
+Dim Shared MamuteAsmSearchMatches(1 To MAMUTE_ASM_MAX_LINES) As Integer
+Dim Shared MamuteAsmSearchCount As Integer
 
 Private Function CompileDebugLogPath() As String
     Dim p As String = Environ("TEMP")
@@ -2230,6 +2291,7 @@ End Function
 Private Function GetClientTextHeight(ByRef d As Document) As Integer
     Dim h As Integer = d.winH - 3
     If d.isMamuteTerm <> 0 Then h -= 1
+    If d.isMamuteEdit <> 0 Then h -= 2
     If h < 1 Then h = 1
     Return h
 End Function
@@ -2454,6 +2516,18 @@ Private Sub BringDocumentToFront(ByVal docIndex As Integer)
     Dim tempInputCursor As Integer = mamuteInputCursor(docIndex)
     Dim tempXWalking As Integer = MamuteXWalking(docIndex)
     Dim tempXWalkIdx As Integer = MamuteXWalkIdx(docIndex)
+    Dim tempMEditActive As Integer = mamuteMEditActive(docIndex)
+    Dim tempMEditBaseAddr As Integer = mamuteMEditBaseAddr(docIndex)
+    Dim tempMEditCursorRow As Integer = mamuteMEditCursorRow(docIndex)
+    Dim tempMEditCursorCol As Integer = mamuteMEditCursorCol(docIndex)
+    Dim tempMEditNibbleStage As Integer = mamuteMEditNibbleStage(docIndex)
+    Dim tempMEditPendingHigh As Integer = mamuteMEditPendingHigh(docIndex)
+    Dim tempEditTopIndex As Integer = mamuteEditTopIndex(docIndex)
+    Dim tempEditCursorIndex As Integer = mamuteEditCursorIndex(docIndex)
+    Dim tempEditPendingScroll As Integer = mamuteEditPendingScroll(docIndex)
+    Dim tempEditFilterMode As Integer = mamuteEditFilterMode(docIndex)
+    Dim tempEditListingMode As Integer = mamuteEditListingMode(docIndex)
+    Dim tempEditStatusText As String = mamuteEditStatusText(docIndex)
     Dim i As Integer
     Dim j As Integer
 
@@ -2467,6 +2541,18 @@ Private Sub BringDocumentToFront(ByVal docIndex As Integer)
         mamuteInputCursor(i) = mamuteInputCursor(i + 1)
         MamuteXWalking(i) = MamuteXWalking(i + 1)
         MamuteXWalkIdx(i) = MamuteXWalkIdx(i + 1)
+        mamuteMEditActive(i) = mamuteMEditActive(i + 1)
+        mamuteMEditBaseAddr(i) = mamuteMEditBaseAddr(i + 1)
+        mamuteMEditCursorRow(i) = mamuteMEditCursorRow(i + 1)
+        mamuteMEditCursorCol(i) = mamuteMEditCursorCol(i + 1)
+        mamuteMEditNibbleStage(i) = mamuteMEditNibbleStage(i + 1)
+        mamuteMEditPendingHigh(i) = mamuteMEditPendingHigh(i + 1)
+        mamuteEditTopIndex(i) = mamuteEditTopIndex(i + 1)
+        mamuteEditCursorIndex(i) = mamuteEditCursorIndex(i + 1)
+        mamuteEditPendingScroll(i) = mamuteEditPendingScroll(i + 1)
+        mamuteEditFilterMode(i) = mamuteEditFilterMode(i + 1)
+        mamuteEditListingMode(i) = mamuteEditListingMode(i + 1)
+        mamuteEditStatusText(i) = mamuteEditStatusText(i + 1)
         For j = 1 To MAX_LINES
             msxDictLineCommand(i, j) = msxDictLineCommand(i + 1, j)
         Next j
@@ -2477,6 +2563,18 @@ Private Sub BringDocumentToFront(ByVal docIndex As Integer)
     mamuteInputCursor(docCount) = tempInputCursor
     MamuteXWalking(docCount) = tempXWalking
     MamuteXWalkIdx(docCount) = tempXWalkIdx
+    mamuteMEditActive(docCount) = tempMEditActive
+    mamuteMEditBaseAddr(docCount) = tempMEditBaseAddr
+    mamuteMEditCursorRow(docCount) = tempMEditCursorRow
+    mamuteMEditCursorCol(docCount) = tempMEditCursorCol
+    mamuteMEditNibbleStage(docCount) = tempMEditNibbleStage
+    mamuteMEditPendingHigh(docCount) = tempMEditPendingHigh
+    mamuteEditTopIndex(docCount) = tempEditTopIndex
+    mamuteEditCursorIndex(docCount) = tempEditCursorIndex
+    mamuteEditPendingScroll(docCount) = tempEditPendingScroll
+    mamuteEditFilterMode(docCount) = tempEditFilterMode
+    mamuteEditListingMode(docCount) = tempEditListingMode
+    mamuteEditStatusText(docCount) = tempEditStatusText
     For j = 1 To MAX_LINES
         msxDictLineCommand(docCount, j) = tempMap(j)
     Next j
@@ -2494,6 +2592,18 @@ Private Sub CloseDocument(ByVal docIndex As Integer)
         mamuteInputCursor(i) = mamuteInputCursor(i + 1)
         MamuteXWalking(i) = MamuteXWalking(i + 1)
         MamuteXWalkIdx(i) = MamuteXWalkIdx(i + 1)
+        mamuteMEditActive(i) = mamuteMEditActive(i + 1)
+        mamuteMEditBaseAddr(i) = mamuteMEditBaseAddr(i + 1)
+        mamuteMEditCursorRow(i) = mamuteMEditCursorRow(i + 1)
+        mamuteMEditCursorCol(i) = mamuteMEditCursorCol(i + 1)
+        mamuteMEditNibbleStage(i) = mamuteMEditNibbleStage(i + 1)
+        mamuteMEditPendingHigh(i) = mamuteMEditPendingHigh(i + 1)
+        mamuteEditTopIndex(i) = mamuteEditTopIndex(i + 1)
+        mamuteEditCursorIndex(i) = mamuteEditCursorIndex(i + 1)
+        mamuteEditPendingScroll(i) = mamuteEditPendingScroll(i + 1)
+        mamuteEditFilterMode(i) = mamuteEditFilterMode(i + 1)
+        mamuteEditListingMode(i) = mamuteEditListingMode(i + 1)
+        mamuteEditStatusText(i) = mamuteEditStatusText(i + 1)
         For j = 1 To MAX_LINES
             msxDictLineCommand(i, j) = msxDictLineCommand(i + 1, j)
         Next j
@@ -2503,6 +2613,18 @@ Private Sub CloseDocument(ByVal docIndex As Integer)
     mamuteInputCursor(docCount) = 0
     MamuteXWalking(docCount) = 0
     MamuteXWalkIdx(docCount) = 0
+    mamuteMEditActive(docCount) = 0
+    mamuteMEditBaseAddr(docCount) = 0
+    mamuteMEditCursorRow(docCount) = 0
+    mamuteMEditCursorCol(docCount) = 0
+    mamuteMEditNibbleStage(docCount) = 0
+    mamuteMEditPendingHigh(docCount) = 0
+    mamuteEditTopIndex(docCount) = 0
+    mamuteEditCursorIndex(docCount) = 0
+    mamuteEditPendingScroll(docCount) = 0
+    mamuteEditFilterMode(docCount) = 0
+    mamuteEditListingMode(docCount) = 0
+    mamuteEditStatusText(docCount) = ""
     For j = 1 To MAX_LINES
         msxDictLineCommand(docCount, j) = ""
     Next j
@@ -2547,10 +2669,32 @@ Private Sub PlaceActiveCursor()
 
     If d.isMamuteTerm <> 0 Then
         Dim clientW2 As Integer = GetClientTextWidth(d)
+
+        If mamuteMEditActive(activeDoc) <> 0 Then
+            Dim gridRow As Integer = mamuteMEditCursorRow(activeDoc)
+            Dim gridCol As Integer = mamuteMEditCursorCol(activeDoc)
+            Dim hexStartCol As Integer = 7 + gridCol * 3
+            If mamuteMEditNibbleStage(activeDoc) <> 0 Then hexStartCol += 1
+            If hexStartCol >= 1 And hexStartCol <= clientW2 Then
+                ConsoleSetCursor(d.winX + hexStartCol, d.winY + 1 + gridRow, 1)
+            End If
+            Exit Sub
+        End If
+
         Dim inputRow As Integer = d.winY + 1 + GetClientTextHeight(d)
         Dim cx2 As Integer = Len(MamuteCurrentPromptText(activeDoc)) + mamuteInputCursor(activeDoc) + 1
         If cx2 >= 1 And cx2 <= clientW2 Then
             ConsoleSetCursor(d.winX + cx2, inputRow, 1)
+        End If
+        Exit Sub
+    End If
+
+    If d.isMamuteEdit <> 0 Then
+        Dim clientW3 As Integer = GetClientTextWidth(d)
+        Dim inputRow2 As Integer = d.winY + 1 + GetClientTextHeight(d) + 1
+        Dim cx3 As Integer = Len("ASM> ") + mamuteInputCursor(activeDoc) + 1
+        If cx3 >= 1 And cx3 <= clientW3 Then
+            ConsoleSetCursor(d.winX + cx3, inputRow2, 1)
         End If
         Exit Sub
     End If
@@ -2570,6 +2714,7 @@ Private Sub InitBlankDocument(ByRef d As Document, ByRef docTitle As String)
     d.filePath = docTitle
     d.isHelp = 0
     d.isMamuteTerm = 0
+    d.isMamuteEdit = 0
     d.helpTitle = ""
     d.helpWrapWidth = 0
     d.lineCount = 1
@@ -2840,6 +2985,17 @@ End Sub
 
 Private Sub DrawDocumentClient(ByVal docIndex As Integer)
     Dim ByRef d As Document = docs(docIndex)
+
+    If d.isMamuteTerm <> 0 And mamuteMEditActive(docIndex) <> 0 Then
+        DrawMamuteMEditGrid(docIndex)
+        Exit Sub
+    End If
+
+    If d.isMamuteEdit <> 0 Then
+        DrawMamuteEditView(docIndex)
+        Exit Sub
+    End If
+
     If d.isHelp <> 0 And docIndex = activeDoc Then EnsureHelpRerender(d)
     Dim row As Integer
     Dim lineIndex As Integer
@@ -2863,6 +3019,17 @@ End Sub
 
 Private Sub DrawDocumentLine(ByVal docIndex As Integer, ByVal lineNumber As Integer)
     Dim ByRef d As Document = docs(docIndex)
+
+    If d.isMamuteTerm <> 0 And mamuteMEditActive(docIndex) <> 0 Then
+        DrawMamuteMEditGrid(docIndex)
+        Exit Sub
+    End If
+
+    If d.isMamuteEdit <> 0 Then
+        DrawMamuteEditView(docIndex)
+        Exit Sub
+    End If
+
     If d.isHelp <> 0 And docIndex = activeDoc Then EnsureHelpRerender(d)
     Dim clientH As Integer = GetClientTextHeight(d)
     Dim row As Integer = lineNumber - d.scrollY
@@ -3689,6 +3856,7 @@ Private Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As
     End If
 
     sourceText = StripCR(sourceText)
+    sourceText = ConsoleUtf8ToActiveCp(sourceText)
     Dim p As Integer = 1
     While p <= Len(sourceText)
         Dim br As Integer = InStr(p, sourceText, Chr(10))
@@ -5471,11 +5639,19 @@ End Sub
 ' pagina selecionada recebe o arquivo, a partir do offset 0 (ou 16384 pro
 ' caso BASIC "sozinho", ja que BASIC sem BIOS junto so faz sentido como a
 ' segunda metade de uma imagem maior).
+Declare Function Mamute_ResolveRomPath(ByRef rawPath As String) As String
+
 Private Sub AssignMamuteRomFile(ByVal slot As Integer, ByVal subIdx As Integer, ByVal pageIdx As Integer, ByVal cellType As Integer, ByRef romFile As String, ByRef resultMsg As String)
     Dim fileSize As LongInt = 0
-    If Dir(romFile) <> "" Then
+    ' Resolve via a mesma convencao de pasta "roms\" que Mamute_LoadPhysicalMemory
+    ' usa - sem isso, um caminho digitado como so "expert1.rom" (arquivo de
+    ' verdade em roms\expert1.rom) nunca era achado AQUI, entao fileSize ficava
+    ' 0 e o preenchimento automatico da pagina BASIC vizinha nunca disparava,
+    ' mesmo com o arquivo de 32KB existindo e sendo carregado certinho depois.
+    Dim resolvedForSize As String = Mamute_ResolveRomPath(romFile)
+    If Dir(resolvedForSize) <> "" Then
         Dim sizeFf As Integer = FreeFile
-        Open romFile For Binary Access Read As #sizeFf
+        Open resolvedForSize For Binary Access Read As #sizeFf
         fileSize = Lof(sizeFf)
         Close #sizeFf
     End If
@@ -5692,20 +5868,39 @@ Private Sub Mamute_LoadPhysicalMemory()
                 Dim isRomLike As Integer = 0
                 If cell.cellType = MAMUTE_CELL_ROM Or cell.cellType = MAMUTE_CELL_BIOS Or cell.cellType = MAMUTE_CELL_BASIC Or cell.cellType = MAMUTE_CELL_EXTBIOS Then isRomLike = -1
 
+                Dim effRomPath As String = cell.romPath
+                Dim effRomOffset As Integer = cell.romOffset
+
+                ' Pagina BASIC sem caminho proprio (config antiga/dessincronizada -
+                ' por exemplo a BIOS foi reconfigurada num momento em que o arquivo
+                ' nao existia/tinha nome errado, entao AssignMamuteRomFile nao
+                ' conseguiu medir o tamanho e nunca preencheu esta pagina vizinha):
+                ' cai pro arquivo da BIOS na pagina anterior do MESMO slot/sub-slot,
+                ' offset 16384 - e a segunda metade da mesma imagem de 32KB. So' usa
+                ' esse fallback quando esta pagina nao tem arquivo proprio - uma
+                ' pagina BASIC com caminho ja configurado continua usando o dela.
+                If cell.cellType = MAMUTE_CELL_BASIC And Len(Trim(effRomPath)) = 0 And pageIdx >= 1 Then
+                    Dim ByRef biosCell As MamuteMemCell = MamuteMemGrid(slot, subIdx, pageIdx - 1)
+                    If biosCell.cellType = MAMUTE_CELL_BIOS And Len(biosCell.romPath) > 0 Then
+                        effRomPath = biosCell.romPath
+                        effRomOffset = 16384
+                    End If
+                End If
+
                 Dim resolvedRomPath As String = ""
-                If isRomLike <> 0 And Len(cell.romPath) > 0 Then resolvedRomPath = Mamute_ResolveRomPath(cell.romPath)
+                If isRomLike <> 0 And Len(effRomPath) > 0 Then resolvedRomPath = Mamute_ResolveRomPath(effRomPath)
 
                 If isRomLike <> 0 And Len(resolvedRomPath) > 0 And Dir(resolvedRomPath) <> "" Then
                     Dim ff As Integer = FreeFile
                     Open resolvedRomPath For Binary Access Read As #ff
                     Dim fsize As LongInt = Lof(ff)
-                    If cell.romOffset < fsize Then
-                        Dim avail As LongInt = fsize - cell.romOffset
+                    If effRomOffset < fsize Then
+                        Dim avail As LongInt = fsize - effRomOffset
                         Dim toRead As Integer = 16384
                         If avail < toRead Then toRead = CInt(avail)
                         If toRead > 0 Then
                             Dim buf(0 To toRead - 1) As UByte
-                            Get #ff, cell.romOffset + 1, buf()
+                            Get #ff, effRomOffset + 1, buf()
                             For i = 0 To toRead - 1
                                 MamuteMem(slot, subIdx, pageIdx, i) = buf(i)
                             Next i
@@ -7235,13 +7430,18 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
     Dim ByRef d As Document = docs(activeDoc)
     renderHint = RENDER_CURSOR
 
-    If keyText = Chr(27) Then
-        running = 0
+    If d.isMamuteTerm <> 0 And mamuteMEditActive(activeDoc) <> 0 Then
+        HandleMamuteMEditKey(d, keyText, renderHint)
         Exit Sub
     End If
 
     If d.isMamuteTerm <> 0 Then
         HandleMamuteTermKey(d, keyText, renderHint)
+        Exit Sub
+    End If
+
+    If d.isMamuteEdit <> 0 Then
+        HandleMamuteEditKey(d, keyText, renderHint)
         Exit Sub
     End If
 
@@ -7478,6 +7678,3890 @@ Private Function MamutePageRowText(ByVal slot As Integer, ByVal subIdx As Intege
     Next c
     Return txt
 End Function
+
+' ===========================================================================
+' Motor de assembly Z80 (clone de paleobasic/src/editor/assemblers/Z80Asm.pbi,
+' escopo "Fase A" - absoluto, sem macros/condicionais/relocavel, ja que a
+' gramatica do EDIT do Mamute nunca produz ASEG/CSEG/PUBLIC/EXTRN/MACRO/IF).
+' Todo simbolo publico prefixado Z80_ (namespace por convencao, FreeBASIC nao
+' tem Module de verdade dentro de um unico arquivo).
+' ===========================================================================
+
+Const Z80_MAX_SYMBOLS = 4000
+Const Z80_MAX_SYMBOL_REFS = 8000
+Const Z80_MAX_LISTING_ROWS = 12000
+Const Z80_MAX_TOKENS = 96
+Const Z80_MAX_DATA_BYTES = 65536
+
+Const Z80OP_PLUS = 0
+Const Z80OP_MINUS = 1
+Const Z80OP_MUL = 2
+Const Z80OP_DIV = 3
+Const Z80OP_MOD = 4
+Const Z80OP_SHL = 5
+Const Z80OP_SHR = 6
+Const Z80OP_AND = 7
+Const Z80OP_OR = 8
+Const Z80OP_XOR = 9
+Const Z80OP_NOT = 10
+Const Z80OP_EQ = 11
+Const Z80OP_NE = 12
+Const Z80OP_LT = 13
+Const Z80OP_LE = 14
+Const Z80OP_GT = 15
+Const Z80OP_GE = 16
+Const Z80OP_HIGH = 17
+Const Z80OP_LOW = 18
+Const Z80OP_UNARYMINUS = 19
+Const Z80OP_UNARYPLUS = 20
+
+Const Z80TK_NUMBER = 0
+Const Z80TK_SYMBOL = 1
+Const Z80TK_CURLOC = 2
+Const Z80TK_OPERATOR = 3
+Const Z80TK_LPAREN = 4
+Const Z80TK_RPAREN = 5
+
+Const Z80OPND_NONE = 0
+Const Z80OPND_REG8 = 1
+Const Z80OPND_REG16 = 2
+Const Z80OPND_REGAF = 3
+Const Z80OPND_IX = 4
+Const Z80OPND_IY = 5
+Const Z80OPND_IXHALF = 6
+Const Z80OPND_IYHALF = 7
+Const Z80OPND_INDHL = 8
+Const Z80OPND_INDBC = 9
+Const Z80OPND_INDDE = 10
+Const Z80OPND_INDSP = 11
+Const Z80OPND_INDC = 12
+Const Z80OPND_INDIX = 13
+Const Z80OPND_INDIY = 14
+Const Z80OPND_COND = 15
+Const Z80OPND_IMM = 16
+Const Z80OPND_INDIMM = 17
+
+Type Z80ExprTok
+    tokKind As Integer
+    numValue As Integer
+    symName As String
+    opCode As Integer
+End Type
+
+Type Z80Symbol
+    symName As String
+    symValue As Integer
+    isKnown As Integer
+    isConstant As Integer
+End Type
+
+Type Z80SymbolRef
+    symName As String
+    refAddr As Integer
+End Type
+
+Type Z80ListingRow
+    sourceLine As Integer
+    hasAddr As Integer
+    isEqu As Integer
+    rowAddr As Integer
+    byteCount As Integer
+    byte0 As Integer
+    byte1 As Integer
+    byte2 As Integer
+    byte3 As Integer
+End Type
+
+Type Z80XrefRow
+    symName As String
+    hasValue As Integer
+    rowValue As Integer
+    addrCount As Integer
+    addr0 As Integer
+    addr1 As Integer
+    addr2 As Integer
+    addr3 As Integer
+End Type
+
+Type Z80Operand
+    opndKind As Integer
+    regCode As Integer
+    opndExpr As String
+    present As Integer
+End Type
+
+Type Z80ParsedLine
+    hasLabel As Integer
+    lbl As String
+    labelHasColon As Integer
+    hasOperator As Integer
+    oper As String
+    argsText As String
+    isBlank As Integer
+End Type
+
+
+Dim Shared Z80Symbols(1 To Z80_MAX_SYMBOLS) As Z80Symbol
+Dim Shared Z80SymbolCount As Integer
+Dim Shared Z80SymbolRefs(1 To Z80_MAX_SYMBOL_REFS) As Z80SymbolRef
+Dim Shared Z80SymbolRefCount As Integer
+Dim Shared Z80SymbolDefOrder(1 To Z80_MAX_SYMBOLS) As String
+Dim Shared Z80SymbolDefOrderCount As Integer
+Dim Shared Z80ListingRows(1 To Z80_MAX_LISTING_ROWS) As Z80ListingRow
+Dim Shared Z80ListingRowCount As Integer
+Dim Shared Z80XrefRows(1 To Z80_MAX_SYMBOLS) As Z80XrefRow
+Dim Shared Z80XrefRowCount As Integer
+
+Dim Shared Z80CurLoc As Integer
+Dim Shared Z80RealPos As Integer
+Dim Shared Z80PassNumber As Integer
+Dim Shared Z80LastEvalError As String
+Dim Shared Z80LastEvalUnknownSymbol As String
+Dim Shared Z80LastAsmError As String
+Dim Shared Z80AsmErrorLine As Integer
+Dim Shared Z80AsmErrorText As String
+' Buffer de 64KB reaproveitado por Z80_Assemble() - Shared/estatico em vez de
+' local, senao 3 buffers de 64KB (aqui + o outBytes() de quem chama +
+' Z80_EncodeDataDirective) empilhados na mesma pilha de chamadas estoura a
+' pilha padrao de 1MB (achado real testando este motor isolado).
+Dim Shared Z80AssembleMem(0 To 65535) As Integer
+Dim Shared Z80RunOneDataBytes(1 To Z80_MAX_DATA_BYTES) As Integer
+
+Dim Shared Z80MinAddrTouched As Integer
+Dim Shared Z80MaxAddrTouched As Integer
+Dim Shared Z80AnyByteWritten As Integer
+
+' ---------------------------------------------------------------------------
+' Vocabulario
+' ---------------------------------------------------------------------------
+
+Const Z80_MNEMONICS = "|ADC|ADD|AND|BIT|CALL|CCF|CP|CPD|CPDR|CPI|CPIR|CPL|DAA|DEC|DI|DJNZ|EI|" & _
+    "EXX|EX|HALT|IM|IN|INC|IND|INDR|INI|INIR|JP|JR|LD|LDD|LDDR|LDI|LDIR|NEG|NOP|" & _
+    "OR|OTDR|OTIR|OUT|OUTD|OUTI|POP|PUSH|RES|RET|RETI|RETN|RL|RLA|RLC|RLCA|" & _
+    "RLD|RR|RRA|RRC|RRCA|RRD|RST|SBC|SCF|SET|SLA|SLL|SRA|SRL|SUB|XOR|"
+
+Const Z80_PSEUDOOPS = "|ORG|DEFB|DEFW|DEFM|DEFS|EQU|END|"
+
+Private Function Z80_InPipeList(ByRef tokenUpper As String, ByRef pipeList As String) As Integer
+    If Len(tokenUpper) = 0 Then Return 0
+    If InStr(pipeList, "|" & tokenUpper & "|") > 0 Then Return -1
+    Return 0
+End Function
+
+Function Z80_IsMnemonic(ByRef word As String) As Integer
+    Return Z80_InPipeList(UCase(word), Z80_MNEMONICS)
+End Function
+
+Function Z80_IsAsmPseudoOp(ByRef word As String) As Integer
+    Return Z80_InPipeList(UCase(word), Z80_PSEUDOOPS)
+End Function
+
+' ---------------------------------------------------------------------------
+' Classificacao de caracteres
+' ---------------------------------------------------------------------------
+
+Private Function Z80ChIsDigit(ByRef c As String) As Integer
+    Return (c >= "0" And c <= "9")
+End Function
+
+Private Function Z80ChIsHexDigit(ByRef c As String) As Integer
+    Dim u As String = UCase(c)
+    Return (Z80ChIsDigit(c) Or (u >= "A" And u <= "F"))
+End Function
+
+Private Function Z80ChIsAlpha(ByRef c As String) As Integer
+    Dim u As String = UCase(c)
+    Return (u >= "A" And u <= "Z")
+End Function
+
+Private Function Z80ChIsIdentExtra(ByRef c As String) As Integer
+    Return (c = "$" Or c = "." Or c = "?" Or c = "@" Or c = "_")
+End Function
+
+Private Function Z80ChIsIdentStart(ByRef c As String) As Integer
+    Return (Z80ChIsAlpha(c) Or Z80ChIsIdentExtra(c))
+End Function
+
+Private Function Z80ChIsIdentCont(ByRef c As String) As Integer
+    Return (Z80ChIsAlpha(c) Or Z80ChIsDigit(c) Or Z80ChIsIdentExtra(c))
+End Function
+
+' ---------------------------------------------------------------------------
+' Parser de linha
+' ---------------------------------------------------------------------------
+
+Private Function Z80FindCommentStart(ByRef lineText As String) As Integer
+    Dim lineLen As Integer = Len(lineText)
+    Dim idx As Integer = 1
+    Dim c As String
+    Dim delimCh As String
+    While idx <= lineLen
+        c = Mid(lineText, idx, 1)
+        If c = ";" Then Return idx
+        If c = Chr(34) Or c = "'" Then
+            delimCh = c
+            idx += 1
+            While idx <= lineLen
+                c = Mid(lineText, idx, 1)
+                If c = delimCh Then
+                    If idx < lineLen And Mid(lineText, idx + 1, 1) = delimCh Then
+                        idx += 2
+                        Continue While
+                    End If
+                    idx += 1
+                    Exit While
+                End If
+                idx += 1
+            Wend
+            Continue While
+        End If
+        idx += 1
+    Wend
+    Return 0
+End Function
+
+Private Function Z80SkipWs(ByRef s As String, ByVal startPos As Integer) As Integer
+    Dim l As Integer = Len(s)
+    Dim idx As Integer = startPos
+    While idx <= l And (Mid(s, idx, 1) = " " Or Mid(s, idx, 1) = Chr(9))
+        idx += 1
+    Wend
+    Return idx
+End Function
+
+Private Function Z80RTrimWs(ByRef s As String) As String
+    Dim l As Integer = Len(s)
+    While l > 0 And (Mid(s, l, 1) = " " Or Mid(s, l, 1) = Chr(9))
+        l -= 1
+    Wend
+    Return Left(s, l)
+End Function
+
+Function Z80_ParseLine(ByRef rawLine As String, ByRef outLine As Z80ParsedLine) As Integer
+    Dim commentPos As Integer = Z80FindCommentStart(rawLine)
+    Dim codeText As String
+
+    outLine.hasLabel = 0 : outLine.lbl = ""
+    outLine.labelHasColon = 0
+    outLine.hasOperator = 0 : outLine.oper = ""
+    outLine.argsText = ""
+    outLine.isBlank = 0
+
+    If commentPos > 0 Then
+        codeText = Left(rawLine, commentPos - 1)
+    Else
+        codeText = rawLine
+    End If
+
+    Dim codeLen As Integer = Len(codeText)
+    Dim idx As Integer = Z80SkipWs(codeText, 1)
+
+    If idx > codeLen Then
+        outLine.isBlank = -1
+        Return -1
+    End If
+
+    If Z80ChIsIdentStart(Mid(codeText, idx, 1)) = 0 Then
+        outLine.argsText = Z80RTrimWs(Mid(codeText, idx))
+        Return -1
+    End If
+
+    Dim wStart As Integer = idx
+    idx += 1
+    While idx <= codeLen And Z80ChIsIdentCont(Mid(codeText, idx, 1))
+        idx += 1
+    Wend
+    Dim wStop As Integer = idx - 1
+    Dim word1 As String = UCase(Mid(codeText, wStart, wStop - wStart + 1))
+    Dim afterWord1 As Integer = idx
+
+    If idx <= codeLen And Mid(codeText, idx, 1) = ":" Then
+        outLine.hasLabel = -1
+        outLine.lbl = word1
+        outLine.labelHasColon = -1
+        idx += 1
+        If idx <= codeLen And Mid(codeText, idx, 1) = ":" Then idx += 1
+
+        idx = Z80SkipWs(codeText, idx)
+        If idx > codeLen Then Return -1
+        If Z80ChIsIdentStart(Mid(codeText, idx, 1)) = 0 Then
+            outLine.argsText = Z80RTrimWs(Mid(codeText, idx))
+            Return -1
+        End If
+
+        wStart = idx
+        idx += 1
+        While idx <= codeLen And Z80ChIsIdentCont(Mid(codeText, idx, 1))
+            idx += 1
+        Wend
+        wStop = idx - 1
+        outLine.hasOperator = -1
+        outLine.oper = UCase(Mid(codeText, wStart, wStop - wStart + 1))
+
+        idx = Z80SkipWs(codeText, idx)
+        If idx <= codeLen Then outLine.argsText = Z80RTrimWs(Mid(codeText, idx))
+        Return -1
+    End If
+
+    Dim p2 As Integer = Z80SkipWs(codeText, afterWord1)
+    If p2 <= codeLen And Z80ChIsIdentStart(Mid(codeText, p2, 1)) Then
+        Dim w2Start As Integer = p2
+        p2 += 1
+        While p2 <= codeLen And Z80ChIsIdentCont(Mid(codeText, p2, 1))
+            p2 += 1
+        Wend
+        Dim w2End As Integer = p2 - 1
+        Dim word2 As String = UCase(Mid(codeText, w2Start, w2End - w2Start + 1))
+
+        If word2 = "EQU" Or word2 = "DEFL" Or word2 = "ASET" Then
+            outLine.hasLabel = -1
+            outLine.lbl = word1
+            outLine.labelHasColon = 0
+            outLine.hasOperator = -1
+            outLine.oper = word2
+
+            p2 = Z80SkipWs(codeText, p2)
+            If p2 <= codeLen Then outLine.argsText = Z80RTrimWs(Mid(codeText, p2))
+            Return -1
+        End If
+    End If
+
+    outLine.hasOperator = -1
+    outLine.oper = word1
+    idx = Z80SkipWs(codeText, afterWord1)
+    If idx <= codeLen Then outLine.argsText = Z80RTrimWs(Mid(codeText, idx))
+
+    Return -1
+End Function
+
+' ---------------------------------------------------------------------------
+' Precedencia / operadores por extenso
+' ---------------------------------------------------------------------------
+
+Private Function Z80OpPrecedence(ByVal op As Integer) As Integer
+    Select Case op
+        Case Z80OP_HIGH, Z80OP_LOW : Return 1
+        Case Z80OP_MUL, Z80OP_DIV, Z80OP_MOD, Z80OP_SHL, Z80OP_SHR : Return 2
+        Case Z80OP_UNARYMINUS, Z80OP_UNARYPLUS : Return 3
+        Case Z80OP_PLUS, Z80OP_MINUS : Return 4
+        Case Z80OP_EQ, Z80OP_NE, Z80OP_LT, Z80OP_LE, Z80OP_GT, Z80OP_GE : Return 5
+        Case Z80OP_NOT : Return 6
+        Case Z80OP_AND : Return 7
+        Case Z80OP_OR, Z80OP_XOR : Return 8
+    End Select
+    Return 99
+End Function
+
+Private Function Z80OpIsUnary(ByVal op As Integer) As Integer
+    Return (op = Z80OP_NOT Or op = Z80OP_HIGH Or op = Z80OP_LOW Or op = Z80OP_UNARYMINUS Or op = Z80OP_UNARYPLUS)
+End Function
+
+Private Function Z80WordToOpCode(ByRef word As String) As Integer
+    Select Case UCase(word)
+        Case "AND" : Return Z80OP_AND
+        Case "OR" : Return Z80OP_OR
+        Case "XOR" : Return Z80OP_XOR
+        Case "NOT" : Return Z80OP_NOT
+        Case "MOD" : Return Z80OP_MOD
+        Case "SHR" : Return Z80OP_SHR
+        Case "SHL" : Return Z80OP_SHL
+        Case "HIGH" : Return Z80OP_HIGH
+        Case "LOW" : Return Z80OP_LOW
+        Case "EQ" : Return Z80OP_EQ
+        Case "NE", "NEQ" : Return Z80OP_NE
+        Case "LT" : Return Z80OP_LT
+        Case "LE", "LTE" : Return Z80OP_LE
+        Case "GT" : Return Z80OP_GT
+        Case "GE", "GTE" : Return Z80OP_GE
+    End Select
+    Return -1
+End Function
+
+' ---------------------------------------------------------------------------
+' Tokenizador de expressao
+' ---------------------------------------------------------------------------
+
+Private Function Z80CountAllHex(ByRef s As String) As Integer
+    Dim idx As Integer
+    For idx = 1 To Len(s)
+        If Z80ChIsHexDigit(Mid(s, idx, 1)) = 0 Then Return 0
+    Next idx
+    Return -1
+End Function
+
+Private Function Z80CountAllOctal(ByRef s As String) As Integer
+    Dim idx As Integer
+    Dim c As String
+    For idx = 1 To Len(s)
+        c = Mid(s, idx, 1)
+        If c < "0" Or c > "7" Then Return 0
+    Next idx
+    Return -1
+End Function
+
+Private Function Z80CountAllDecimal(ByRef s As String) As Integer
+    Dim idx As Integer
+    For idx = 1 To Len(s)
+        If Z80ChIsDigit(Mid(s, idx, 1)) = 0 Then Return 0
+    Next idx
+    Return -1
+End Function
+
+Private Function Z80CountAllBinary(ByRef s As String) As Integer
+    Dim idx As Integer
+    Dim c As String
+    For idx = 1 To Len(s)
+        c = Mid(s, idx, 1)
+        If c <> "0" And c <> "1" Then Return 0
+    Next idx
+    Return -1
+End Function
+
+Private Function Z80HexFromOctalDigits(ByRef s As String) As String
+    Dim idx As Integer
+    Dim v As LongInt = 0
+    For idx = 1 To Len(s)
+        v = (v * 8) + (Asc(Mid(s, idx, 1)) - Asc("0"))
+    Next idx
+    Return Hex(v)
+End Function
+
+Function Z80_TokenizeExpr(ByRef text As String, toks() As Z80ExprTok, ByRef tokCount As Integer) As Integer
+    Dim textLen As Integer = Len(text)
+    Dim idx As Integer = 1
+    Dim c As String
+    Dim lastWasOperand As Integer = 0
+
+    tokCount = 0
+    Z80LastEvalError = ""
+
+    While idx <= textLen
+        c = Mid(text, idx, 1)
+
+        If c = " " Or c = Chr(9) Then
+            idx += 1
+            Continue While
+        End If
+
+        If tokCount >= Z80_MAX_TOKENS Then
+            Z80LastEvalError = "Expressao com termos demais"
+            Return 0
+        End If
+
+        If c = "(" Then
+            tokCount += 1 : toks(tokCount).tokKind = Z80TK_LPAREN
+            idx += 1 : lastWasOperand = 0
+            Continue While
+        End If
+
+        If c = ")" Then
+            tokCount += 1 : toks(tokCount).tokKind = Z80TK_RPAREN
+            idx += 1 : lastWasOperand = -1
+            Continue While
+        End If
+
+        If c = "$" And (idx = textLen Or Z80ChIsIdentCont(Mid(text, idx + 1, 1)) = 0) Then
+            tokCount += 1 : toks(tokCount).tokKind = Z80TK_CURLOC
+            idx += 1 : lastWasOperand = -1
+            Continue While
+        End If
+
+        If c = "#" And idx < textLen And Z80ChIsHexDigit(Mid(text, idx + 1, 1)) Then
+            Dim hStart As Integer = idx + 1
+            idx += 1
+            While idx <= textLen And Z80ChIsHexDigit(Mid(text, idx, 1))
+                idx += 1
+            Wend
+            tokCount += 1 : toks(tokCount).tokKind = Z80TK_NUMBER
+            toks(tokCount).numValue = ValInt("&H" & Mid(text, hStart, idx - hStart))
+            lastWasOperand = -1
+            Continue While
+        End If
+
+        If c = "%" And idx < textLen And (Mid(text, idx + 1, 1) = "0" Or Mid(text, idx + 1, 1) = "1") Then
+            Dim bStart As Integer = idx + 1
+            idx += 1
+            While idx <= textLen And (Mid(text, idx, 1) = "0" Or Mid(text, idx, 1) = "1")
+                idx += 1
+            Wend
+            tokCount += 1 : toks(tokCount).tokKind = Z80TK_NUMBER
+            toks(tokCount).numValue = ValInt("&B" & Mid(text, bStart, idx - bStart))
+            lastWasOperand = -1
+            Continue While
+        End If
+
+        If c = Chr(34) Or c = "'" Then
+            Dim delimCh As String = c
+            Dim bodyText As String = ""
+            Dim c2 As String
+            idx += 1
+            While idx <= textLen
+                c2 = Mid(text, idx, 1)
+                If c2 = delimCh Then
+                    If idx < textLen And Mid(text, idx + 1, 1) = delimCh Then
+                        bodyText &= delimCh : idx += 2 : Continue While
+                    End If
+                    idx += 1
+                    Exit While
+                End If
+                If c2 = Chr(13) Or c2 = Chr(10) Then Exit While
+                bodyText &= c2 : idx += 1
+            Wend
+            Select Case Len(bodyText)
+                Case 0
+                    tokCount += 1 : toks(tokCount).tokKind = Z80TK_NUMBER : toks(tokCount).numValue = 0
+                Case 1
+                    tokCount += 1 : toks(tokCount).tokKind = Z80TK_NUMBER : toks(tokCount).numValue = Asc(bodyText)
+                Case 2
+                    tokCount += 1 : toks(tokCount).tokKind = Z80TK_NUMBER
+                    toks(tokCount).numValue = ((Asc(Left(bodyText, 1)) And 255) Shl 8) Or (Asc(Mid(bodyText, 2, 1)) And 255)
+                Case Else
+                    Z80LastEvalError = "String com mais de 2 caracteres nao pode ser usada como valor numerico: " & bodyText
+                    Return 0
+            End Select
+            lastWasOperand = -1
+            Continue While
+        End If
+
+        If Z80ChIsDigit(c) Then
+            Dim numStart As Integer = idx
+            If c = "0" And idx < textLen And (UCase(Mid(text, idx + 1, 1)) = "X" Or UCase(Mid(text, idx + 1, 1)) = "B") Then
+                Dim prefixIsHex As Integer = (UCase(Mid(text, idx + 1, 1)) = "X")
+                Dim pStart As Integer = idx + 2
+                idx += 2
+                If prefixIsHex Then
+                    While idx <= textLen And Z80ChIsHexDigit(Mid(text, idx, 1))
+                        idx += 1
+                    Wend
+                Else
+                    While idx <= textLen And (Mid(text, idx, 1) = "0" Or Mid(text, idx, 1) = "1")
+                        idx += 1
+                    Wend
+                End If
+                If idx > pStart Then
+                    tokCount += 1 : toks(tokCount).tokKind = Z80TK_NUMBER
+                    If prefixIsHex Then
+                        toks(tokCount).numValue = ValInt("&H" & Mid(text, pStart, idx - pStart))
+                    Else
+                        toks(tokCount).numValue = ValInt("&B" & Mid(text, pStart, idx - pStart))
+                    End If
+                    lastWasOperand = -1
+                    Continue While
+                Else
+                    idx = numStart
+                End If
+            End If
+
+            While idx <= textLen And (Z80ChIsDigit(Mid(text, idx, 1)) Or Z80ChIsAlpha(Mid(text, idx, 1)))
+                idx += 1
+            Wend
+            Dim rawTok As String = UCase(Mid(text, numStart, idx - numStart))
+            Dim lastDigitCh As String = Right(rawTok, 1)
+            Dim digitsPart As String
+            Dim valueOut As Integer
+            Dim okFlag As Integer = 0
+
+            If lastDigitCh = "H" Then
+                digitsPart = Left(rawTok, Len(rawTok) - 1)
+                If digitsPart <> "" And Z80CountAllHex(digitsPart) <> 0 Then
+                    valueOut = ValInt("&H" & digitsPart) : okFlag = -1
+                End If
+            ElseIf lastDigitCh = "O" Or lastDigitCh = "Q" Then
+                digitsPart = Left(rawTok, Len(rawTok) - 1)
+                If digitsPart <> "" And Z80CountAllOctal(digitsPart) <> 0 Then
+                    valueOut = ValInt("&H" & Z80HexFromOctalDigits(digitsPart)) : okFlag = -1
+                End If
+            ElseIf lastDigitCh = "D" Or lastDigitCh = "M" Then
+                digitsPart = Left(rawTok, Len(rawTok) - 1)
+                If digitsPart <> "" And Z80CountAllDecimal(digitsPart) <> 0 Then
+                    valueOut = ValInt(digitsPart) : okFlag = -1
+                End If
+            ElseIf lastDigitCh = "B" Or lastDigitCh = "I" Then
+                digitsPart = Left(rawTok, Len(rawTok) - 1)
+                If digitsPart <> "" And Z80CountAllBinary(digitsPart) <> 0 Then
+                    valueOut = ValInt("&B" & digitsPart) : okFlag = -1
+                End If
+            End If
+
+            If okFlag = 0 Then
+                If Z80CountAllDecimal(rawTok) <> 0 Then
+                    valueOut = ValInt(rawTok) : okFlag = -1
+                End If
+            End If
+
+            If okFlag = 0 Then
+                Z80LastEvalError = "Numero invalido: " & rawTok
+                Return 0
+            End If
+
+            tokCount += 1 : toks(tokCount).tokKind = Z80TK_NUMBER : toks(tokCount).numValue = valueOut
+            lastWasOperand = -1
+            Continue While
+        End If
+
+        If Z80ChIsIdentStart(c) Then
+            Dim identStart As Integer = idx
+            idx += 1
+            While idx <= textLen And Z80ChIsIdentCont(Mid(text, idx, 1))
+                idx += 1
+            Wend
+            Dim word As String = Mid(text, identStart, idx - identStart)
+
+            Dim opCodeFound As Integer = Z80WordToOpCode(word)
+            If opCodeFound >= 0 Then
+                tokCount += 1 : toks(tokCount).tokKind = Z80TK_OPERATOR : toks(tokCount).opCode = opCodeFound
+                lastWasOperand = 0
+                Continue While
+            End If
+
+            If idx + 1 <= textLen And Mid(text, idx, 2) = "##" Then idx += 2
+
+            tokCount += 1 : toks(tokCount).tokKind = Z80TK_SYMBOL : toks(tokCount).symName = UCase(word)
+            lastWasOperand = -1
+            Continue While
+        End If
+
+        Select Case c
+            Case "+"
+                tokCount += 1 : toks(tokCount).tokKind = Z80TK_OPERATOR
+                If lastWasOperand <> 0 Then toks(tokCount).opCode = Z80OP_PLUS Else toks(tokCount).opCode = Z80OP_UNARYPLUS
+                idx += 1 : lastWasOperand = 0
+                Continue While
+            Case "-"
+                tokCount += 1 : toks(tokCount).tokKind = Z80TK_OPERATOR
+                If lastWasOperand <> 0 Then toks(tokCount).opCode = Z80OP_MINUS Else toks(tokCount).opCode = Z80OP_UNARYMINUS
+                idx += 1 : lastWasOperand = 0
+                Continue While
+            Case "*"
+                tokCount += 1 : toks(tokCount).tokKind = Z80TK_OPERATOR : toks(tokCount).opCode = Z80OP_MUL
+                idx += 1 : lastWasOperand = 0
+                Continue While
+            Case "/"
+                tokCount += 1 : toks(tokCount).tokKind = Z80TK_OPERATOR : toks(tokCount).opCode = Z80OP_DIV
+                idx += 1 : lastWasOperand = 0
+                Continue While
+        End Select
+
+        Z80LastEvalError = "Caractere inesperado em expressao: '" & c & "'"
+        Return 0
+    Wend
+
+    Return -1
+End Function
+
+' ---------------------------------------------------------------------------
+' Shunting-yard: infixo -> posfixo
+' ---------------------------------------------------------------------------
+
+Function Z80_ToPostfixExpr(inToks() As Z80ExprTok, ByVal inCount As Integer, outToks() As Z80ExprTok, ByRef outCount As Integer) As Integer
+    Dim opStack(1 To Z80_MAX_TOKENS) As Z80ExprTok
+    Dim opStackCount As Integer = 0
+    outCount = 0
+
+    Dim i As Integer
+    For i = 1 To inCount
+        Select Case inToks(i).tokKind
+            Case Z80TK_NUMBER, Z80TK_SYMBOL, Z80TK_CURLOC
+                outCount += 1 : outToks(outCount) = inToks(i)
+
+            Case Z80TK_LPAREN
+                opStackCount += 1 : opStack(opStackCount) = inToks(i)
+
+            Case Z80TK_RPAREN
+                Dim foundOpen As Integer = 0
+                While opStackCount > 0
+                    If opStack(opStackCount).tokKind = Z80TK_LPAREN Then
+                        foundOpen = -1
+                        opStackCount -= 1
+                        Exit While
+                    End If
+                    outCount += 1 : outToks(outCount) = opStack(opStackCount)
+                    opStackCount -= 1
+                Wend
+                If foundOpen = 0 Then
+                    Z80LastEvalError = "Parenteses desbalanceados: falta '('"
+                    Return 0
+                End If
+
+            Case Z80TK_OPERATOR
+                If Z80OpIsUnary(inToks(i).opCode) <> 0 Then
+                    opStackCount += 1 : opStack(opStackCount) = inToks(i)
+                Else
+                    Dim newPrec As Integer = Z80OpPrecedence(inToks(i).opCode)
+                    While opStackCount > 0
+                        If opStack(opStackCount).tokKind = Z80TK_LPAREN Then Exit While
+                        Dim stackPrec As Integer = Z80OpPrecedence(opStack(opStackCount).opCode)
+                        If stackPrec > newPrec And Z80OpIsUnary(opStack(opStackCount).opCode) = 0 Then Exit While
+                        outCount += 1 : outToks(outCount) = opStack(opStackCount)
+                        opStackCount -= 1
+                    Wend
+                    opStackCount += 1 : opStack(opStackCount) = inToks(i)
+                End If
+        End Select
+    Next i
+
+    While opStackCount > 0
+        If opStack(opStackCount).tokKind = Z80TK_LPAREN Then
+            Z80LastEvalError = "Parenteses desbalanceados: sobrou '('"
+            Return 0
+        End If
+        outCount += 1 : outToks(outCount) = opStack(opStackCount)
+        opStackCount -= 1
+    Wend
+
+    Return -1
+End Function
+
+' ---------------------------------------------------------------------------
+' Tabela de simbolos
+' ---------------------------------------------------------------------------
+
+Private Function Z80FindSymbol(ByRef symbolName As String) As Integer
+    Dim key As String = UCase(symbolName)
+    Dim i As Integer
+    For i = 1 To Z80SymbolCount
+        If Z80Symbols(i).symName = key Then Return i
+    Next i
+    Return 0
+End Function
+
+Private Function Z80FindOrAddSymbol(ByRef symbolName As String) As Integer
+    Dim idx As Integer = Z80FindSymbol(symbolName)
+    If idx > 0 Then Return idx
+    If Z80SymbolCount >= Z80_MAX_SYMBOLS Then Return 0
+    Z80SymbolCount += 1
+    Z80Symbols(Z80SymbolCount).symName = UCase(symbolName)
+    Z80Symbols(Z80SymbolCount).symValue = 0
+    Z80Symbols(Z80SymbolCount).isKnown = 0
+    Z80Symbols(Z80SymbolCount).isConstant = 0
+    Return Z80SymbolCount
+End Function
+
+Sub Z80_ResetState()
+    Z80SymbolCount = 0
+    Z80CurLoc = 0
+    Z80PassNumber = 1
+    Z80LastEvalError = ""
+    Z80LastEvalUnknownSymbol = ""
+End Sub
+
+Function Z80_DefineSymbol(ByRef symbolName As String, ByVal value As Integer, ByVal isConstant As Integer) As Integer
+    Dim key As String = UCase(symbolName)
+    Dim idx As Integer = Z80FindSymbol(key)
+
+    If idx > 0 And Z80Symbols(idx).isKnown <> 0 And Z80Symbols(idx).isConstant <> 0 Then
+        If Z80Symbols(idx).symValue = value Then Return -1
+        Z80LastEvalError = "Simbolo ja definido (EQU nao pode ser redefinido): " & key
+        Return 0
+    End If
+
+    Dim wasKnownBefore As Integer = (idx > 0 And Z80Symbols(idx).isKnown <> 0)
+    If idx = 0 Then idx = Z80FindOrAddSymbol(key)
+    If idx = 0 Then
+        Z80LastEvalError = "Tabela de simbolos cheia"
+        Return 0
+    End If
+
+    Z80Symbols(idx).symValue = value
+    Z80Symbols(idx).isKnown = -1
+    Z80Symbols(idx).isConstant = isConstant
+
+    If wasKnownBefore = 0 Then
+        If Z80SymbolDefOrderCount < Z80_MAX_SYMBOLS Then
+            Z80SymbolDefOrderCount += 1
+            Z80SymbolDefOrder(Z80SymbolDefOrderCount) = key
+        End If
+    End If
+
+    Return -1
+End Function
+
+Function Z80_IsSymbolKnown(ByRef symbolName As String) As Integer
+    Dim idx As Integer = Z80FindSymbol(symbolName)
+    If idx > 0 Then Return Z80Symbols(idx).isKnown
+    Return 0
+End Function
+
+Function Z80_GetSymbolValue(ByRef symbolName As String) As Integer
+    Dim idx As Integer = Z80FindSymbol(symbolName)
+    If idx > 0 Then Return Z80Symbols(idx).symValue
+    Return 0
+End Function
+
+' ---------------------------------------------------------------------------
+' Avaliacao da lista posfixa
+' ---------------------------------------------------------------------------
+
+Function Z80_EvalPostfixExpr(toks() As Z80ExprTok, ByVal tokCount As Integer, ByRef outValue As Integer) As Integer
+    Dim stackVal(1 To Z80_MAX_TOKENS) As Integer
+    Dim stackCount As Integer = 0
+    Dim i As Integer
+
+    For i = 1 To tokCount
+        Select Case toks(i).tokKind
+            Case Z80TK_NUMBER
+                stackCount += 1 : stackVal(stackCount) = toks(i).numValue
+
+            Case Z80TK_CURLOC
+                stackCount += 1 : stackVal(stackCount) = Z80CurLoc
+
+            Case Z80TK_SYMBOL
+                Dim symIdx As Integer = Z80FindOrAddSymbol(toks(i).symName)
+                If symIdx = 0 Or Z80Symbols(symIdx).isKnown = 0 Then
+                    Z80LastEvalUnknownSymbol = toks(i).symName
+                    Return 0
+                End If
+                If Z80PassNumber = 2 Then
+                    If Z80SymbolRefCount < Z80_MAX_SYMBOL_REFS Then
+                        Z80SymbolRefCount += 1
+                        Z80SymbolRefs(Z80SymbolRefCount).symName = toks(i).symName
+                        Z80SymbolRefs(Z80SymbolRefCount).refAddr = Z80CurLoc
+                    End If
+                End If
+                stackCount += 1 : stackVal(stackCount) = Z80Symbols(symIdx).symValue
+
+            Case Z80TK_OPERATOR
+                If Z80OpIsUnary(toks(i).opCode) <> 0 Then
+                    If stackCount < 1 Then
+                        Z80LastEvalError = "Expressao mal formada (operador unario sem operando)"
+                        Return 0
+                    End If
+                    Dim av As Integer = stackVal(stackCount)
+                    Dim rv As Integer
+                    Select Case toks(i).opCode
+                        Case Z80OP_UNARYMINUS : rv = (-av) And &HFFFF
+                        Case Z80OP_UNARYPLUS : rv = av
+                        Case Z80OP_NOT : rv = (Not av) And &HFFFF
+                        Case Z80OP_HIGH : rv = (av Shr 8) And &HFF
+                        Case Z80OP_LOW : rv = av And &HFF
+                    End Select
+                    stackVal(stackCount) = rv
+                Else
+                    If stackCount < 2 Then
+                        Z80LastEvalError = "Expressao mal formada (operador binario sem dois operandos)"
+                        Return 0
+                    End If
+                    Dim bv As Integer = stackVal(stackCount) : stackCount -= 1
+                    Dim av2 As Integer = stackVal(stackCount)
+                    Dim rv2 As Integer
+                    Select Case toks(i).opCode
+                        Case Z80OP_PLUS : rv2 = (av2 + bv) And &HFFFF
+                        Case Z80OP_MINUS : rv2 = (av2 - bv) And &HFFFF
+                        Case Z80OP_MUL : rv2 = (av2 * bv) And &HFFFF
+                        Case Z80OP_DIV
+                            If bv = 0 Then Z80LastEvalError = "Divisao por zero" : Return 0
+                            rv2 = (av2 \ bv) And &HFFFF
+                        Case Z80OP_MOD
+                            If bv = 0 Then Z80LastEvalError = "Divisao por zero (MOD)" : Return 0
+                            rv2 = (av2 Mod bv) And &HFFFF
+                        Case Z80OP_SHL : rv2 = (av2 Shl bv) And &HFFFF
+                        Case Z80OP_SHR : rv2 = (av2 Shr bv) And &HFFFF
+                        Case Z80OP_AND : rv2 = (av2 And bv) And &HFFFF
+                        Case Z80OP_OR : rv2 = (av2 Or bv) And &HFFFF
+                        Case Z80OP_XOR : rv2 = (av2 Xor bv) And &HFFFF
+                        Case Z80OP_EQ : rv2 = IIf(av2 = bv, &HFFFF, 0)
+                        Case Z80OP_NE : rv2 = IIf(av2 <> bv, &HFFFF, 0)
+                        Case Z80OP_LT : rv2 = IIf(av2 < bv, &HFFFF, 0)
+                        Case Z80OP_LE : rv2 = IIf(av2 <= bv, &HFFFF, 0)
+                        Case Z80OP_GT : rv2 = IIf(av2 > bv, &HFFFF, 0)
+                        Case Z80OP_GE : rv2 = IIf(av2 >= bv, &HFFFF, 0)
+                    End Select
+                    stackVal(stackCount) = rv2
+                End If
+        End Select
+    Next i
+
+    If stackCount <> 1 Then
+        Z80LastEvalError = "Expressao mal formada (sobrou mais de um valor na pilha)"
+        Return 0
+    End If
+
+    outValue = stackVal(stackCount)
+    Return -1
+End Function
+
+Function Z80_EvalExpr(ByRef text As String, ByRef outValue As Integer) As Integer
+    Dim infixToks(1 To Z80_MAX_TOKENS) As Z80ExprTok
+    Dim infixCount As Integer
+    Dim postfixToks(1 To Z80_MAX_TOKENS) As Z80ExprTok
+    Dim postfixCount As Integer
+
+    Z80LastEvalError = ""
+    Z80LastEvalUnknownSymbol = ""
+
+    If Z80_TokenizeExpr(text, infixToks(), infixCount) = 0 Then Return 0
+    If infixCount = 0 Then
+        Z80LastEvalError = "Expressao vazia"
+        Return 0
+    End If
+    If Z80_ToPostfixExpr(infixToks(), infixCount, postfixToks(), postfixCount) = 0 Then Return 0
+    Return Z80_EvalPostfixExpr(postfixToks(), postfixCount, outValue)
+End Function
+
+' ---------------------------------------------------------------------------
+' Classificacao de operando
+' ---------------------------------------------------------------------------
+
+Sub Z80_ClassifyOperand(ByRef text As String, ByRef outOpnd As Z80Operand)
+    Dim t As String = Z80RTrimWs(Mid(text, Z80SkipWs(text, 1)))
+    Dim u As String = UCase(t)
+
+    outOpnd.opndKind = Z80OPND_IMM
+    outOpnd.regCode = 0
+    outOpnd.opndExpr = t
+    outOpnd.present = (t <> "")
+
+    If t = "" Then
+        outOpnd.opndKind = Z80OPND_NONE
+        Exit Sub
+    End If
+
+    Select Case u
+        Case "B" : outOpnd.opndKind = Z80OPND_REG8 : outOpnd.regCode = 0 : Exit Sub
+        Case "C" : outOpnd.opndKind = Z80OPND_REG8 : outOpnd.regCode = 1 : Exit Sub
+        Case "D" : outOpnd.opndKind = Z80OPND_REG8 : outOpnd.regCode = 2 : Exit Sub
+        Case "E" : outOpnd.opndKind = Z80OPND_REG8 : outOpnd.regCode = 3 : Exit Sub
+        Case "H" : outOpnd.opndKind = Z80OPND_REG8 : outOpnd.regCode = 4 : Exit Sub
+        Case "L" : outOpnd.opndKind = Z80OPND_REG8 : outOpnd.regCode = 5 : Exit Sub
+        Case "A" : outOpnd.opndKind = Z80OPND_REG8 : outOpnd.regCode = 7 : Exit Sub
+        Case "BC" : outOpnd.opndKind = Z80OPND_REG16 : outOpnd.regCode = 0 : Exit Sub
+        Case "DE" : outOpnd.opndKind = Z80OPND_REG16 : outOpnd.regCode = 1 : Exit Sub
+        Case "HL" : outOpnd.opndKind = Z80OPND_REG16 : outOpnd.regCode = 2 : Exit Sub
+        Case "SP" : outOpnd.opndKind = Z80OPND_REG16 : outOpnd.regCode = 3 : Exit Sub
+        Case "AF" : outOpnd.opndKind = Z80OPND_REGAF : outOpnd.regCode = 3 : Exit Sub
+        Case "IX" : outOpnd.opndKind = Z80OPND_IX : Exit Sub
+        Case "IY" : outOpnd.opndKind = Z80OPND_IY : Exit Sub
+        Case "IXH" : outOpnd.opndKind = Z80OPND_IXHALF : outOpnd.regCode = 4 : Exit Sub
+        Case "IXL" : outOpnd.opndKind = Z80OPND_IXHALF : outOpnd.regCode = 5 : Exit Sub
+        Case "IYH" : outOpnd.opndKind = Z80OPND_IYHALF : outOpnd.regCode = 4 : Exit Sub
+        Case "IYL" : outOpnd.opndKind = Z80OPND_IYHALF : outOpnd.regCode = 5 : Exit Sub
+        Case "(HL)" : outOpnd.opndKind = Z80OPND_INDHL : Exit Sub
+        Case "(BC)" : outOpnd.opndKind = Z80OPND_INDBC : Exit Sub
+        Case "(DE)" : outOpnd.opndKind = Z80OPND_INDDE : Exit Sub
+        Case "(SP)" : outOpnd.opndKind = Z80OPND_INDSP : Exit Sub
+        Case "(C)" : outOpnd.opndKind = Z80OPND_INDC : Exit Sub
+        Case "(IX)" : outOpnd.opndKind = Z80OPND_INDIX : outOpnd.opndExpr = "" : Exit Sub
+        Case "(IY)" : outOpnd.opndKind = Z80OPND_INDIY : outOpnd.opndExpr = "" : Exit Sub
+        Case "NZ" : outOpnd.opndKind = Z80OPND_COND : outOpnd.regCode = 0 : Exit Sub
+        Case "Z" : outOpnd.opndKind = Z80OPND_COND : outOpnd.regCode = 1 : Exit Sub
+        Case "NC" : outOpnd.opndKind = Z80OPND_COND : outOpnd.regCode = 2 : Exit Sub
+        Case "PO" : outOpnd.opndKind = Z80OPND_COND : outOpnd.regCode = 4 : Exit Sub
+        Case "PE" : outOpnd.opndKind = Z80OPND_COND : outOpnd.regCode = 5 : Exit Sub
+        Case "P" : outOpnd.opndKind = Z80OPND_COND : outOpnd.regCode = 6 : Exit Sub
+        Case "M" : outOpnd.opndKind = Z80OPND_COND : outOpnd.regCode = 7 : Exit Sub
+    End Select
+
+    If Len(t) >= 2 And Left(t, 1) = "(" And Right(t, 1) = ")" Then
+        Dim inner As String = Mid(t, 2, Len(t) - 2)
+        Dim innerU As String = UCase(inner)
+        If Left(innerU, 2) = "IX" And Len(inner) > 2 And (Mid(innerU, 3, 1) = "+" Or Mid(innerU, 3, 1) = "-") Then
+            outOpnd.opndKind = Z80OPND_INDIX
+            outOpnd.opndExpr = Mid(inner, 3)
+            Exit Sub
+        ElseIf Left(innerU, 2) = "IY" And Len(inner) > 2 And (Mid(innerU, 3, 1) = "+" Or Mid(innerU, 3, 1) = "-") Then
+            outOpnd.opndKind = Z80OPND_INDIY
+            outOpnd.opndExpr = Mid(inner, 3)
+            Exit Sub
+        End If
+    End If
+
+    If Left(t, 1) = "(" Then
+        outOpnd.opndKind = Z80OPND_INDIMM
+        outOpnd.opndExpr = t
+        Exit Sub
+    End If
+End Sub
+
+Function Z80_CountOperands(ByRef argsText As String) As Integer
+    Dim l As Integer = Len(argsText)
+    Dim idx As Integer = 1
+    Dim c As String
+    Dim depth As Integer = 0
+    Dim n As Integer
+
+    If Z80RTrimWs(Mid(argsText, Z80SkipWs(argsText, 1))) = "" Then Return 0
+    n = 1
+    While idx <= l
+        c = Mid(argsText, idx, 1)
+        If c = Chr(34) Or c = "'" Then
+            Dim delimCh As String = c
+            idx += 1
+            While idx <= l And Mid(argsText, idx, 1) <> delimCh
+                idx += 1
+            Wend
+        ElseIf c = "(" Then
+            depth += 1
+        ElseIf c = ")" Then
+            depth -= 1
+        ElseIf c = "," And depth = 0 Then
+            n += 1
+        End If
+        idx += 1
+    Wend
+    Return n
+End Function
+
+Function Z80_GetOperand(ByRef argsText As String, ByVal index As Integer) As String
+    Dim l As Integer = Len(argsText)
+    Dim idx As Integer = 1
+    Dim c As String
+    Dim depth As Integer = 0
+    Dim n As Integer = 1
+    Dim startPos As Integer = 1
+
+    While idx <= l
+        c = Mid(argsText, idx, 1)
+        If c = Chr(34) Or c = "'" Then
+            Dim delimCh As String = c
+            idx += 1
+            While idx <= l And Mid(argsText, idx, 1) <> delimCh
+                idx += 1
+            Wend
+        ElseIf c = "(" Then
+            depth += 1
+        ElseIf c = ")" Then
+            depth -= 1
+        ElseIf c = "," And depth = 0 Then
+            If n = index Then Return Mid(argsText, startPos, idx - startPos)
+            n += 1
+            startPos = idx + 1
+        End If
+        idx += 1
+    Wend
+    If n = index Then Return Mid(argsText, startPos)
+    Return ""
+End Function
+
+Function Z80_EvalOperandExpr(ByRef expr As String, ByVal emitMode As Integer, ByRef outValue As Integer) As Integer
+    If emitMode = 0 Then
+        outValue = 0
+        Return -1
+    End If
+    If Z80_EvalExpr(expr, outValue) = 0 Then
+        Z80LastAsmError = "Expressao invalida (" & expr & "): " & Z80LastEvalError & Z80LastEvalUnknownSymbol
+        Return 0
+    End If
+    Return -1
+End Function
+
+Function Z80_EvalDisplacement(ByRef expr As String, ByVal emitMode As Integer, ByRef outValue As Integer) As Integer
+    If expr = "" Then
+        outValue = 0
+        Return -1
+    End If
+    Return Z80_EvalOperandExpr(expr, emitMode, outValue)
+End Function
+
+' ---------------------------------------------------------------------------
+' Familias de codificacao de instrucao - cada uma devolve o numero de bytes
+' (0-4) ou -1 (erro, ver Z80LastAsmError).
+' ---------------------------------------------------------------------------
+
+Private Function Z80EncodeRst(ByRef op1 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    If op1.present = 0 Then
+        Z80LastAsmError = "RST precisa de um operando (0,8,16,24,32,40,48,56)"
+        Return -1
+    End If
+    If Z80_EvalOperandExpr(op1.opndExpr, emitMode, v) = 0 Then Return -1
+    outBytes(0) = &HC7
+    If emitMode <> 0 Then
+        If (v And 7) <> 0 Or v > 56 Then
+            Z80LastAsmError = "RST: valor invalido (precisa ser 0,8,16,24,32,40,48 ou 56): " & Str(v)
+            Return -1
+        End If
+        outBytes(0) = &HC7 Or ((v \ 8) Shl 3)
+    End If
+    Return 1
+End Function
+
+Private Function Z80EncodeIm(ByRef op1 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    If op1.present = 0 Then
+        Z80LastAsmError = "IM precisa de um operando (0, 1 ou 2)"
+        Return -1
+    End If
+    If Z80_EvalOperandExpr(op1.opndExpr, emitMode, v) = 0 Then Return -1
+    outBytes(0) = &HED
+    If emitMode <> 0 Then
+        Select Case v
+            Case 0 : outBytes(1) = &H46
+            Case 1 : outBytes(1) = &H56
+            Case 2 : outBytes(1) = &H5E
+            Case Else
+                Z80LastAsmError = "IM: valor invalido (precisa ser 0, 1 ou 2)"
+                Return -1
+        End Select
+    End If
+    Return 2
+End Function
+
+Private Function Z80EncodeEx(ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    If op1.opndKind = Z80OPND_REG16 And op1.regCode = 1 And op2.opndKind = Z80OPND_REG16 And op2.regCode = 2 Then
+        outBytes(0) = &HEB
+        Return 1
+    End If
+    If op1.opndKind = Z80OPND_REGAF And UCase(op2.opndExpr) = "AF'" Then
+        outBytes(0) = &H08
+        Return 1
+    End If
+    If op1.opndKind = Z80OPND_INDSP Then
+        If op2.opndKind = Z80OPND_REG16 And op2.regCode = 2 Then
+            outBytes(0) = &HE3
+            Return 1
+        ElseIf op2.opndKind = Z80OPND_IX Then
+            outBytes(0) = &HDD : outBytes(1) = &HE3
+            Return 2
+        ElseIf op2.opndKind = Z80OPND_IY Then
+            outBytes(0) = &HFD : outBytes(1) = &HE3
+            Return 2
+        End If
+    End If
+    Z80LastAsmError = "EX: combinacao de operandos invalida"
+    Return -1
+End Function
+
+Private Function Z80EncodeIn(ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal nOps As Integer, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    If nOps <> 2 Then
+        Z80LastAsmError = "IN precisa de 2 operandos"
+        Return -1
+    End If
+    If op1.opndKind = Z80OPND_REG8 And op1.regCode = 7 And op2.opndKind = Z80OPND_INDIMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HDB
+        If emitMode <> 0 Then outBytes(1) = v And &HFF
+        Return 2
+    End If
+    If op1.opndKind = Z80OPND_REG8 And op2.opndKind = Z80OPND_INDC Then
+        outBytes(0) = &HED
+        outBytes(1) = &H40 Or (op1.regCode Shl 3)
+        Return 2
+    End If
+    Z80LastAsmError = "IN: combinacao de operandos invalida"
+    Return -1
+End Function
+
+Private Function Z80EncodeOut(ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    If op1.opndKind = Z80OPND_INDIMM And op2.opndKind = Z80OPND_REG8 And op2.regCode = 7 Then
+        If Z80_EvalOperandExpr(op1.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HD3
+        If emitMode <> 0 Then outBytes(1) = v And &HFF
+        Return 2
+    End If
+    If op1.opndKind = Z80OPND_INDC And op2.opndKind = Z80OPND_REG8 Then
+        outBytes(0) = &HED
+        outBytes(1) = &H41 Or (op2.regCode Shl 3)
+        Return 2
+    End If
+    Z80LastAsmError = "OUT: combinacao de operandos invalida"
+    Return -1
+End Function
+
+Private Function Z80EncodePushPop(ByVal baseOp As Integer, ByRef op1 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Select Case op1.opndKind
+        Case Z80OPND_REG16
+            If op1.regCode = 3 Then
+                Z80LastAsmError = "PUSH/POP: SP nao existe aqui (o slot 11 e AF, nao SP - quis dizer AF?)"
+                Return -1
+            End If
+            outBytes(0) = baseOp Or (op1.regCode Shl 4)
+            Return 1
+        Case Z80OPND_REGAF
+            outBytes(0) = baseOp Or (3 Shl 4)
+            Return 1
+        Case Z80OPND_IX
+            outBytes(0) = &HDD : outBytes(1) = baseOp Or (2 Shl 4)
+            Return 2
+        Case Z80OPND_IY
+            outBytes(0) = &HFD : outBytes(1) = baseOp Or (2 Shl 4)
+            Return 2
+    End Select
+    Z80LastAsmError = "PUSH/POP: operando invalido (precisa ser BC, DE, HL, AF, IX ou IY)"
+    Return -1
+End Function
+
+Private Function Z80EncodeIncDec(ByVal isInc As Integer, ByRef op1 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    Dim op8 As Integer, op16 As Integer, opIxIy As Integer, opInd As Integer, opHalfH As Integer, opHalfL As Integer
+    If isInc <> 0 Then
+        op8 = &H04 : op16 = &H03 : opIxIy = &H23 : opInd = &H34 : opHalfH = &H24 : opHalfL = &H2C
+    Else
+        op8 = &H05 : op16 = &H0B : opIxIy = &H2B : opInd = &H35 : opHalfH = &H25 : opHalfL = &H2D
+    End If
+
+    Select Case op1.opndKind
+        Case Z80OPND_REG8
+            outBytes(0) = op8 Or (op1.regCode Shl 3)
+            Return 1
+        Case Z80OPND_INDHL
+            outBytes(0) = op8 Or (6 Shl 3)
+            Return 1
+        Case Z80OPND_REG16
+            outBytes(0) = op16 Or (op1.regCode Shl 4)
+            Return 1
+        Case Z80OPND_IX
+            outBytes(0) = &HDD : outBytes(1) = opIxIy
+            Return 2
+        Case Z80OPND_IY
+            outBytes(0) = &HFD : outBytes(1) = opIxIy
+            Return 2
+        Case Z80OPND_IXHALF
+            outBytes(0) = &HDD
+            If op1.regCode = 4 Then outBytes(1) = opHalfH Else outBytes(1) = opHalfL
+            Return 2
+        Case Z80OPND_IYHALF
+            outBytes(0) = &HFD
+            If op1.regCode = 4 Then outBytes(1) = opHalfH Else outBytes(1) = opHalfL
+            Return 2
+        Case Z80OPND_INDIX
+            outBytes(0) = &HDD : outBytes(1) = opInd
+            If Z80_EvalDisplacement(op1.opndExpr, emitMode, v) = 0 Then Return -1
+            If emitMode <> 0 Then outBytes(2) = v And &HFF
+            Return 3
+        Case Z80OPND_INDIY
+            outBytes(0) = &HFD : outBytes(1) = opInd
+            If Z80_EvalDisplacement(op1.opndExpr, emitMode, v) = 0 Then Return -1
+            If emitMode <> 0 Then outBytes(2) = v And &HFF
+            Return 3
+    End Select
+    Z80LastAsmError = "INC/DEC: operando invalido"
+    Return -1
+End Function
+
+Private Function Z80EncodeAluSingle(ByVal idxAlu As Integer, ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal nOps As Integer, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    Dim theOp As Z80Operand
+    If nOps = 2 Then
+        If op1.opndKind <> Z80OPND_REG8 Or op1.regCode <> 7 Then
+            Z80LastAsmError = "So A pode ser o primeiro operando quando dois sao dados"
+            Return -1
+        End If
+        theOp = op2
+    ElseIf nOps = 1 Then
+        theOp = op1
+    Else
+        Z80LastAsmError = "Precisa de 1 operando (ou 2, com A como o primeiro)"
+        Return -1
+    End If
+
+    Select Case theOp.opndKind
+        Case Z80OPND_REG8
+            outBytes(0) = &H80 Or (idxAlu Shl 3) Or theOp.regCode
+            Return 1
+        Case Z80OPND_INDHL
+            outBytes(0) = &H80 Or (idxAlu Shl 3) Or 6
+            Return 1
+        Case Z80OPND_IXHALF
+            outBytes(0) = &HDD : outBytes(1) = &H80 Or (idxAlu Shl 3) Or theOp.regCode
+            Return 2
+        Case Z80OPND_IYHALF
+            outBytes(0) = &HFD : outBytes(1) = &H80 Or (idxAlu Shl 3) Or theOp.regCode
+            Return 2
+        Case Z80OPND_INDIX
+            outBytes(0) = &HDD : outBytes(1) = &H86 Or (idxAlu Shl 3)
+            If Z80_EvalDisplacement(theOp.opndExpr, emitMode, v) = 0 Then Return -1
+            If emitMode <> 0 Then outBytes(2) = v And &HFF
+            Return 3
+        Case Z80OPND_INDIY
+            outBytes(0) = &HFD : outBytes(1) = &H86 Or (idxAlu Shl 3)
+            If Z80_EvalDisplacement(theOp.opndExpr, emitMode, v) = 0 Then Return -1
+            If emitMode <> 0 Then outBytes(2) = v And &HFF
+            Return 3
+        Case Z80OPND_INDIMM
+            Z80LastAsmError = "So (HL), (IX+d) ou (IY+d) sao validos aqui, nao (nn)"
+            Return -1
+        Case Z80OPND_IMM
+            If Z80_EvalOperandExpr(theOp.opndExpr, emitMode, v) = 0 Then Return -1
+            outBytes(0) = &HC6 Or (idxAlu Shl 3)
+            If emitMode <> 0 Then outBytes(1) = v And &HFF
+            Return 2
+    End Select
+    Z80LastAsmError = "Operando invalido"
+    Return -1
+End Function
+
+Private Function Z80EncodeAdd(ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal nOps As Integer, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    If nOps <> 2 Then
+        Z80LastAsmError = "ADD precisa de 2 operandos"
+        Return -1
+    End If
+
+    If op1.opndKind = Z80OPND_REG8 And op1.regCode = 7 Then
+        Return Z80EncodeAluSingle(0, op1, op2, 2, emitMode, outBytes())
+    End If
+
+    If op1.opndKind = Z80OPND_REG16 And op1.regCode = 2 Then
+        If op2.opndKind = Z80OPND_REG16 Then
+            outBytes(0) = &H09 Or (op2.regCode Shl 4)
+            Return 1
+        End If
+        Z80LastAsmError = "ADD HL,?: segundo operando precisa ser BC, DE, HL ou SP"
+        Return -1
+    End If
+
+    If op1.opndKind = Z80OPND_IX Then
+        outBytes(0) = &HDD
+        If op2.opndKind = Z80OPND_REG16 And op2.regCode <> 2 Then
+            outBytes(1) = &H09 Or (op2.regCode Shl 4)
+            Return 2
+        ElseIf op2.opndKind = Z80OPND_IX Then
+            outBytes(1) = &H09 Or (2 Shl 4)
+            Return 2
+        End If
+        Z80LastAsmError = "ADD IX,?: segundo operando precisa ser BC, DE, IX ou SP"
+        Return -1
+    End If
+
+    If op1.opndKind = Z80OPND_IY Then
+        outBytes(0) = &HFD
+        If op2.opndKind = Z80OPND_REG16 And op2.regCode <> 2 Then
+            outBytes(1) = &H09 Or (op2.regCode Shl 4)
+            Return 2
+        ElseIf op2.opndKind = Z80OPND_IY Then
+            outBytes(1) = &H09 Or (2 Shl 4)
+            Return 2
+        End If
+        Z80LastAsmError = "ADD IY,?: segundo operando precisa ser BC, DE, IY ou SP"
+        Return -1
+    End If
+
+    Z80LastAsmError = "ADD: combinacao de operandos invalida"
+    Return -1
+End Function
+
+Private Function Z80EncodeAdcSbc(ByVal isAdc As Integer, ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal nOps As Integer, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    If nOps <> 2 Then
+        Z80LastAsmError = "ADC/SBC precisa de 2 operandos"
+        Return -1
+    End If
+
+    If op1.opndKind = Z80OPND_REG8 And op1.regCode = 7 Then
+        If isAdc <> 0 Then
+            Return Z80EncodeAluSingle(1, op1, op2, 2, emitMode, outBytes())
+        Else
+            Return Z80EncodeAluSingle(3, op1, op2, 2, emitMode, outBytes())
+        End If
+    End If
+
+    If op1.opndKind = Z80OPND_REG16 And op1.regCode = 2 And op2.opndKind = Z80OPND_REG16 Then
+        outBytes(0) = &HED
+        If isAdc <> 0 Then
+            outBytes(1) = &H4A Or (op2.regCode Shl 4)
+        Else
+            outBytes(1) = &H42 Or (op2.regCode Shl 4)
+        End If
+        Return 2
+    End If
+
+    Z80LastAsmError = "ADC/SBC: combinacao de operandos invalida"
+    Return -1
+End Function
+
+Private Function Z80CondCodeOf(ByRef op As Z80Operand) As Integer
+    If op.opndKind = Z80OPND_COND Then Return op.regCode
+    If op.opndKind = Z80OPND_REG8 And op.regCode = 1 Then Return 3
+    Return -1
+End Function
+
+Private Function Z80EncodeJp(ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal nOps As Integer, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    If nOps = 1 Then
+        Select Case op1.opndKind
+            Case Z80OPND_INDHL
+                outBytes(0) = &HE9
+                Return 1
+            Case Z80OPND_INDIX
+                outBytes(0) = &HDD : outBytes(1) = &HE9
+                Return 2
+            Case Z80OPND_INDIY
+                outBytes(0) = &HFD : outBytes(1) = &HE9
+                Return 2
+            Case Z80OPND_IMM
+                If Z80_EvalOperandExpr(op1.opndExpr, emitMode, v) = 0 Then Return -1
+                outBytes(0) = &HC3
+                If emitMode <> 0 Then
+                    outBytes(1) = v And &HFF
+                    outBytes(2) = (v Shr 8) And &HFF
+                End If
+                Return 3
+        End Select
+        Z80LastAsmError = "JP: operando invalido"
+        Return -1
+    ElseIf nOps = 2 Then
+        Dim ccJp As Integer = Z80CondCodeOf(op1)
+        If ccJp < 0 Then
+            Z80LastAsmError = "JP cc,nn: primeiro operando precisa ser uma condicao (NZ,Z,NC,C,PO,PE,P,M)"
+            Return -1
+        End If
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HC2 Or (ccJp Shl 3)
+        If emitMode <> 0 Then
+            outBytes(1) = v And &HFF
+            outBytes(2) = (v Shr 8) And &HFF
+        End If
+        Return 3
+    End If
+    Z80LastAsmError = "JP: numero de operandos invalido"
+    Return -1
+End Function
+
+Private Function Z80EncodeJr(ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal nOps As Integer, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    Dim targetExpr As String
+    Dim baseOp As Integer
+
+    If nOps = 1 Then
+        baseOp = &H18
+        targetExpr = op1.opndExpr
+    ElseIf nOps = 2 Then
+        Dim ccJr As Integer = Z80CondCodeOf(op1)
+        If ccJr < 0 Or ccJr > 3 Then
+            Z80LastAsmError = "JR cc,e: condicao precisa ser NZ, Z, NC ou C"
+            Return -1
+        End If
+        Select Case ccJr
+            Case 0 : baseOp = &H20
+            Case 1 : baseOp = &H28
+            Case 2 : baseOp = &H30
+            Case 3 : baseOp = &H38
+        End Select
+        targetExpr = op2.opndExpr
+    Else
+        Z80LastAsmError = "JR: numero de operandos invalido"
+        Return -1
+    End If
+
+    outBytes(0) = baseOp
+    If emitMode = 0 Then Return 2
+
+    If Z80_EvalExpr(targetExpr, v) = 0 Then
+        Z80LastAsmError = "JR: " & Z80LastEvalError & Z80LastEvalUnknownSymbol
+        Return -1
+    End If
+    Dim disp As Integer = v - (Z80CurLoc + 2)
+    If disp < -128 Or disp > 127 Then
+        Z80LastAsmError = "JR: alvo fora de alcance (-128..127), deslocamento = " & Str(disp)
+        Return -1
+    End If
+    outBytes(1) = disp And &HFF
+    Return 2
+End Function
+
+Private Function Z80EncodeDjnz(ByRef op1 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    outBytes(0) = &H10
+    If emitMode = 0 Then Return 2
+    If Z80_EvalExpr(op1.opndExpr, v) = 0 Then
+        Z80LastAsmError = "DJNZ: " & Z80LastEvalError & Z80LastEvalUnknownSymbol
+        Return -1
+    End If
+    Dim disp As Integer = v - (Z80CurLoc + 2)
+    If disp < -128 Or disp > 127 Then
+        Z80LastAsmError = "DJNZ: alvo fora de alcance (-128..127), deslocamento = " & Str(disp)
+        Return -1
+    End If
+    outBytes(1) = disp And &HFF
+    Return 2
+End Function
+
+Private Function Z80EncodeCallRet(ByVal isCall As Integer, ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal nOps As Integer, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+    If isCall <> 0 Then
+        If nOps = 1 Then
+            If Z80_EvalOperandExpr(op1.opndExpr, emitMode, v) = 0 Then Return -1
+            outBytes(0) = &HCD
+            If emitMode <> 0 Then
+                outBytes(1) = v And &HFF
+                outBytes(2) = (v Shr 8) And &HFF
+            End If
+            Return 3
+        ElseIf nOps = 2 Then
+            Dim ccCall As Integer = Z80CondCodeOf(op1)
+            If ccCall < 0 Then
+                Z80LastAsmError = "CALL cc,nn: primeiro operando precisa ser uma condicao"
+                Return -1
+            End If
+            If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+            outBytes(0) = &HC4 Or (ccCall Shl 3)
+            If emitMode <> 0 Then
+                outBytes(1) = v And &HFF
+                outBytes(2) = (v Shr 8) And &HFF
+            End If
+            Return 3
+        End If
+        Z80LastAsmError = "CALL: numero de operandos invalido"
+        Return -1
+    Else
+        If nOps = 0 Then
+            outBytes(0) = &HC9
+            Return 1
+        ElseIf nOps = 1 Then
+            Dim ccRet As Integer = Z80CondCodeOf(op1)
+            If ccRet < 0 Then
+                Z80LastAsmError = "RET cc: operando precisa ser uma condicao"
+                Return -1
+            End If
+            outBytes(0) = &HC0 Or (ccRet Shl 3)
+            Return 1
+        End If
+        Z80LastAsmError = "RET: numero de operandos invalido"
+        Return -1
+    End If
+End Function
+
+Private Function Z80EncodeCbShift(ByRef m As String, ByRef op1 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim idxCb As Integer
+    Dim v As Integer
+    Select Case m
+        Case "RLC" : idxCb = 0
+        Case "RRC" : idxCb = 1
+        Case "RL" : idxCb = 2
+        Case "RR" : idxCb = 3
+        Case "SLA" : idxCb = 4
+        Case "SRA" : idxCb = 5
+        Case "SLL" : idxCb = 6
+        Case "SRL" : idxCb = 7
+    End Select
+
+    Select Case op1.opndKind
+        Case Z80OPND_REG8
+            outBytes(0) = &HCB : outBytes(1) = (idxCb Shl 3) Or op1.regCode
+            Return 2
+        Case Z80OPND_INDHL
+            outBytes(0) = &HCB : outBytes(1) = (idxCb Shl 3) Or 6
+            Return 2
+        Case Z80OPND_INDIX
+            outBytes(0) = &HDD : outBytes(1) = &HCB
+            If Z80_EvalDisplacement(op1.opndExpr, emitMode, v) = 0 Then Return -1
+            If emitMode <> 0 Then outBytes(2) = v And &HFF
+            outBytes(3) = (idxCb Shl 3) Or 6
+            Return 4
+        Case Z80OPND_INDIY
+            outBytes(0) = &HFD : outBytes(1) = &HCB
+            If Z80_EvalDisplacement(op1.opndExpr, emitMode, v) = 0 Then Return -1
+            If emitMode <> 0 Then outBytes(2) = v And &HFF
+            outBytes(3) = (idxCb Shl 3) Or 6
+            Return 4
+    End Select
+    Z80LastAsmError = m & ": operando invalido"
+    Return -1
+End Function
+
+Private Function Z80EncodeCbBit(ByRef m As String, ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim baseOp As Integer
+    Dim v As Integer
+    Dim bv As Integer
+    Dim bNum As Integer
+    Select Case m
+        Case "BIT" : baseOp = &H40
+        Case "RES" : baseOp = &H80
+        Case "SET" : baseOp = &HC0
+    End Select
+
+    If Z80_EvalOperandExpr(op1.opndExpr, emitMode, bv) = 0 Then Return -1
+    If emitMode <> 0 Then
+        If bv > 7 Then
+            Z80LastAsmError = m & ": numero de bit precisa ser 0-7"
+            Return -1
+        End If
+        bNum = bv
+    End If
+
+    Select Case op2.opndKind
+        Case Z80OPND_REG8
+            outBytes(0) = &HCB : outBytes(1) = baseOp Or (bNum Shl 3) Or op2.regCode
+            Return 2
+        Case Z80OPND_INDHL
+            outBytes(0) = &HCB : outBytes(1) = baseOp Or (bNum Shl 3) Or 6
+            Return 2
+        Case Z80OPND_INDIX
+            outBytes(0) = &HDD : outBytes(1) = &HCB
+            If Z80_EvalDisplacement(op2.opndExpr, emitMode, v) = 0 Then Return -1
+            If emitMode <> 0 Then outBytes(2) = v And &HFF
+            outBytes(3) = baseOp Or (bNum Shl 3) Or 6
+            Return 4
+        Case Z80OPND_INDIY
+            outBytes(0) = &HFD : outBytes(1) = &HCB
+            If Z80_EvalDisplacement(op2.opndExpr, emitMode, v) = 0 Then Return -1
+            If emitMode <> 0 Then outBytes(2) = v And &HFF
+            outBytes(3) = baseOp Or (bNum Shl 3) Or 6
+            Return 4
+    End Select
+    Z80LastAsmError = m & ": segundo operando invalido"
+    Return -1
+End Function
+
+Private Function Z80EncodeLd(ByRef op1 As Z80Operand, ByRef op2 As Z80Operand, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim v As Integer
+
+    If op1.present = 0 Or op2.present = 0 Then
+        Z80LastAsmError = "LD precisa de 2 operandos"
+        Return -1
+    End If
+
+    If op1.opndKind = Z80OPND_REG8 And op1.regCode = 7 And op2.opndKind = Z80OPND_IMM Then
+        If UCase(op2.opndExpr) = "I" Then
+            outBytes(0) = &HED : outBytes(1) = &H57 : Return 2
+        ElseIf UCase(op2.opndExpr) = "R" Then
+            outBytes(0) = &HED : outBytes(1) = &H5F : Return 2
+        End If
+    End If
+    If op2.opndKind = Z80OPND_REG8 And op2.regCode = 7 And op1.opndKind = Z80OPND_IMM Then
+        If UCase(op1.opndExpr) = "I" Then
+            outBytes(0) = &HED : outBytes(1) = &H47 : Return 2
+        ElseIf UCase(op1.opndExpr) = "R" Then
+            outBytes(0) = &HED : outBytes(1) = &H4F : Return 2
+        End If
+    End If
+
+    If (op1.opndKind = Z80OPND_REG8 Or op1.opndKind = Z80OPND_INDHL) And (op2.opndKind = Z80OPND_REG8 Or op2.opndKind = Z80OPND_INDHL) Then
+        If op1.opndKind = Z80OPND_INDHL And op2.opndKind = Z80OPND_INDHL Then
+            Z80LastAsmError = "LD (HL),(HL) nao existe (seria HALT)"
+            Return -1
+        End If
+        Dim r1 As Integer, r2 As Integer
+        If op1.opndKind = Z80OPND_INDHL Then r1 = 6 Else r1 = op1.regCode
+        If op2.opndKind = Z80OPND_INDHL Then r2 = 6 Else r2 = op2.regCode
+        outBytes(0) = &H40 Or (r1 Shl 3) Or r2
+        Return 1
+    End If
+
+    If (op1.opndKind = Z80OPND_REG8 Or op1.opndKind = Z80OPND_INDHL) And op2.opndKind = Z80OPND_IMM Then
+        Dim r1b As Integer
+        If op1.opndKind = Z80OPND_INDHL Then r1b = 6 Else r1b = op1.regCode
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &H06 Or (r1b Shl 3)
+        If emitMode <> 0 Then outBytes(1) = v And &HFF
+        Return 2
+    End If
+
+    If op1.opndKind = Z80OPND_REG8 And op1.regCode = 7 And op2.opndKind = Z80OPND_INDBC Then
+        outBytes(0) = &H0A : Return 1
+    End If
+    If op1.opndKind = Z80OPND_REG8 And op1.regCode = 7 And op2.opndKind = Z80OPND_INDDE Then
+        outBytes(0) = &H1A : Return 1
+    End If
+    If op1.opndKind = Z80OPND_INDBC And op2.opndKind = Z80OPND_REG8 And op2.regCode = 7 Then
+        outBytes(0) = &H02 : Return 1
+    End If
+    If op1.opndKind = Z80OPND_INDDE And op2.opndKind = Z80OPND_REG8 And op2.regCode = 7 Then
+        outBytes(0) = &H12 : Return 1
+    End If
+
+    If op1.opndKind = Z80OPND_REG8 And op1.regCode = 7 And op2.opndKind = Z80OPND_INDIMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &H3A
+        If emitMode <> 0 Then outBytes(1) = v And &HFF : outBytes(2) = (v Shr 8) And &HFF
+        Return 3
+    End If
+    If op1.opndKind = Z80OPND_INDIMM And op2.opndKind = Z80OPND_REG8 And op2.regCode = 7 Then
+        If Z80_EvalOperandExpr(op1.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &H32
+        If emitMode <> 0 Then outBytes(1) = v And &HFF : outBytes(2) = (v Shr 8) And &HFF
+        Return 3
+    End If
+
+    If op1.opndKind = Z80OPND_REG16 And op2.opndKind = Z80OPND_INDIMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        If op1.regCode = 2 Then
+            outBytes(0) = &H2A
+            If emitMode <> 0 Then outBytes(1) = v And &HFF : outBytes(2) = (v Shr 8) And &HFF
+            Return 3
+        Else
+            outBytes(0) = &HED : outBytes(1) = &H4B Or (op1.regCode Shl 4)
+            If emitMode <> 0 Then outBytes(2) = v And &HFF : outBytes(3) = (v Shr 8) And &HFF
+            Return 4
+        End If
+    End If
+    If op1.opndKind = Z80OPND_INDIMM And op2.opndKind = Z80OPND_REG16 Then
+        If Z80_EvalOperandExpr(op1.opndExpr, emitMode, v) = 0 Then Return -1
+        If op2.regCode = 2 Then
+            outBytes(0) = &H22
+            If emitMode <> 0 Then outBytes(1) = v And &HFF : outBytes(2) = (v Shr 8) And &HFF
+            Return 3
+        Else
+            outBytes(0) = &HED : outBytes(1) = &H43 Or (op2.regCode Shl 4)
+            If emitMode <> 0 Then outBytes(2) = v And &HFF : outBytes(3) = (v Shr 8) And &HFF
+            Return 4
+        End If
+    End If
+
+    If op1.opndKind = Z80OPND_IX And op2.opndKind = Z80OPND_INDIMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HDD : outBytes(1) = &H2A
+        If emitMode <> 0 Then outBytes(2) = v And &HFF : outBytes(3) = (v Shr 8) And &HFF
+        Return 4
+    End If
+    If op1.opndKind = Z80OPND_INDIMM And op2.opndKind = Z80OPND_IX Then
+        If Z80_EvalOperandExpr(op1.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HDD : outBytes(1) = &H22
+        If emitMode <> 0 Then outBytes(2) = v And &HFF : outBytes(3) = (v Shr 8) And &HFF
+        Return 4
+    End If
+    If op1.opndKind = Z80OPND_IY And op2.opndKind = Z80OPND_INDIMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HFD : outBytes(1) = &H2A
+        If emitMode <> 0 Then outBytes(2) = v And &HFF : outBytes(3) = (v Shr 8) And &HFF
+        Return 4
+    End If
+    If op1.opndKind = Z80OPND_INDIMM And op2.opndKind = Z80OPND_IY Then
+        If Z80_EvalOperandExpr(op1.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HFD : outBytes(1) = &H22
+        If emitMode <> 0 Then outBytes(2) = v And &HFF : outBytes(3) = (v Shr 8) And &HFF
+        Return 4
+    End If
+
+    If op1.opndKind = Z80OPND_REG16 And op2.opndKind = Z80OPND_IMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &H01 Or (op1.regCode Shl 4)
+        If emitMode <> 0 Then outBytes(1) = v And &HFF : outBytes(2) = (v Shr 8) And &HFF
+        Return 3
+    End If
+    If op1.opndKind = Z80OPND_IX And op2.opndKind = Z80OPND_IMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HDD : outBytes(1) = &H21
+        If emitMode <> 0 Then outBytes(2) = v And &HFF : outBytes(3) = (v Shr 8) And &HFF
+        Return 4
+    End If
+    If op1.opndKind = Z80OPND_IY And op2.opndKind = Z80OPND_IMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HFD : outBytes(1) = &H21
+        If emitMode <> 0 Then outBytes(2) = v And &HFF : outBytes(3) = (v Shr 8) And &HFF
+        Return 4
+    End If
+
+    If op1.opndKind = Z80OPND_REG16 And op1.regCode = 3 And op2.opndKind = Z80OPND_REG16 And op2.regCode = 2 Then
+        outBytes(0) = &HF9 : Return 1
+    End If
+    If op1.opndKind = Z80OPND_REG16 And op1.regCode = 3 And op2.opndKind = Z80OPND_IX Then
+        outBytes(0) = &HDD : outBytes(1) = &HF9 : Return 2
+    End If
+    If op1.opndKind = Z80OPND_REG16 And op1.regCode = 3 And op2.opndKind = Z80OPND_IY Then
+        outBytes(0) = &HFD : outBytes(1) = &HF9 : Return 2
+    End If
+
+    If op1.opndKind = Z80OPND_REG8 And op2.opndKind = Z80OPND_INDIX Then
+        outBytes(0) = &HDD : outBytes(1) = &H46 Or (op1.regCode Shl 3)
+        If Z80_EvalDisplacement(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        If emitMode <> 0 Then outBytes(2) = v And &HFF
+        Return 3
+    End If
+    If op1.opndKind = Z80OPND_REG8 And op2.opndKind = Z80OPND_INDIY Then
+        outBytes(0) = &HFD : outBytes(1) = &H46 Or (op1.regCode Shl 3)
+        If Z80_EvalDisplacement(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        If emitMode <> 0 Then outBytes(2) = v And &HFF
+        Return 3
+    End If
+    If op1.opndKind = Z80OPND_INDIX And op2.opndKind = Z80OPND_REG8 Then
+        outBytes(0) = &HDD : outBytes(1) = &H70 Or op2.regCode
+        If Z80_EvalDisplacement(op1.opndExpr, emitMode, v) = 0 Then Return -1
+        If emitMode <> 0 Then outBytes(2) = v And &HFF
+        Return 3
+    End If
+    If op1.opndKind = Z80OPND_INDIY And op2.opndKind = Z80OPND_REG8 Then
+        outBytes(0) = &HFD : outBytes(1) = &H70 Or op2.regCode
+        If Z80_EvalDisplacement(op1.opndExpr, emitMode, v) = 0 Then Return -1
+        If emitMode <> 0 Then outBytes(2) = v And &HFF
+        Return 3
+    End If
+    If op1.opndKind = Z80OPND_INDIX And op2.opndKind = Z80OPND_IMM Then
+        Dim d1 As Integer, n1 As Integer
+        outBytes(0) = &HDD : outBytes(1) = &H36
+        If Z80_EvalDisplacement(op1.opndExpr, emitMode, d1) = 0 Then Return -1
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, n1) = 0 Then Return -1
+        If emitMode <> 0 Then outBytes(2) = d1 And &HFF : outBytes(3) = n1 And &HFF
+        Return 4
+    End If
+    If op1.opndKind = Z80OPND_INDIY And op2.opndKind = Z80OPND_IMM Then
+        Dim d2 As Integer, n2 As Integer
+        outBytes(0) = &HFD : outBytes(1) = &H36
+        If Z80_EvalDisplacement(op1.opndExpr, emitMode, d2) = 0 Then Return -1
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, n2) = 0 Then Return -1
+        If emitMode <> 0 Then outBytes(2) = d2 And &HFF : outBytes(3) = n2 And &HFF
+        Return 4
+    End If
+
+    If op1.opndKind = Z80OPND_IXHALF And op2.opndKind = Z80OPND_IMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HDD : outBytes(1) = &H06 Or (op1.regCode Shl 3)
+        If emitMode <> 0 Then outBytes(2) = v And &HFF
+        Return 3
+    End If
+    If op1.opndKind = Z80OPND_IYHALF And op2.opndKind = Z80OPND_IMM Then
+        If Z80_EvalOperandExpr(op2.opndExpr, emitMode, v) = 0 Then Return -1
+        outBytes(0) = &HFD : outBytes(1) = &H06 Or (op1.regCode Shl 3)
+        If emitMode <> 0 Then outBytes(2) = v And &HFF
+        Return 3
+    End If
+    If op1.opndKind = Z80OPND_IXHALF And (op2.opndKind = Z80OPND_REG8 Or op2.opndKind = Z80OPND_IXHALF) Then
+        outBytes(0) = &HDD : outBytes(1) = &H40 Or (op1.regCode Shl 3) Or op2.regCode
+        Return 2
+    End If
+    If op2.opndKind = Z80OPND_IXHALF And op1.opndKind = Z80OPND_REG8 Then
+        outBytes(0) = &HDD : outBytes(1) = &H40 Or (op1.regCode Shl 3) Or op2.regCode
+        Return 2
+    End If
+    If op1.opndKind = Z80OPND_IYHALF And (op2.opndKind = Z80OPND_REG8 Or op2.opndKind = Z80OPND_IYHALF) Then
+        outBytes(0) = &HFD : outBytes(1) = &H40 Or (op1.regCode Shl 3) Or op2.regCode
+        Return 2
+    End If
+    If op2.opndKind = Z80OPND_IYHALF And op1.opndKind = Z80OPND_REG8 Then
+        outBytes(0) = &HFD : outBytes(1) = &H40 Or (op1.regCode Shl 3) Or op2.regCode
+        Return 2
+    End If
+
+    Z80LastAsmError = "LD: combinacao de operandos invalida"
+    Return -1
+End Function
+
+Function Z80_EncodeInstruction(ByRef mnemonic As String, ByRef argsText As String, ByVal emitMode As Integer, outBytes() As Integer) As Integer
+    Dim m As String = UCase(mnemonic)
+    Dim nOps As Integer = Z80_CountOperands(argsText)
+    Dim op1 As Z80Operand, op2 As Z80Operand
+
+    Z80LastAsmError = ""
+
+    If nOps >= 1 Then
+        Z80_ClassifyOperand(Z80_GetOperand(argsText, 1), op1)
+    Else
+        op1.opndKind = Z80OPND_NONE : op1.present = 0
+    End If
+    If nOps >= 2 Then
+        Z80_ClassifyOperand(Z80_GetOperand(argsText, 2), op2)
+    Else
+        op2.opndKind = Z80OPND_NONE : op2.present = 0
+    End If
+
+    Select Case m
+        Case "NOP" : outBytes(0) = &H00 : Return 1
+        Case "HALT" : outBytes(0) = &H76 : Return 1
+        Case "DI" : outBytes(0) = &HF3 : Return 1
+        Case "EI" : outBytes(0) = &HFB : Return 1
+        Case "DAA" : outBytes(0) = &H27 : Return 1
+        Case "CPL" : outBytes(0) = &H2F : Return 1
+        Case "CCF" : outBytes(0) = &H3F : Return 1
+        Case "SCF" : outBytes(0) = &H37 : Return 1
+        Case "RLCA" : outBytes(0) = &H07 : Return 1
+        Case "RLA" : outBytes(0) = &H17 : Return 1
+        Case "RRCA" : outBytes(0) = &H0F : Return 1
+        Case "RRA" : outBytes(0) = &H1F : Return 1
+        Case "EXX" : outBytes(0) = &HD9 : Return 1
+        Case "NEG" : outBytes(0) = &HED : outBytes(1) = &H44 : Return 2
+        Case "RETN" : outBytes(0) = &HED : outBytes(1) = &H45 : Return 2
+        Case "RETI" : outBytes(0) = &HED : outBytes(1) = &H4D : Return 2
+        Case "RLD" : outBytes(0) = &HED : outBytes(1) = &H6F : Return 2
+        Case "RRD" : outBytes(0) = &HED : outBytes(1) = &H67 : Return 2
+        Case "LDI" : outBytes(0) = &HED : outBytes(1) = &HA0 : Return 2
+        Case "LDD" : outBytes(0) = &HED : outBytes(1) = &HA8 : Return 2
+        Case "LDIR" : outBytes(0) = &HED : outBytes(1) = &HB0 : Return 2
+        Case "LDDR" : outBytes(0) = &HED : outBytes(1) = &HB8 : Return 2
+        Case "CPI" : outBytes(0) = &HED : outBytes(1) = &HA1 : Return 2
+        Case "CPD" : outBytes(0) = &HED : outBytes(1) = &HA9 : Return 2
+        Case "CPIR" : outBytes(0) = &HED : outBytes(1) = &HB1 : Return 2
+        Case "CPDR" : outBytes(0) = &HED : outBytes(1) = &HB9 : Return 2
+        Case "INI" : outBytes(0) = &HED : outBytes(1) = &HA2 : Return 2
+        Case "IND" : outBytes(0) = &HED : outBytes(1) = &HAA : Return 2
+        Case "INIR" : outBytes(0) = &HED : outBytes(1) = &HB2 : Return 2
+        Case "INDR" : outBytes(0) = &HED : outBytes(1) = &HBA : Return 2
+        Case "OUTI" : outBytes(0) = &HED : outBytes(1) = &HA3 : Return 2
+        Case "OUTD" : outBytes(0) = &HED : outBytes(1) = &HAB : Return 2
+        Case "OTIR" : outBytes(0) = &HED : outBytes(1) = &HB3 : Return 2
+        Case "OTDR" : outBytes(0) = &HED : outBytes(1) = &HBB : Return 2
+        Case "RST" : Return Z80EncodeRst(op1, emitMode, outBytes())
+        Case "IM" : Return Z80EncodeIm(op1, emitMode, outBytes())
+        Case "EX" : Return Z80EncodeEx(op1, op2, emitMode, outBytes())
+        Case "IN" : Return Z80EncodeIn(op1, op2, nOps, emitMode, outBytes())
+        Case "OUT" : Return Z80EncodeOut(op1, op2, emitMode, outBytes())
+        Case "PUSH" : Return Z80EncodePushPop(&HC5, op1, emitMode, outBytes())
+        Case "POP" : Return Z80EncodePushPop(&HC1, op1, emitMode, outBytes())
+        Case "INC" : Return Z80EncodeIncDec(-1, op1, emitMode, outBytes())
+        Case "DEC" : Return Z80EncodeIncDec(0, op1, emitMode, outBytes())
+        Case "ADD" : Return Z80EncodeAdd(op1, op2, nOps, emitMode, outBytes())
+        Case "ADC" : Return Z80EncodeAdcSbc(-1, op1, op2, nOps, emitMode, outBytes())
+        Case "SBC" : Return Z80EncodeAdcSbc(0, op1, op2, nOps, emitMode, outBytes())
+        Case "SUB" : Return Z80EncodeAluSingle(2, op1, op2, nOps, emitMode, outBytes())
+        Case "AND" : Return Z80EncodeAluSingle(4, op1, op2, nOps, emitMode, outBytes())
+        Case "XOR" : Return Z80EncodeAluSingle(5, op1, op2, nOps, emitMode, outBytes())
+        Case "OR" : Return Z80EncodeAluSingle(6, op1, op2, nOps, emitMode, outBytes())
+        Case "CP" : Return Z80EncodeAluSingle(7, op1, op2, nOps, emitMode, outBytes())
+        Case "LD" : Return Z80EncodeLd(op1, op2, emitMode, outBytes())
+        Case "JP" : Return Z80EncodeJp(op1, op2, nOps, emitMode, outBytes())
+        Case "JR" : Return Z80EncodeJr(op1, op2, nOps, emitMode, outBytes())
+        Case "DJNZ" : Return Z80EncodeDjnz(op1, emitMode, outBytes())
+        Case "CALL" : Return Z80EncodeCallRet(-1, op1, op2, nOps, emitMode, outBytes())
+        Case "RET" : Return Z80EncodeCallRet(0, op1, op2, nOps, emitMode, outBytes())
+        Case "RLC", "RRC", "RL", "RR", "SLA", "SRA", "SLL", "SRL"
+            Return Z80EncodeCbShift(m, op1, emitMode, outBytes())
+        Case "BIT", "SET", "RES"
+            Return Z80EncodeCbBit(m, op1, op2, emitMode, outBytes())
+    End Select
+
+    Z80LastAsmError = "Mnemonico Z80 desconhecido: " & mnemonic
+    Return -1
+End Function
+
+' ---------------------------------------------------------------------------
+' Diretivas de dados (DEFB/DEFM/DEFW/DEFS - unico subconjunto que a gramatica
+' do EDIT do Mamute pode produzir).
+' ---------------------------------------------------------------------------
+
+Private Function Z80ExpandDataOperand(ByRef text As String, ByVal emitMode As Integer, outBytes() As Integer, ByRef outCount As Integer) As Integer
+    Dim t As String = Z80RTrimWs(Mid(text, Z80SkipWs(text, 1)))
+    Dim v As Integer
+
+    If Len(t) >= 2 And (Left(t, 1) = Chr(34) Or Left(t, 1) = "'") And Right(t, 1) = Left(t, 1) Then
+        Dim delimCh As String = Left(t, 1)
+        Dim bodyText As String = Mid(t, 2, Len(t) - 2)
+        Dim dd As String = delimCh & delimCh
+        Dim rebuilt As String = ""
+        Dim scanIdx As Integer = 1
+        While scanIdx <= Len(bodyText)
+            If Mid(bodyText, scanIdx, 2) = dd Then
+                rebuilt &= delimCh
+                scanIdx += 2
+            Else
+                rebuilt &= Mid(bodyText, scanIdx, 1)
+                scanIdx += 1
+            End If
+        Wend
+        Dim ci As Integer
+        For ci = 1 To Len(rebuilt)
+            outCount += 1
+            outBytes(outCount) = Asc(Mid(rebuilt, ci, 1)) And &HFF
+        Next ci
+        Return -1
+    End If
+
+    If Z80_EvalOperandExpr(t, emitMode, v) = 0 Then Return 0
+    outCount += 1
+    outBytes(outCount) = v And &HFF
+    Return -1
+End Function
+
+Function Z80_EncodeDataDirective(ByRef op As String, ByRef argsText As String, ByVal emitMode As Integer, outBytes() As Integer, ByRef outCount As Integer) As Integer
+    outCount = 0
+    Dim nOps As Integer = Z80_CountOperands(argsText)
+    Dim idxOp As Integer
+
+    Select Case op
+        Case "DEFB", "DEFM"
+            If nOps = 0 Then
+                Z80LastAsmError = op & ": precisa de pelo menos um operando"
+                Return 0
+            End If
+            For idxOp = 1 To nOps
+                If Z80ExpandDataOperand(Z80_GetOperand(argsText, idxOp), emitMode, outBytes(), outCount) = 0 Then Return 0
+            Next idxOp
+            Return -1
+
+        Case "DEFW"
+            If nOps = 0 Then
+                Z80LastAsmError = op & ": precisa de pelo menos um operando"
+                Return 0
+            End If
+            Dim vw As Integer
+            For idxOp = 1 To nOps
+                If Z80_EvalOperandExpr(Z80_GetOperand(argsText, idxOp), emitMode, vw) = 0 Then Return 0
+                outCount += 1 : outBytes(outCount) = vw And &HFF
+                outCount += 1 : outBytes(outCount) = (vw Shr 8) And &HFF
+            Next idxOp
+            Return -1
+
+        Case "DEFS"
+            If nOps < 1 Or nOps > 2 Then
+                Z80LastAsmError = "DEFS: precisa de 1 ou 2 operandos (tamanho[,valor])"
+                Return 0
+            End If
+            Dim sizeV As Integer
+            If Z80_EvalExpr(Z80_GetOperand(argsText, 1), sizeV) = 0 Then
+                Z80LastAsmError = "DEFS: tamanho precisa ser conhecido ja no pass 1 (nao pode depender de rotulo definido so depois): " & Z80LastEvalError & Z80LastEvalUnknownSymbol
+                Return 0
+            End If
+            Dim fillV As Integer = 0
+            If nOps = 2 Then
+                If Z80_EvalOperandExpr(Z80_GetOperand(argsText, 2), emitMode, fillV) = 0 Then Return 0
+                fillV = fillV And &HFF
+            End If
+            Dim dsIdx As Integer
+            For dsIdx = 1 To sizeV
+                outCount += 1 : outBytes(outCount) = fillV
+            Next dsIdx
+            Return -1
+    End Select
+
+    Z80LastAsmError = "Diretiva de dados desconhecida: " & op
+    Return 0
+End Function
+
+' ---------------------------------------------------------------------------
+' Listagem / referencia cruzada
+' ---------------------------------------------------------------------------
+
+Private Sub Z80ListingAddRow(ByVal srcLine As Integer, ByVal isEquLine As Integer, ByVal addrOrValue As Integer, byteVals() As Integer, ByVal byteValsCount As Integer)
+    Dim firstFlag As Integer = -1
+    Dim chunkIdx As Integer = 0
+    Dim bi As Integer
+
+    If byteValsCount = 0 Then
+        If Z80ListingRowCount < Z80_MAX_LISTING_ROWS Then
+            Z80ListingRowCount += 1
+            Z80ListingRows(Z80ListingRowCount).sourceLine = srcLine
+            Z80ListingRows(Z80ListingRowCount).hasAddr = -1
+            Z80ListingRows(Z80ListingRowCount).isEqu = isEquLine
+            Z80ListingRows(Z80ListingRowCount).rowAddr = addrOrValue
+            Z80ListingRows(Z80ListingRowCount).byteCount = 0
+        End If
+        Exit Sub
+    End If
+
+    For bi = 1 To byteValsCount
+        If chunkIdx = 0 Then
+            If Z80ListingRowCount >= Z80_MAX_LISTING_ROWS Then Exit For
+            Z80ListingRowCount += 1
+            If firstFlag <> 0 Then
+                Z80ListingRows(Z80ListingRowCount).sourceLine = srcLine
+                Z80ListingRows(Z80ListingRowCount).hasAddr = -1
+                Z80ListingRows(Z80ListingRowCount).isEqu = isEquLine
+                Z80ListingRows(Z80ListingRowCount).rowAddr = addrOrValue
+                firstFlag = 0
+            End If
+        End If
+        Select Case chunkIdx
+            Case 0 : Z80ListingRows(Z80ListingRowCount).byte0 = byteVals(bi)
+            Case 1 : Z80ListingRows(Z80ListingRowCount).byte1 = byteVals(bi)
+            Case 2 : Z80ListingRows(Z80ListingRowCount).byte2 = byteVals(bi)
+            Case 3 : Z80ListingRows(Z80ListingRowCount).byte3 = byteVals(bi)
+        End Select
+        Z80ListingRows(Z80ListingRowCount).byteCount += 1
+        chunkIdx += 1
+        If chunkIdx >= 4 Then chunkIdx = 0
+    Next bi
+End Sub
+
+Sub Z80_XrefBuildRows()
+    Z80XrefRowCount = 0
+
+    Dim names(1 To Z80_MAX_SYMBOLS) As String
+    Dim nameCount As Integer = 0
+    Dim si As Integer
+    For si = 1 To Z80SymbolCount
+        If Z80Symbols(si).isKnown <> 0 Then
+            nameCount += 1
+            names(nameCount) = Z80Symbols(si).symName
+        End If
+    Next si
+
+    ' insertion sort alfabetico (nameCount tipicamente pequeno - poucas
+    ' centenas de simbolos no maximo, num programa de ate 2000 linhas)
+    Dim ai As Integer, bi As Integer
+    For ai = 2 To nameCount
+        Dim keyName As String = names(ai)
+        bi = ai - 1
+        While bi >= 1 And names(bi) > keyName
+            names(bi + 1) = names(bi)
+            bi -= 1
+        Wend
+        names(bi + 1) = keyName
+    Next ai
+
+    Dim useAddrs(1 To Z80_MAX_SYMBOL_REFS) As Integer
+    Dim useCount As Integer
+    Dim ni As Integer
+    For ni = 1 To nameCount
+        Dim symIdx As Integer = Z80FindSymbol(names(ni))
+        Dim symValue As Integer = 0
+        If symIdx > 0 Then symValue = Z80Symbols(symIdx).symValue
+
+        useCount = 0
+        Dim ri As Integer
+        For ri = 1 To Z80SymbolRefCount
+            If Z80SymbolRefs(ri).symName = names(ni) Then
+                useCount += 1
+                useAddrs(useCount) = Z80SymbolRefs(ri).refAddr
+            End If
+        Next ri
+
+        Dim firstRow As Integer = -1
+        If useCount = 0 Then
+            If Z80XrefRowCount < Z80_MAX_SYMBOLS Then
+                Z80XrefRowCount += 1
+                Z80XrefRows(Z80XrefRowCount).symName = names(ni)
+                Z80XrefRows(Z80XrefRowCount).hasValue = -1
+                Z80XrefRows(Z80XrefRowCount).rowValue = symValue
+                Z80XrefRows(Z80XrefRowCount).addrCount = 0
+            End If
+        Else
+            Dim remaining As Integer = useCount
+            Dim consumed As Integer = 0
+            While remaining > 0
+                If Z80XrefRowCount >= Z80_MAX_SYMBOLS Then Exit While
+                Z80XrefRowCount += 1
+                If firstRow <> 0 Then
+                    Z80XrefRows(Z80XrefRowCount).symName = names(ni)
+                    Z80XrefRows(Z80XrefRowCount).hasValue = -1
+                    Z80XrefRows(Z80XrefRowCount).rowValue = symValue
+                    firstRow = 0
+                End If
+                Dim thisChunk As Integer = remaining
+                If thisChunk > 4 Then thisChunk = 4
+                Z80XrefRows(Z80XrefRowCount).addrCount = thisChunk
+                Dim b As Integer
+                For b = 0 To thisChunk - 1
+                    consumed += 1
+                    Select Case b
+                        Case 0 : Z80XrefRows(Z80XrefRowCount).addr0 = useAddrs(consumed)
+                        Case 1 : Z80XrefRows(Z80XrefRowCount).addr1 = useAddrs(consumed)
+                        Case 2 : Z80XrefRows(Z80XrefRowCount).addr2 = useAddrs(consumed)
+                        Case 3 : Z80XrefRows(Z80XrefRowCount).addr3 = useAddrs(consumed)
+                    End Select
+                Next b
+                remaining -= thisChunk
+            Wend
+        End If
+    Next ni
+End Sub
+
+Function Z80_GetLabelDefOrderCount() As Integer
+    Return Z80SymbolDefOrderCount
+End Function
+
+Function Z80_GetLabelDefOrderName(ByVal index0 As Integer) As String
+    If index0 < 0 Or index0 >= Z80SymbolDefOrderCount Then Return ""
+    Return Z80SymbolDefOrder(index0 + 1)
+End Function
+
+Function Z80_GetXrefRowCount() As Integer
+    Return Z80XrefRowCount
+End Function
+
+Function Z80_GetXrefRow(ByVal index0 As Integer, ByRef outRow As Z80XrefRow) As Integer
+    If index0 < 0 Or index0 >= Z80XrefRowCount Then Return 0
+    outRow = Z80XrefRows(index0 + 1)
+    Return -1
+End Function
+
+Function Z80_GetListingRowCount() As Integer
+    Return Z80ListingRowCount
+End Function
+
+Function Z80_GetListingRow(ByVal index0 As Integer, ByRef outRow As Z80ListingRow) As Integer
+    If index0 < 0 Or index0 >= Z80ListingRowCount Then Return 0
+    outRow = Z80ListingRows(index0 + 1)
+    Return -1
+End Function
+
+Function Z80_GetAssembleErrorLine() As Integer
+    Return Z80AsmErrorLine
+End Function
+
+Function Z80_GetAssembleErrorText() As String
+    Return Z80AsmErrorText
+End Function
+
+Function Z80_GetAssembleStartAddr() As Integer
+    Return Z80MinAddrTouched And &HFFFF
+End Function
+
+Function Z80_GetAssembleEndAddr() As Integer
+    Return Z80MaxAddrTouched And &HFFFF
+End Function
+
+' ---------------------------------------------------------------------------
+' Driver de 2 passes
+' ---------------------------------------------------------------------------
+
+Private Function Z80ReplaceAllLocal(ByRef sourceText As String, ByRef findText As String, ByRef replaceText As String) As String
+    If Len(findText) = 0 Then Return sourceText
+    Dim resultText As String = ""
+    Dim remaining As String = sourceText
+    Do
+        Dim foundPos As Integer = InStr(remaining, findText)
+        If foundPos = 0 Then
+            resultText &= remaining
+            Exit Do
+        End If
+        resultText &= Left(remaining, foundPos - 1) & replaceText
+        remaining = Mid(remaining, foundPos + Len(findText))
+    Loop
+    Return resultText
+End Function
+
+Private Sub Z80SplitSourceLines(ByRef sourceText As String, lines() As String, ByRef lineCount As Integer)
+    lineCount = 0
+    Dim norm As String = sourceText
+    norm = Z80ReplaceAllLocal(norm, Chr(13) & Chr(10), Chr(10))
+    norm = Z80ReplaceAllLocal(norm, Chr(13), Chr(10))
+
+    Dim startPos As Integer = 1
+    Dim lenNorm As Integer = Len(norm)
+    Dim scanPos As Integer
+    For scanPos = 1 To lenNorm + 1
+        If scanPos > lenNorm OrElse Mid(norm, scanPos, 1) = Chr(10) Then
+            lineCount += 1
+            lines(lineCount) = Mid(norm, startPos, scanPos - startPos)
+            startPos = scanPos + 1
+        End If
+    Next scanPos
+    If lineCount = 0 Then
+        lineCount = 1
+        lines(1) = ""
+    End If
+End Sub
+
+Const Z80_MAX_SOURCE_LINES = 4000
+
+Private Function Z80RunOnePass(lines() As String, ByVal lineCount As Integer, ByVal sizeOnly As Integer, mem() As Integer) As Integer
+    Dim lineNum As Integer = 0
+    Dim pl As Z80ParsedLine
+    Dim bytesOut(0 To 3) As Integer
+    Dim len4 As Integer, idx As Integer
+    Dim endedFlag As Integer = 0
+    Dim v1 As Integer, v2 As Integer, v3 As Integer
+    Dim emitNow As Integer = (sizeOnly = 0)
+
+    If sizeOnly <> 0 Then Z80PassNumber = 1 Else Z80PassNumber = 2
+
+    Z80CurLoc = 0
+    Z80RealPos = 0
+
+    Dim li As Integer
+    For li = 1 To lineCount
+        If endedFlag <> 0 Then Exit For
+        lineNum += 1
+
+        Z80_ParseLine(lines(li), pl)
+
+        If pl.isBlank <> 0 Then Continue For
+
+        If pl.hasLabel <> 0 And pl.labelHasColon <> 0 And Not (pl.hasOperator <> 0 And (pl.oper = "EQU" Or pl.oper = "DEFL" Or pl.oper = "ASET")) Then
+            If Z80_DefineSymbol(pl.lbl, Z80CurLoc, 0) = 0 Then
+                Z80AsmErrorLine = lineNum : Z80AsmErrorText = Z80LastEvalError
+                Return 0
+            End If
+        End If
+
+        If pl.hasOperator = 0 Then Continue For
+
+        Select Case pl.oper
+            Case "EQU"
+                If Z80_EvalExpr(pl.argsText, v1) <> 0 Then
+                    If Z80_DefineSymbol(pl.lbl, v1, -1) = 0 Then
+                        Z80AsmErrorLine = lineNum : Z80AsmErrorText = Z80LastEvalError
+                        Return 0
+                    End If
+                    If sizeOnly = 0 Then
+                        Dim emptyB(0 To 0) As Integer
+                        Z80ListingAddRow(lineNum, -1, v1, emptyB(), 0)
+                    End If
+                ElseIf sizeOnly = 0 Then
+                    Z80AsmErrorLine = lineNum : Z80AsmErrorText = "EQU: " & Z80LastEvalError & Z80LastEvalUnknownSymbol
+                    Return 0
+                End If
+                Continue For
+
+            Case "DEFL", "ASET"
+                If Z80_EvalExpr(pl.argsText, v2) <> 0 Then
+                    Dim symIdx2 As Integer = Z80FindOrAddSymbol(pl.lbl)
+                    If symIdx2 > 0 Then
+                        Z80Symbols(symIdx2).symValue = v2
+                        Z80Symbols(symIdx2).isKnown = -1
+                        Z80Symbols(symIdx2).isConstant = 0
+                    End If
+                    If sizeOnly = 0 Then
+                        Dim emptyB2(0 To 0) As Integer
+                        Z80ListingAddRow(lineNum, -1, v2, emptyB2(), 0)
+                    End If
+                ElseIf sizeOnly = 0 Then
+                    Z80AsmErrorLine = lineNum : Z80AsmErrorText = "DEFL/ASET: " & Z80LastEvalError & Z80LastEvalUnknownSymbol
+                    Return 0
+                End If
+                Continue For
+
+            Case "ORG"
+                If Z80_EvalExpr(pl.argsText, v3) <> 0 Then
+                    Z80CurLoc = v3
+                    Z80RealPos = v3
+                ElseIf sizeOnly = 0 Then
+                    Z80AsmErrorLine = lineNum : Z80AsmErrorText = "ORG: " & Z80LastEvalError & Z80LastEvalUnknownSymbol
+                    Return 0
+                End If
+                Continue For
+
+            Case "END"
+                endedFlag = -1
+                Continue For
+
+            Case "DEFB", "DEFW", "DEFM", "DEFS"
+                Dim dataCount As Integer
+                If Z80_EncodeDataDirective(pl.oper, pl.argsText, emitNow, Z80RunOneDataBytes(), dataCount) = 0 Then
+                    Z80AsmErrorLine = lineNum : Z80AsmErrorText = Z80LastAsmError
+                    Return 0
+                End If
+                If sizeOnly = 0 Then
+                    Dim dIdx As Integer
+                    Dim dAddr As Integer
+                    For dIdx = 1 To dataCount
+                        dAddr = (Z80RealPos + dIdx - 1) And &HFFFF
+                        mem(dAddr) = Z80RunOneDataBytes(dIdx)
+                        If Z80AnyByteWritten = 0 Then
+                            Z80MinAddrTouched = dAddr : Z80MaxAddrTouched = dAddr : Z80AnyByteWritten = -1
+                        Else
+                            If dAddr < Z80MinAddrTouched Then Z80MinAddrTouched = dAddr
+                            If dAddr > Z80MaxAddrTouched Then Z80MaxAddrTouched = dAddr
+                        End If
+                    Next dIdx
+                    Z80ListingAddRow(lineNum, 0, Z80RealPos, Z80RunOneDataBytes(), dataCount)
+                End If
+                Z80CurLoc = (Z80CurLoc + dataCount) And &HFFFF
+                Z80RealPos = (Z80RealPos + dataCount) And &HFFFF
+                Continue For
+        End Select
+
+        If Z80_IsMnemonic(pl.oper) = 0 Then
+            Z80AsmErrorLine = lineNum
+            Z80AsmErrorText = "Diretiva/mnemonico nao suportado nesta versao: " & pl.oper
+            Return 0
+        End If
+
+        len4 = Z80_EncodeInstruction(pl.oper, pl.argsText, emitNow, bytesOut())
+        If len4 < 0 Then
+            Z80AsmErrorLine = lineNum : Z80AsmErrorText = Z80LastAsmError
+            Return 0
+        End If
+
+        If sizeOnly = 0 Then
+            Dim iAddr As Integer
+            For idx = 0 To len4 - 1
+                iAddr = (Z80RealPos + idx) And &HFFFF
+                mem(iAddr) = bytesOut(idx)
+                If Z80AnyByteWritten = 0 Then
+                    Z80MinAddrTouched = iAddr : Z80MaxAddrTouched = iAddr : Z80AnyByteWritten = -1
+                Else
+                    If iAddr < Z80MinAddrTouched Then Z80MinAddrTouched = iAddr
+                    If iAddr > Z80MaxAddrTouched Then Z80MaxAddrTouched = iAddr
+                End If
+            Next idx
+            Dim listBytes(1 To 4) As Integer
+            For idx = 0 To len4 - 1
+                listBytes(idx + 1) = bytesOut(idx)
+            Next idx
+            Z80ListingAddRow(lineNum, 0, Z80RealPos, listBytes(), len4)
+        End If
+
+        Z80CurLoc = (Z80CurLoc + len4) And &HFFFF
+        Z80RealPos = (Z80RealPos + len4) And &HFFFF
+    Next li
+
+    Return -1
+End Function
+
+Function Z80_Assemble(ByRef sourceText As String, outBytes() As Integer) As Integer
+    Dim lines(1 To Z80_MAX_SOURCE_LINES) As String
+    Dim lineCount As Integer
+    Dim idx As Integer
+
+    Z80_ResetState()
+    Z80AsmErrorLine = 0 : Z80AsmErrorText = ""
+    Z80MinAddrTouched = 0 : Z80MaxAddrTouched = 0 : Z80AnyByteWritten = 0
+    Z80ListingRowCount = 0
+    Z80SymbolRefCount = 0
+    Z80SymbolDefOrderCount = 0
+    For idx = 0 To 65535
+        Z80AssembleMem(idx) = 0
+    Next idx
+
+    Z80SplitSourceLines(sourceText, lines(), lineCount)
+
+    If Z80RunOnePass(lines(), lineCount, -1, Z80AssembleMem()) = 0 Then Return -1
+    If Z80RunOnePass(lines(), lineCount, 0, Z80AssembleMem()) = 0 Then Return -1
+
+    Z80_XrefBuildRows()
+
+    If Z80AnyByteWritten = 0 Then Return 0
+
+    Dim n As Integer = Z80MaxAddrTouched - Z80MinAddrTouched + 1
+    For idx = 0 To n - 1
+        outBytes(idx) = Z80AssembleMem(Z80MinAddrTouched + idx)
+    Next idx
+    Return n
+End Function
+
+' ---------------------------------------------------------------------------
+' Comando EDIT: editor de linhas do programa-fonte Z80, estilo ZX-81/ZX
+' Spectrum (pedido explicito do usuario), portado de MamuteEditGui.pbi/
+' MamuteSupport.pbi (paleobasic) pro terminal em modo texto. Abre numa
+' janela PROPRIA (nao mistura com o scrollback do MON>) - a listagem do
+' programa e' a propria area de cima do documento, cursor ">" marcando a
+' linha atual, campo "ASM>" reservado embaixo (mesma ideia da linha de
+' entrada do MON>, so' que com mais uma linha de status acima dela).
+'
+' Sintaxe de cada linha (formato do manual original do MegaAssembler):
+'   NN Label: instrucao operando ;comentario
+' NN e' decimal (0-65529, mesmo teto do numero de linha do BASIC/MSX) -
+' digitar de novo o mesmo NN substitui a linha. Numeros DENTRO do operando
+' (Mamute_ParseAsmNumber) seguem a convencao ja estabelecida no resto do
+' Mamute: hexadecimal por padrao, sufixo H/B/D pra hexa explicito/binario/
+' decimal.
+'
+' Escopo desta fase (pedido do usuario cobre listar/editar/navegar entre
+' linhas): aceitar, editar, listar, navegar e os comandos de gerenciamento
+' do fonte (NEW/DELETE/RENUM/CHANGE/SEARCH/FIND/LSEARCH/SAVE/LOAD/MERGE/
+' QUIT). O comando A (montar de verdade) e MAP ficam FORA desta fase -
+' precisam de um assembler Z80 completo por baixo (Z80Asm.pbi la' no
+' paleobasic; nao existe equivalente aqui ainda), sinalizado no HELP e na
+' propria janela em vez de fingir suporte.
+' ---------------------------------------------------------------------------
+
+' Mnemonicos Z80 validos (so' o NOME - EDIT nao valida modo de enderecamento
+' nem resolve simbolos, mesmo escopo raso do original: "por hora vamos
+' apenas aceitar o programa, depois trataremos a compilacao") + as 6
+' pseudo-instrucoes do manual (ORG/DEFB/DEFW/DEFM/DEFS/EQU) mais END (ultima
+' linha do proprio exemplo oficial do manual - sem ela nem aquele exemplo
+' seria aceito).
+Const MAMUTE_ASM_MNEMONICS = "|LD|PUSH|POP|EX|EXX|LDI|LDIR|LDD|LDDR|CPI|CPIR|CPD|CPDR|ADD|ADC|SUB|SBC|AND|OR|XOR|CP|INC|DEC|DAA|CPL|NEG|CCF|SCF|NOP|HALT|DI|EI|IM|RLCA|RRCA|RLA|RRA|RLC|RRC|RL|RR|SLA|SRA|SLL|SRL|RLD|RRD|BIT|SET|RES|JP|JR|DJNZ|CALL|RET|RETI|RETN|RST|IN|OUT|INI|INIR|IND|INDR|OUTI|OTIR|OUTD|OTDR|"
+Const MAMUTE_ASM_PSEUDOOPS = "|ORG|DEFB|DEFW|DEFM|DEFS|EQU|END|"
+
+Private Function Mamute_IsAsmMnemonic(ByRef word As String) As Integer
+    Return InPipeList(UCase(word), MAMUTE_ASM_MNEMONICS)
+End Function
+
+Private Function Mamute_IsAsmPseudoOp(ByRef word As String) As Integer
+    Return InPipeList(UCase(word), MAMUTE_ASM_PSEUDOOPS)
+End Function
+
+Private Function Mamute_IsDecimalString(ByRef token As String) As Integer
+    If Len(token) = 0 Then Return 0
+    Dim i As Integer
+    For i = 1 To Len(token)
+        Dim ch As String = Mid(token, i, 1)
+        If ch < "0" Or ch > "9" Then Return 0
+    Next i
+    Return -1
+End Function
+
+' Identificador de label - primeiro caractere letra ou "_", resto
+' letras/digitos/"_".
+Private Function Mamute_IsValidAsmLabel(ByRef labelText As String) As Integer
+    If Len(labelText) = 0 Then Return 0
+    Dim firstCh As String = UCase(Mid(labelText, 1, 1))
+    If (firstCh < "A" Or firstCh > "Z") And firstCh <> "_" Then Return 0
+    Dim i As Integer
+    For i = 2 To Len(labelText)
+        Dim ch As String = UCase(Mid(labelText, i, 1))
+        If (ch < "A" Or ch > "Z") And (ch < "0" Or ch > "9") And ch <> "_" Then Return 0
+    Next i
+    Return -1
+End Function
+
+' Numero no dialeto do operando do EDIT - token PRECISA comecar com digito
+' 0-9. Sufixo opcional no ULTIMO caractere (H/B/D) decide a base e SEMPRE
+' vence sobre a leitura hexa padrao (H nunca e' digito hexa valido, mas B/D
+' sao - pra escrever um hexa terminado em B/D sem ambiguidade, use o sufixo
+' H explicito, ex.: "1BH").
+Private Function Mamute_ParseAsmNumber(ByRef token As String, ByRef outValue As Integer) As Integer
+    If Len(token) = 0 Then Return 0
+    Dim firstCh As String = Mid(token, 1, 1)
+    If firstCh < "0" Or firstCh > "9" Then Return 0
+
+    Dim lastCh As String = UCase(Right(token, 1))
+    Dim digitsTok As String
+    Dim baseVal As Integer
+    Select Case lastCh
+        Case "H"
+            digitsTok = Left(token, Len(token) - 1) : baseVal = 16
+        Case "B"
+            digitsTok = Left(token, Len(token) - 1) : baseVal = 2
+        Case "D"
+            digitsTok = Left(token, Len(token) - 1) : baseVal = 10
+        Case Else
+            digitsTok = token : baseVal = 16
+    End Select
+    If Len(digitsTok) = 0 Then Return 0
+
+    Dim hexDigits As String = "0123456789ABCDEF"
+    Dim i As Integer
+    Dim valueAcc As Integer = 0
+    For i = 1 To Len(digitsTok)
+        Dim ch As String = UCase(Mid(digitsTok, i, 1))
+        Dim digVal As Integer = InStr(hexDigits, ch) - 1
+        If digVal < 0 Or digVal >= baseVal Then Return 0
+        valueAcc = valueAcc * baseVal + digVal
+    Next i
+
+    outValue = valueAcc
+    Return -1
+End Function
+
+' Varre o operando procurando tokens alfanumericos fora de trechos entre
+' apostrofos (texto/char literal de DEFB/DEFM/etc., nunca numero) - todo
+' token comecando em digito 0-9 precisa passar por Mamute_ParseAsmNumber();
+' tokens comecando em letra (label/registrador) nao sao validados aqui (sem
+' tabela de simbolos nesta fase).
+Private Function Mamute_ValidateAsmOperandNumbers(ByRef operandText As String) As Integer
+    Dim inQuote As Integer = 0
+    Dim lenText As Integer = Len(operandText)
+    Dim i As Integer
+    Dim tokenBuf As String = ""
+    Dim dummyVal As Integer
+
+    For i = 1 To lenText + 1
+        Dim ch As String
+        If i <= lenText Then
+            ch = Mid(operandText, i, 1)
+        Else
+            ch = " " ' sentinela pra fechar o ultimo token pendente
+        End If
+
+        If inQuote <> 0 Then
+            If ch = "'" Then inQuote = 0
+            Continue For
+        End If
+
+        If ch = "'" Then
+            inQuote = -1
+            If Len(tokenBuf) > 0 Then
+                Dim tFirst As String = Mid(tokenBuf, 1, 1)
+                If tFirst >= "0" And tFirst <= "9" Then
+                    If Mamute_ParseAsmNumber(tokenBuf, dummyVal) = 0 Then Return 0
+                End If
+                tokenBuf = ""
+            End If
+            Continue For
+        End If
+
+        Dim isAlnum As Integer = 0
+        If (ch >= "0" And ch <= "9") Or (ch >= "A" And ch <= "Z") Or (ch >= "a" And ch <= "z") Then isAlnum = -1
+        If isAlnum <> 0 Then
+            tokenBuf &= ch
+        Else
+            If Len(tokenBuf) > 0 Then
+                Dim tFirst2 As String = Mid(tokenBuf, 1, 1)
+                If tFirst2 >= "0" And tFirst2 <= "9" Then
+                    If Mamute_ParseAsmNumber(tokenBuf, dummyVal) = 0 Then Return 0
+                End If
+                tokenBuf = ""
+            End If
+        End If
+    Next i
+
+    Return -1
+End Function
+
+' Parser de uma linha completa "NN Label: instrucao operando ;comentario"
+' pro formato interno (MamuteAsmLine). So' validacao SINTATICA (numero de
+' linha, rotulo, instrucao reconhecida, formato dos numeros no operando) -
+' nao valida modo de enderecamento nem resolve labels (fica pro futuro
+' comando de montagem). Retorna 0 (linha rejeitada) em qualquer desvio da
+' gramatica.
+Private Function Mamute_ParseAsmLine(ByRef rawTextIn As String, ByRef outLine As MamuteAsmLine) As Integer
+    Dim asmText As String = rawTextIn ' sem Trim aqui - o NN precisa comecar na coluna 1
+
+    Dim i As Integer = 1
+    Dim lenText As Integer = Len(asmText)
+    While i <= lenText And Mid(asmText, i, 1) >= "0" And Mid(asmText, i, 1) <= "9"
+        i += 1
+    Wend
+    If i = 1 Then Return 0
+
+    Dim lineNumTok As String = Left(asmText, i - 1)
+    If Len(lineNumTok) > 5 Then Return 0
+    Dim lineNumVal As Integer = ValInt(lineNumTok)
+    If lineNumVal > 65529 Then Return 0
+    If i > lenText Or Mid(asmText, i, 1) <> " " Then Return 0
+
+    Dim bodyText As String = Trim(Mid(asmText, i + 1))
+    If Len(bodyText) = 0 Then Return 0
+
+    Dim inQuote2 As Integer = 0
+    Dim commentPos As Integer = 0
+    Dim bodyLen As Integer = Len(bodyText)
+    For i = 1 To bodyLen
+        Dim scanCh As String = Mid(bodyText, i, 1)
+        If scanCh = "'" Then
+            inQuote2 = IIf(inQuote2 = 0, -1, 0)
+        ElseIf scanCh = ";" And inQuote2 = 0 Then
+            commentPos = i
+            Exit For
+        End If
+    Next i
+
+    Dim commentText As String = ""
+    Dim mainPart As String = bodyText
+    If commentPos > 0 Then
+        commentText = Trim(Mid(bodyText, commentPos + 1))
+        mainPart = Trim(Left(bodyText, commentPos - 1))
+    End If
+    If Len(mainPart) = 0 Then Return 0
+
+    Dim spacePosA As Integer = InStr(mainPart, " ")
+    Dim firstTok As String
+    Dim restAfterFirst As String
+    If spacePosA > 0 Then
+        firstTok = Left(mainPart, spacePosA - 1)
+        restAfterFirst = LTrim(Mid(mainPart, spacePosA + 1))
+    Else
+        firstTok = mainPart
+        restAfterFirst = ""
+    End If
+
+    Dim labelTextV As String = ""
+    Dim instrSection As String
+    If Right(firstTok, 1) = ":" Then
+        labelTextV = Left(firstTok, Len(firstTok) - 1)
+        If Mamute_IsValidAsmLabel(labelTextV) = 0 Then Return 0
+        instrSection = restAfterFirst
+    Else
+        instrSection = mainPart
+    End If
+    If Len(instrSection) = 0 Then Return 0
+
+    Dim spacePosB As Integer = InStr(instrSection, " ")
+    Dim instrTok As String
+    Dim operandTok As String
+    If spacePosB > 0 Then
+        instrTok = Left(instrSection, spacePosB - 1)
+        operandTok = Trim(Mid(instrSection, spacePosB + 1))
+    Else
+        instrTok = instrSection
+        operandTok = ""
+    End If
+
+    Dim instrUpper As String = UCase(instrTok)
+    If Mamute_IsAsmMnemonic(instrUpper) = 0 And Mamute_IsAsmPseudoOp(instrUpper) = 0 Then Return 0
+    If instrUpper = "EQU" And Len(labelTextV) = 0 Then Return 0
+    If Len(operandTok) = 0 And (instrUpper = "ORG" Or instrUpper = "DEFB" Or instrUpper = "DEFW" Or instrUpper = "DEFM" Or instrUpper = "DEFS" Or instrUpper = "EQU") Then Return 0
+
+    If instrUpper = "DEFM" Then
+        If Left(operandTok, 1) <> "'" Then Return 0
+    Else
+        If Mamute_ValidateAsmOperandNumbers(operandTok) = 0 Then Return 0
+    End If
+
+    outLine.lineNum = lineNumVal
+    outLine.rawText = bodyText
+    outLine.labelText = labelTextV
+    outLine.instr = instrUpper
+    outLine.operand = operandTok
+    outLine.comment = commentText
+    Return -1
+End Function
+
+' Guarda/substitui uma linha em MamuteAsmProgram(), mantendo sempre ordenado
+' por lineNum (digitar de novo o mesmo NN substitui a linha, mesma edicao
+' "como se fosse BASIC" do manual original).
+Private Sub Mamute_AsmStoreLine(ByRef newLine As MamuteAsmLine)
+    Dim i As Integer
+    For i = 1 To MamuteAsmProgramCount
+        If MamuteAsmProgram(i).lineNum = newLine.lineNum Then
+            MamuteAsmProgram(i) = newLine
+            Exit Sub
+        ElseIf MamuteAsmProgram(i).lineNum > newLine.lineNum Then
+            If MamuteAsmProgramCount < MAMUTE_ASM_MAX_LINES Then
+                Dim j As Integer
+                For j = MamuteAsmProgramCount + 1 To i + 1 Step -1
+                    MamuteAsmProgram(j) = MamuteAsmProgram(j - 1)
+                Next j
+                MamuteAsmProgram(i) = newLine
+                MamuteAsmProgramCount += 1
+            End If
+            Exit Sub
+        End If
+    Next i
+    If MamuteAsmProgramCount < MAMUTE_ASM_MAX_LINES Then
+        MamuteAsmProgramCount += 1
+        MamuteAsmProgram(MamuteAsmProgramCount) = newLine
+    End If
+End Sub
+
+Private Sub Mamute_AsmNew()
+    MamuteAsmProgramCount = 0
+End Sub
+
+Private Function MamuteEditIndexOfLine(ByVal lineNumVal As Integer) As Integer
+    Dim i As Integer
+    For i = 1 To MamuteAsmProgramCount
+        If MamuteAsmProgram(i).lineNum = lineNumVal Then Return i
+    Next i
+    Return 0
+End Function
+
+' DELETE <lininic>[-[<linfin>]] - apaga uma linha, um intervalo inclusive, ou
+' (<lininic>- sem <linfin>) da linha ate o fim do programa. Devolve quantas
+' linhas foram apagadas; -1 = erro de sintaxe.
+Private Function Mamute_AsmDelete(ByRef argsText As String) As Integer
+    Dim dashPos As Integer = InStr(argsText, "-")
+    Dim startTok As String
+    Dim endTok As String
+    Dim hasEnd As Integer = 0
+    Dim endLine As Integer
+
+    If dashPos > 0 Then
+        startTok = Trim(Left(argsText, dashPos - 1))
+        endTok = Trim(Mid(argsText, dashPos + 1))
+        If Len(endTok) > 0 Then
+            If Mamute_IsDecimalString(endTok) = 0 Then Return -1
+            hasEnd = -1
+            endLine = ValInt(endTok)
+        End If
+    Else
+        startTok = Trim(argsText)
+    End If
+
+    If Mamute_IsDecimalString(startTok) = 0 Then Return -1
+    Dim startLine As Integer = ValInt(startTok)
+
+    If dashPos = 0 Then
+        endLine = startLine
+    ElseIf hasEnd = 0 Then
+        endLine = 65529
+    End If
+    If endLine < startLine Then Return -1
+
+    Dim deletedCount As Integer = 0
+    Dim i As Integer = 1
+    While i <= MamuteAsmProgramCount
+        If MamuteAsmProgram(i).lineNum >= startLine And MamuteAsmProgram(i).lineNum <= endLine Then
+            Dim j As Integer
+            For j = i To MamuteAsmProgramCount - 1
+                MamuteAsmProgram(j) = MamuteAsmProgram(j + 1)
+            Next j
+            MamuteAsmProgramCount -= 1
+            deletedCount += 1
+        Else
+            i += 1
+        End If
+    Wend
+    Return deletedCount
+End Function
+
+' RENUM [<novali>[,<antigali>[,<incr>]]] - renumera a partir da linha ANTIGA
+' <antigali> em diante pra uma nova sequencia comecando em <novali> com passo
+' <incr> (sem nenhum parametro: tudo, comecando em 10, passo 10). Rejeita a
+' operacao INTEIRA (nada e' alterado) se a nova numeracao colidir com uma
+' linha nao renumerada ou passar do teto 65529.
+Private Function Mamute_AsmRenum(ByRef argsText As String) As Integer
+    Dim novaLi As Integer = 10
+    Dim antigaLi As Integer = -1
+    Dim incrVal As Integer = 10
+
+    Dim trimmedArgs As String = Trim(argsText)
+    If Len(trimmedArgs) > 0 Then
+        Dim fields() As String
+        Dim fieldCount As Integer
+        Mamute_SplitArgs(trimmedArgs, fields(), fieldCount, 3)
+        If fieldCount >= 1 And Len(Trim(fields(0))) > 0 Then
+            If Mamute_IsDecimalString(Trim(fields(0))) = 0 Then Return 0
+            novaLi = ValInt(Trim(fields(0)))
+        End If
+        If fieldCount >= 2 And Len(Trim(fields(1))) > 0 Then
+            If Mamute_IsDecimalString(Trim(fields(1))) = 0 Then Return 0
+            antigaLi = ValInt(Trim(fields(1)))
+        End If
+        If fieldCount >= 3 And Len(Trim(fields(2))) > 0 Then
+            If Mamute_IsDecimalString(Trim(fields(2))) = 0 Then Return 0
+            incrVal = ValInt(Trim(fields(2)))
+            If incrVal <= 0 Then Return 0
+        End If
+    End If
+
+    If MamuteAsmProgramCount = 0 Then Return -1
+
+    If antigaLi = -1 Then antigaLi = MamuteAsmProgram(1).lineNum
+
+    Dim newLinesCount As Integer = 0
+    Dim i As Integer
+    For i = 1 To MamuteAsmProgramCount
+        If MamuteAsmProgram(i).lineNum >= antigaLi Then newLinesCount += 1
+    Next i
+    If newLinesCount = 0 Then Return -1
+
+    Dim lastNew As Integer = novaLi + (newLinesCount - 1) * incrVal
+    If novaLi < 0 Or lastNew > 65529 Then Return 0
+
+    For i = 1 To MamuteAsmProgramCount
+        If MamuteAsmProgram(i).lineNum < antigaLi And MamuteAsmProgram(i).lineNum >= novaLi Then Return 0
+    Next i
+
+    Dim nextNum As Integer = novaLi
+    For i = 1 To MamuteAsmProgramCount
+        If MamuteAsmProgram(i).lineNum >= antigaLi Then
+            MamuteAsmProgram(i).lineNum = nextNum
+            nextNum += incrVal
+        End If
+    Next i
+    Return -1
+End Function
+
+Private Function Mamute_ReplaceAll(ByRef sourceText As String, ByRef findText As String, ByRef replaceText As String) As String
+    If Len(findText) = 0 Then Return sourceText
+    Dim resultText As String = ""
+    Dim remaining As String = sourceText
+    Do
+        Dim foundPos As Integer = InStr(remaining, findText)
+        If foundPos = 0 Then
+            resultText &= remaining
+            Exit Do
+        End If
+        resultText &= Left(remaining, foundPos - 1) & replaceText
+        remaining = Mid(remaining, foundPos + Len(findText))
+    Loop
+    Return resultText
+End Function
+
+' CHANGE '<string1>'[,'<string2>'] - troca todas as ocorrencias de string1
+' por string2 (ou apaga string1, se string2 for omitido) no CORPO de cada
+' linha. Cada linha alterada e' RE-VALIDADA via Mamute_ParseAsmLine() antes
+' de aplicar - se a troca quebrar a gramatica, essa linha fica como estava.
+Private Function Mamute_AsmChange(ByRef string1 As String, ByRef string2 As String) As Integer
+    If Len(string1) = 0 Then Return -1
+
+    Dim changedCount As Integer = 0
+    Dim i As Integer
+    Dim reparsed As MamuteAsmLine
+    For i = 1 To MamuteAsmProgramCount
+        If InStr(MamuteAsmProgram(i).rawText, string1) > 0 Then
+            Dim newBody As String = Mamute_ReplaceAll(MamuteAsmProgram(i).rawText, string1, string2)
+            Dim fullLine As String = Trim(Str(MamuteAsmProgram(i).lineNum)) & " " & newBody
+            If Mamute_ParseAsmLine(fullLine, reparsed) <> 0 Then
+                MamuteAsmProgram(i) = reparsed
+                changedCount += 1
+            End If
+        End If
+    Next i
+    Return changedCount
+End Function
+
+' Sintaxe adaptada pro idioma ja usado por SH/MS: CHANGE '<string1>'[,'<string2>']
+' (o manual original mostra sem virgula: CHANGE '<string1>'<string2>).
+Private Function MamuteEditParseChangeArgs(ByRef argsText As String, ByRef outStr1 As String, ByRef outStr2 As String) As Integer
+    Dim trimmedArgs As String = Trim(argsText)
+    If Left(trimmedArgs, 1) <> "'" Then Return 0
+    Dim close1 As Integer = InStr(2, trimmedArgs, "'")
+    If close1 = 0 Then Return 0
+    outStr1 = Mid(trimmedArgs, 2, close1 - 2)
+    outStr2 = ""
+
+    Dim restText As String = Trim(Mid(trimmedArgs, close1 + 1))
+    If Len(restText) > 0 Then
+        If Left(restText, 1) <> "," Then Return 0
+        Dim afterComma As String = Trim(Mid(restText, 2))
+        If Left(afterComma, 1) = "'" Then
+            Dim close2 As Integer = InStr(2, afterComma, "'")
+            If close2 > 0 Then
+                outStr2 = Mid(afterComma, 2, close2 - 2)
+            Else
+                outStr2 = Mid(afterComma, 2)
+            End If
+        End If
+    End If
+    Return -1
+End Function
+
+' Motor comum de SEARCH/LSEARCH/FIND: '<string>' entre aspas = busca
+' LITERAL case-sensitive; sem aspas = busca LIVRE case-insensitive - ambas
+' no CORPO cru (rawText) de cada linha. Preenche MamuteAsmSearchMatches().
+' Retorna a quantidade de ocorrencias; -1 = erro de sintaxe (termo vazio).
+Private Function Mamute_AsmSearch(ByRef argsText As String) As Integer
+    MamuteAsmSearchCount = 0
+    Dim trimmedArgs As String = Trim(argsText)
+    If Len(trimmedArgs) = 0 Then Return -1
+
+    Dim needle As String
+    Dim caseSensitive As Integer
+    If Left(trimmedArgs, 1) = "'" Then
+        Dim closePos As Integer = InStr(2, trimmedArgs, "'")
+        If closePos > 0 Then
+            needle = Mid(trimmedArgs, 2, closePos - 2)
+        Else
+            needle = Mid(trimmedArgs, 2)
+        End If
+        caseSensitive = -1
+    Else
+        needle = trimmedArgs
+        caseSensitive = 0
+    End If
+    If Len(needle) = 0 Then Return -1
+
+    Dim needleCmp As String = needle
+    If caseSensitive = 0 Then needleCmp = UCase(needle)
+
+    Dim i As Integer
+    For i = 1 To MamuteAsmProgramCount
+        Dim hay As String = MamuteAsmProgram(i).rawText
+        If caseSensitive = 0 Then hay = UCase(hay)
+        If InStr(hay, needleCmp) > 0 Then
+            If MamuteAsmSearchCount < MAMUTE_ASM_MAX_LINES Then
+                MamuteAsmSearchCount += 1
+                MamuteAsmSearchMatches(MamuteAsmSearchCount) = i
+            End If
+        End If
+    Next i
+    Return MamuteAsmSearchCount
+End Function
+
+' SAVE - grava o programa-fonte inteiro em ASCII puro (uma linha "NN corpo"
+' por linha - o MESMO texto que, digitado de volta no EDIT, reproduz a linha
+' via Mamute_ParseAsmLine, round-trip garantido). Formato PROPRIO desta
+' porta (extensao .mza), NAO o formato binario proprietario do MegaAssembler
+' original. Devolve mensagem de status ("" = cancelado).
+Private Function Mamute_AsmSave() As String
+    Dim canceled As Integer
+    Dim filePath As String = PromptPathDialog("SAVE - Programa-fonte (EDIT)", "Nome do arquivo (.mza):", "programa.mza", canceled)
+    If canceled <> 0 Or Len(Trim(filePath)) = 0 Then Return ""
+    If InStr(filePath, ".") = 0 Then filePath &= ".mza"
+
+    Dim ff As Integer = FreeFile
+    Dim errCode As Integer = Open(filePath For Output As #ff)
+    If errCode <> 0 Then Return "?ERRO AO GRAVAR ARQUIVO"
+    Dim i As Integer
+    For i = 1 To MamuteAsmProgramCount
+        Print #ff, Trim(Str(MamuteAsmProgram(i).lineNum)) & " " & MamuteAsmProgram(i).rawText
+    Next i
+    Close #ff
+    Return "GRAVADO: " & filePath
+End Function
+
+' Motor comum de LOAD/MERGE - le um arquivo no mesmo formato ASCII de
+' Mamute_AsmSave(), cada linha passando pelo MESMO Mamute_ParseAsmLine() da
+' digitacao ao vivo, depois Mamute_AsmStoreLine() (que ja' SUBSTITUI
+' automaticamente qualquer linha existente com o MESMO NN) - e' exatamente a
+' regra "em caso de colisao de numero, a linha lida do arquivo prevalece" do
+' MERGE. Linhas invalidas no arquivo sao ignoradas silenciosamente.
+' clearFirst<>0 (LOAD) apaga o programa em memoria ANTES de ler; 0 (MERGE)
+' funde de verdade. Devolve quantas linhas foram lidas; -1 = cancelado/erro.
+Private Function Mamute_AsmLoadOrMerge(ByRef titleText As String, ByVal clearFirst As Integer) As Integer
+    Dim canceled As Integer
+    Dim filePath As String = PromptPathDialog(titleText, "Nome do arquivo (.mza):", "programa.mza", canceled)
+    If canceled <> 0 Or Len(Trim(filePath)) = 0 Then Return -1
+    If Dir(filePath) = "" Then Return -1
+
+    Dim ff As Integer = FreeFile
+    Dim errCode As Integer = Open(filePath For Input As #ff)
+    If errCode <> 0 Then Return -1
+
+    If clearFirst <> 0 Then Mamute_AsmNew()
+
+    Dim loadedCount As Integer = 0
+    Dim lineText As String
+    Dim parsedLine As MamuteAsmLine
+    While Not Eof(ff)
+        Line Input #ff, lineText
+        If Len(Trim(lineText)) > 0 Then
+            If Mamute_ParseAsmLine(lineText, parsedLine) <> 0 Then
+                Mamute_AsmStoreLine(parsedLine)
+                loadedCount += 1
+            End If
+        End If
+    Wend
+    Close #ff
+    Return loadedCount
+End Function
+
+Private Function Mamute_AsmLoad() As Integer
+    Return Mamute_AsmLoadOrMerge("LOAD - Programa-fonte (EDIT)", -1)
+End Function
+
+Private Function Mamute_AsmMerge() As Integer
+    Return Mamute_AsmLoadOrMerge("MERGE - Programa-fonte (EDIT)", 0)
+End Function
+
+' ---------------------------------------------------------------------------
+' Comando A do EDIT: monta o programa-fonte de verdade via Z80_Assemble()
+' (motor Z80 acima) - opcoes O/N/P/I/R/S/D/H + /<offset>, mesmo vocabulario
+' do comando A do MegaAssembler original/paleobasic. Diferencas desta versao:
+' "P"/"H" gravam um arquivo .txt em vez de PDF (msxIDE nao tem gerador de
+' PDF - mesma adaptacao ja usada por LP/LSEARCH); sem o eco cosmetico
+' PASSO-1/PASSO-2 (so' fazia sentido numa janela GUI com WindowEvent() pra
+' "bombear" durante a pausa - o msxIDE nao tem esse loop).
+' ---------------------------------------------------------------------------
+
+Type MamuteAsmResult
+    okFlag As Integer
+    errorLine As Integer
+    errorText As String
+    byteCount As Integer
+    startAddr As Integer
+    endAddr As Integer
+End Type
+
+Dim Shared MamuteAsmHasResult As Integer
+Dim Shared MamuteAsmLastByteCount As Integer
+Dim Shared MamuteAsmLastStartAddr As Integer
+Dim Shared MamuteAsmLastEndAddr As Integer
+
+Dim Shared MamuteAsmListingLines(1 To Z80_MAX_LISTING_ROWS) As String
+Dim Shared MamuteAsmListingLineCount As Integer
+Dim Shared MamuteAsmXrefLines(1 To Z80_MAX_SYMBOLS) As String
+Dim Shared MamuteAsmXrefLineCount As Integer
+Dim Shared MamuteAsmLabelListLines(1 To Z80_MAX_SYMBOLS) As String
+Dim Shared MamuteAsmLabelListLineCount As Integer
+Dim Shared MamuteAsmLabelOrderLines(1 To Z80_MAX_SYMBOLS) As String
+Dim Shared MamuteAsmLabelOrderLineCount As Integer
+
+' Buffer de 64KB reaproveitado por Mamute_AsmAssemble() - Shared, mesmo
+' motivo/mesmo achado do Z80AssembleMem() no motor acima (evitar empilhar
+' varios buffers de 64KB na mesma cadeia de chamadas e estourar a pilha).
+Dim Shared MamuteAsmOutBytesBuf(0 To 65535) As Integer
+
+' Devolve o NN (numero de linha do Mamute) correspondente a' LinhaFonte
+' (1-based - mesma numeracao que Z80_GetAssembleErrorLine() devolve). Como o
+' texto-fonte pra Z80_Assemble() e' montado juntando MamuteAsmProgram() em
+' ordem, 1 linha de texto por elemento, a linha K do fonte e' SEMPRE o
+' K-esimo elemento do array. -1 se fora da faixa.
+Private Function Mamute_AsmLineNumberAtSourceLine(ByVal sourceLine As Integer) As Integer
+    If sourceLine < 1 Or sourceLine > MamuteAsmProgramCount Then Return -1
+    Return MamuteAsmProgram(sourceLine).lineNum
+End Function
+
+' Se Token comeca com digito e NAO tem sufixo H/B/D reconhecido no final,
+' acrescenta "H" - o EDIT aceita numeros SEM sufixo como HEXADECIMAL por
+' padrao (mesma convencao do resto do Mamute), mas o motor Z80 (TokenizeExpr,
+' acima) segue a convencao classica M80/Nestor80: numero sem sufixo e'
+' DECIMAL. "0A2" digitado no EDIT significa hexa 162 - sem esta traducao, o
+' motor tentaria ler "0A2" como decimal (tem letra, nao bate) e rejeitaria.
+' Sufixos que JA existem (H/B/D) tem o MESMO significado nos dois sistemas,
+' ficam intocados.
+Private Function Mamute_MaybeAddHexSuffix(ByRef token As String) As String
+    If Len(token) = 0 Then Return token
+    Dim firstCh As String = Mid(token, 1, 1)
+    If firstCh < "0" Or firstCh > "9" Then Return token
+    Dim lastCh As String = UCase(Right(token, 1))
+    If lastCh = "H" Or lastCh = "B" Or lastCh = "D" Then Return token
+    Return token & "H"
+End Function
+
+Private Function Mamute_TranslateOperandForZ80Asm(ByRef operandText As String) As String
+    Dim resultText As String = ""
+    Dim inQuote As Integer = 0
+    Dim lenText As Integer = Len(operandText)
+    Dim i As Integer
+    Dim tokenBuf As String = ""
+
+    For i = 1 To lenText + 1
+        Dim ch As String
+        If i <= lenText Then ch = Mid(operandText, i, 1) Else ch = " "
+
+        If inQuote <> 0 Then
+            resultText &= ch
+            If ch = "'" Then inQuote = 0
+            Continue For
+        End If
+
+        If ch = "'" Then
+            If Len(tokenBuf) > 0 Then
+                resultText &= Mamute_MaybeAddHexSuffix(tokenBuf)
+                tokenBuf = ""
+            End If
+            inQuote = -1
+            resultText &= ch
+            Continue For
+        End If
+
+        Dim isAlnum As Integer = 0
+        If (ch >= "0" And ch <= "9") Or (ch >= "A" And ch <= "Z") Or (ch >= "a" And ch <= "z") Then isAlnum = -1
+        If isAlnum <> 0 Then
+            tokenBuf &= ch
+        Else
+            If Len(tokenBuf) > 0 Then
+                resultText &= Mamute_MaybeAddHexSuffix(tokenBuf)
+                tokenBuf = ""
+            End If
+            If i <= lenText Then resultText &= ch
+        End If
+    Next i
+
+    Return resultText
+End Function
+
+Private Function Mamute_Hex4Local(ByVal v As Integer) As String
+    Return Hex(v And &HFFFF, 4)
+End Function
+
+' Formata Z80_GetListingRow() (ja' preenchida pela ultima Z80_Assemble() bem-
+' sucedida) em texto pronto pra desenhar/gravar: "NN  ENDR  XX XX XX XX
+' conteudo" - NN/ENDR em branco numa linha de CONTINUACAO (mais de 4 bytes na
+' mesma linha-fonte). hideLineNumbers (opcao N do comando A) so' deixa a
+' coluna NN em branco, o resto continua igual.
+Private Sub Mamute_AsmBuildListingLines(ByVal hideLineNumbers As Integer)
+    MamuteAsmListingLineCount = 0
+    Dim rowCount As Integer = Z80_GetListingRowCount()
+    Dim i As Integer, b As Integer
+    Dim row As Z80ListingRow
+    Dim lineText As String, hexPart As String, contentText As String, numPart As String
+
+    For i = 0 To rowCount - 1
+        Z80_GetListingRow(i, row)
+
+        contentText = ""
+        If row.hasAddr <> 0 And row.sourceLine >= 1 And row.sourceLine <= MamuteAsmProgramCount Then
+            contentText = MamuteAsmProgram(row.sourceLine).rawText
+            If hideLineNumbers <> 0 Then
+                numPart = Space(5)
+            Else
+                numPart = Right(Space(5) & Trim(Str(MamuteAsmProgram(row.sourceLine).lineNum)), 5)
+            End If
+            lineText = numPart & "  " & Mamute_Hex4Local(row.rowAddr) & "  "
+        Else
+            lineText = Space(5) & "  " & Space(4) & "  "
+        End If
+
+        hexPart = ""
+        For b = 0 To row.byteCount - 1
+            Select Case b
+                Case 0 : hexPart &= Hex(row.byte0, 2) & " "
+                Case 1 : hexPart &= Hex(row.byte1, 2) & " "
+                Case 2 : hexPart &= Hex(row.byte2, 2) & " "
+                Case 3 : hexPart &= Hex(row.byte3, 2) & " "
+            End Select
+        Next b
+        lineText &= Left(hexPart & Space(12), 12) & " " & contentText
+
+        If MamuteAsmListingLineCount < Z80_MAX_LISTING_ROWS Then
+            MamuteAsmListingLineCount += 1
+            MamuteAsmListingLines(MamuteAsmListingLineCount) = lineText
+        End If
+    Next i
+End Sub
+
+' Formata Z80_GetXrefRow() (ja' preenchida pela ultima Z80_Assemble() bem-
+' sucedida): "NOME  VALOR  ENDR ENDR..." - NOME/VALOR em branco numa linha de
+' CONTINUACAO (simbolo com mais de 4 usos).
+Private Sub Mamute_AsmBuildXrefLines()
+    MamuteAsmXrefLineCount = 0
+    Dim rowCount As Integer = Z80_GetXrefRowCount()
+    Dim i As Integer, a As Integer
+    Dim row As Z80XrefRow
+    Dim lineText As String, addrPart As String
+
+    For i = 0 To rowCount - 1
+        Z80_GetXrefRow(i, row)
+        If row.hasValue <> 0 Then
+            lineText = Left(row.symName & Space(8), 8) & "  " & Mamute_Hex4Local(row.rowValue) & "  "
+        Else
+            lineText = Space(8) & "  " & Space(4) & "  "
+        End If
+
+        addrPart = ""
+        For a = 0 To row.addrCount - 1
+            Select Case a
+                Case 0 : addrPart &= Mamute_Hex4Local(row.addr0) & " "
+                Case 1 : addrPart &= Mamute_Hex4Local(row.addr1) & " "
+                Case 2 : addrPart &= Mamute_Hex4Local(row.addr2) & " "
+                Case 3 : addrPart &= Mamute_Hex4Local(row.addr3) & " "
+            End Select
+        Next a
+        lineText &= Trim(addrPart)
+
+        If MamuteAsmXrefLineCount < Z80_MAX_SYMBOLS Then
+            MamuteAsmXrefLineCount += 1
+            MamuteAsmXrefLines(MamuteAsmXrefLineCount) = lineText
+        End If
+    Next i
+End Sub
+
+' "NOME  VALOR" simples, ordem ALFABETICA (opcao S do comando A) - mesma
+' tabela de Z80_GetXrefRow() (ja' alfabetica), so' aproveita as linhas com
+' hasValue (pula as de continuacao, cujos enderecos de uso nao interessam
+' aqui).
+Private Sub Mamute_AsmBuildLabelListLines()
+    MamuteAsmLabelListLineCount = 0
+    Dim rowCount As Integer = Z80_GetXrefRowCount()
+    Dim i As Integer
+    Dim row As Z80XrefRow
+
+    For i = 0 To rowCount - 1
+        Z80_GetXrefRow(i, row)
+        If row.hasValue <> 0 Then
+            If MamuteAsmLabelListLineCount < Z80_MAX_SYMBOLS Then
+                MamuteAsmLabelListLineCount += 1
+                MamuteAsmLabelListLines(MamuteAsmLabelListLineCount) = Left(row.symName & Space(8), 8) & "  " & Mamute_Hex4Local(row.rowValue)
+            End If
+        End If
+    Next i
+End Sub
+
+' Mesmo layout "NOME  VALOR" acima, mas em ordem de DEFINICAO no fonte
+' (opcao D do comando A) - Z80_GetLabelDefOrderCount()/Name() em vez da
+' tabela xref alfabetica.
+Private Sub Mamute_AsmBuildLabelOrderLines()
+    MamuteAsmLabelOrderLineCount = 0
+    Dim countN As Integer = Z80_GetLabelDefOrderCount()
+    Dim i As Integer
+    Dim symName As String
+
+    For i = 0 To countN - 1
+        symName = Z80_GetLabelDefOrderName(i)
+        If MamuteAsmLabelOrderLineCount < Z80_MAX_SYMBOLS Then
+            MamuteAsmLabelOrderLineCount += 1
+            MamuteAsmLabelOrderLines(MamuteAsmLabelOrderLineCount) = Left(symName & Space(8), 8) & "  " & Mamute_Hex4Local(Z80_GetSymbolValue(symName))
+        End If
+    Next i
+End Sub
+
+' Monta MamuteAsmProgram() inteiro via Z80_Assemble() - so' valida/monta (sem
+' gravar em lugar nenhum ainda; quem chama decide o que fazer com
+' outBytes()/StartAddr/EndAddr em caso de sucesso - ver Case "A" no key
+' handler do EDIT). Reconstroi cada linha a partir dos campos JA separados
+' (Label/Instr/Operand, ja' validados por Mamute_ParseAsmLine na hora da
+' digitacao) em vez de RawText direto, pra poder traduzir o Operando pro
+' dialeto numerico do motor Z80 (Mamute_TranslateOperandForZ80Asm acima).
+' offsetValue (opcao /<offset>): somado ao operando de toda linha ORG (entre
+' parenteses, "0" na frente do literal garantindo que o motor nunca confunda
+' com um label mesmo comecando com A-F) ANTES de reconstruir o texto-fonte -
+' o resto da montagem (rotulos, saltos, listagem) segue automaticamente o
+' ORG deslocado.
+Private Sub Mamute_AsmAssemble(ByRef outResult As MamuteAsmResult, ByVal hideLineNumbers As Integer, ByVal offsetValue As Integer)
+    outResult.okFlag = 0
+    outResult.errorLine = 0
+    outResult.errorText = ""
+    outResult.byteCount = 0
+    outResult.startAddr = 0
+    outResult.endAddr = 0
+
+    Dim sourceText As String = ""
+    Dim lineOut As String
+    Dim orgOperand As String
+    Dim i As Integer
+    For i = 1 To MamuteAsmProgramCount
+        If Len(sourceText) > 0 Then sourceText &= Chr(10)
+        lineOut = ""
+        If Len(MamuteAsmProgram(i).labelText) > 0 Then lineOut = MamuteAsmProgram(i).labelText & ": "
+        lineOut &= MamuteAsmProgram(i).instr
+        If Len(MamuteAsmProgram(i).operand) > 0 Then
+            orgOperand = Mamute_TranslateOperandForZ80Asm(MamuteAsmProgram(i).operand)
+            If offsetValue <> 0 And MamuteAsmProgram(i).instr = "ORG" Then
+                orgOperand = "(" & orgOperand & ")+0" & Hex(offsetValue And &HFFFF, 4) & "H"
+            End If
+            lineOut &= " " & orgOperand
+        End If
+        If Len(MamuteAsmProgram(i).comment) > 0 Then lineOut &= " ;" & MamuteAsmProgram(i).comment
+        sourceText &= lineOut
+    Next i
+
+    Dim n As Integer = Z80_Assemble(sourceText, MamuteAsmOutBytesBuf())
+    If n < 0 Then
+        Dim srcLine As Integer = Z80_GetAssembleErrorLine()
+        Dim mappedLine As Integer = Mamute_AsmLineNumberAtSourceLine(srcLine)
+        If mappedLine >= 0 Then outResult.errorLine = mappedLine
+        outResult.errorText = Z80_GetAssembleErrorText()
+        Exit Sub
+    End If
+
+    outResult.okFlag = -1
+    outResult.byteCount = n
+    If n > 0 Then
+        outResult.startAddr = Z80_GetAssembleStartAddr()
+        outResult.endAddr = Z80_GetAssembleEndAddr()
+    End If
+
+    MamuteAsmHasResult = -1
+    MamuteAsmLastByteCount = n
+    MamuteAsmLastStartAddr = outResult.startAddr
+    MamuteAsmLastEndAddr = outResult.endAddr
+    Mamute_AsmBuildListingLines(hideLineNumbers)
+    Mamute_AsmBuildXrefLines()
+    Mamute_AsmBuildLabelListLines()
+    Mamute_AsmBuildLabelOrderLines()
+End Sub
+
+' Preenche Text com espacos ate TargetCol - se ja passou de TargetCol,
+' avanca pro proximo multiplo de 8 (mesma largura de "tab stop" de um tab
+' literal, mesmo com fonte monoespacada).
+Private Function MamuteEditPadToColumn(ByRef textIn As String, ByVal targetCol As Integer) As String
+    Dim colNow As Integer = Len(textIn)
+    Dim target As Integer = targetCol
+    If colNow >= target Then target = ((colNow \ 8) + 1) * 8
+    Return textIn & Space(target - colNow)
+End Function
+
+' Monta a linha formatada (Label/Instr/Operand/Comment) alinhada em colunas
+' fixas - so' pra EXIBICAO na listagem/LSEARCH; rawText/labelText/instr/
+' operand/comment continuam guardados exatamente como digitados.
+Private Function MamuteEdit_FormatLine(ByRef lineData As MamuteAsmLine) As String
+    Dim textOut As String = ""
+    If Len(lineData.labelText) > 0 Then textOut = lineData.labelText & ":"
+    textOut = MamuteEditPadToColumn(textOut, 8)
+    textOut &= lineData.instr
+    If Len(lineData.operand) > 0 Then textOut &= " " & lineData.operand
+    If Len(lineData.comment) > 0 Then
+        textOut = MamuteEditPadToColumn(textOut, 24)
+        textOut &= ";" & lineData.comment
+    End If
+    Return textOut
+End Function
+
+' Quantas "linhas" existem na sequencia ATIVA agora - o programa inteiro, ou
+' (FilterMode) so' os resultados do ultimo SEARCH.
+Private Function MamuteEditActiveCount(ByVal docIndex As Integer) As Integer
+    If mamuteEditListingMode(docIndex) <> 0 Then Return MamuteAsmListingLineCount
+    If mamuteEditFilterMode(docIndex) <> 0 Then Return MamuteAsmSearchCount
+    Return MamuteAsmProgramCount
+End Function
+
+' Indice (1-based) REAL dentro de MamuteAsmProgram() correspondente a
+' Position dentro da sequencia ATIVA (ver MamuteEditActiveCount acima) - 0
+' se Position estiver fora da faixa valida.
+Private Function MamuteEditRealIndexAt(ByVal docIndex As Integer, ByVal position As Integer) As Integer
+    If mamuteEditFilterMode(docIndex) <> 0 Then
+        If position < 1 Or position > MamuteAsmSearchCount Then Return 0
+        Return MamuteAsmSearchMatches(position)
+    End If
+    If position < 1 Or position > MamuteAsmProgramCount Then Return 0
+    Return position
+End Function
+
+' Garante que CursorIndex esteja dentro da janela [TopIndex,
+' TopIndex+VisibleLines-1] - se nao estiver (linha nova encheu a tela, ou a
+' seta moveu o cursor pra fora), rola por METADE de uma tela na direcao
+' certa, repetindo se precisar (pedido explicito do usuario, mesmo espirito
+' do ZX-81).
+Private Sub MamuteEditEnsureCursorVisible(ByVal docIndex As Integer)
+    Dim total As Integer = MamuteEditActiveCount(docIndex)
+    If total = 0 Then
+        mamuteEditTopIndex(docIndex) = 1
+        mamuteEditCursorIndex(docIndex) = 1
+        Exit Sub
+    End If
+    If mamuteEditCursorIndex(docIndex) < 1 Then mamuteEditCursorIndex(docIndex) = 1
+    If mamuteEditCursorIndex(docIndex) > total Then mamuteEditCursorIndex(docIndex) = total
+
+    Dim visLines As Integer = GetClientTextHeight(docs(docIndex))
+    Dim half As Integer = visLines \ 2
+    If half < 1 Then half = 1
+
+    While mamuteEditCursorIndex(docIndex) < mamuteEditTopIndex(docIndex)
+        mamuteEditTopIndex(docIndex) -= half
+        If mamuteEditTopIndex(docIndex) < 1 Then mamuteEditTopIndex(docIndex) = 1
+    Wend
+    While mamuteEditCursorIndex(docIndex) > mamuteEditTopIndex(docIndex) + visLines - 1
+        mamuteEditTopIndex(docIndex) += half
+    Wend
+End Sub
+
+Sub DrawMamuteEditView(ByVal docIndex As Integer)
+    Dim ByRef d As Document = docs(docIndex)
+    Dim clientW As Integer = GetClientTextWidth(d)
+    Dim clientH As Integer = GetClientTextHeight(d)
+    Dim topIdx As Integer = mamuteEditTopIndex(docIndex)
+    Dim curIdx As Integer = mamuteEditCursorIndex(docIndex)
+
+    Dim row As Integer
+    Dim seqPos As Integer = topIdx
+    For row = 0 To clientH - 1
+        Dim rowY As Integer = d.winY + 1 + row
+        Dim lineText As String = ""
+        If mamuteEditListingMode(docIndex) <> 0 Then
+            ' Listagem da ultima montagem (comando A) - so' leitura, sem
+            ' cursor ">" (linhas de continuacao/xref/labels nao correspondem
+            ' a nenhuma linha REAL de MamuteAsmProgram()).
+            If seqPos >= 1 And seqPos <= MamuteAsmListingLineCount Then
+                lineText = MamuteAsmListingLines(seqPos)
+            End If
+        Else
+            Dim realIdx As Integer = MamuteEditRealIndexAt(docIndex, seqPos)
+            If realIdx > 0 Then
+                Dim marker As String = " "
+                If seqPos = curIdx Then marker = ">"
+                lineText = Right(Space(5) & Trim(Str(MamuteAsmProgram(realIdx).lineNum)), 5) & " " & marker & " " & MamuteEdit_FormatLine(MamuteAsmProgram(realIdx))
+            End If
+        End If
+        Dim padded As String = Left(lineText & Space(clientW), clientW)
+        Dim i As Integer
+        For i = 1 To clientW
+            ConsoleSetCell(d.winX + i, rowY, Asc(Mid(padded, i, 1)), 15, 0)
+        Next i
+        seqPos += 1
+    Next row
+
+    Dim statusRow As Integer = d.winY + 1 + clientH
+    Dim statusPadded As String = Left(mamuteEditStatusText(docIndex) & Space(clientW), clientW)
+    Dim si As Integer
+    For si = 1 To clientW
+        ConsoleSetCell(d.winX + si, statusRow, Asc(Mid(statusPadded, si, 1)), 14, 0)
+    Next si
+
+    Dim inputRow As Integer = statusRow + 1
+    Dim inputLineText As String = "ASM> " & mamuteInputBuf(docIndex)
+    Dim inputPadded As String = Left(inputLineText & Space(clientW), clientW)
+    Dim ii As Integer
+    For ii = 1 To clientW
+        ConsoleSetCell(d.winX + ii, inputRow, Asc(Mid(inputPadded, ii, 1)), 10, 0)
+    Next ii
+
+    DrawScrollBars(docIndex)
+End Sub
+
+Private Sub HandleMamuteEditKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+    renderHint = RENDER_CLIENT
+    Dim docIndex As Integer = activeDoc
+
+    If keyText = Chr(13) Then
+        Dim typedText As String = Trim(mamuteInputBuf(docIndex))
+        mamuteInputBuf(docIndex) = ""
+        mamuteInputCursor(docIndex) = 0
+
+        If mamuteEditPendingScroll(docIndex) <> 0 Then
+            Dim answerUp As String = UCase(typedText)
+            If answerUp = "S" Or answerUp = "Y" Then
+                mamuteEditTopIndex(docIndex) += GetClientTextHeight(d)
+                Dim totalS As Integer = MamuteEditActiveCount(docIndex)
+                If mamuteEditTopIndex(docIndex) > totalS Then mamuteEditTopIndex(docIndex) = totalS
+                If mamuteEditTopIndex(docIndex) < 1 Then mamuteEditTopIndex(docIndex) = 1
+                mamuteEditCursorIndex(docIndex) = mamuteEditTopIndex(docIndex)
+                If mamuteEditTopIndex(docIndex) + GetClientTextHeight(d) - 1 < totalS Then
+                    mamuteEditStatusText(docIndex) = "Rolar mais uma tela? (S/N)"
+                Else
+                    mamuteEditPendingScroll(docIndex) = 0
+                    mamuteEditStatusText(docIndex) = ""
+                End If
+            Else
+                mamuteEditPendingScroll(docIndex) = 0
+                mamuteEditStatusText(docIndex) = ""
+            End If
+            Exit Sub
+        End If
+
+        If Len(typedText) = 0 Then
+            If mamuteEditListingMode(docIndex) = 0 Then
+                Dim curReal As Integer = MamuteEditRealIndexAt(docIndex, mamuteEditCursorIndex(docIndex))
+                If curReal > 0 Then
+                    mamuteInputBuf(docIndex) = Trim(Str(MamuteAsmProgram(curReal).lineNum)) & " " & MamuteAsmProgram(curReal).rawText
+                    mamuteInputCursor(docIndex) = Len(mamuteInputBuf(docIndex))
+                End If
+            End If
+            Exit Sub
+        End If
+
+        Dim vSpacePos As Integer = InStr(typedText, " ")
+        Dim vVerb As String
+        Dim vArgs As String
+        If vSpacePos > 0 Then
+            vVerb = UCase(Left(typedText, vSpacePos - 1))
+            vArgs = Trim(Mid(typedText, vSpacePos + 1))
+        Else
+            vVerb = UCase(typedText)
+            vArgs = ""
+        End If
+
+        mamuteEditFilterMode(docIndex) = 0
+        mamuteEditListingMode(docIndex) = 0
+
+        Select Case vVerb
+            Case "LIST"
+                mamuteEditTopIndex(docIndex) = 1
+                mamuteEditCursorIndex(docIndex) = 1
+                If MamuteAsmProgramCount > GetClientTextHeight(d) Then
+                    mamuteEditPendingScroll(docIndex) = -1
+                    mamuteEditStatusText(docIndex) = "Rolar mais uma tela? (S/N)"
+                Else
+                    mamuteEditStatusText(docIndex) = ""
+                End If
+
+            Case "NEW"
+                Mamute_AsmNew()
+                mamuteEditTopIndex(docIndex) = 1
+                mamuteEditCursorIndex(docIndex) = 1
+                mamuteEditStatusText(docIndex) = "PROGRAMA APAGADO"
+
+            Case "DELETE"
+                Dim delCount As Integer = Mamute_AsmDelete(vArgs)
+                If delCount < 0 Then
+                    mamuteEditStatusText(docIndex) = "?ERRO DE SINTAXE"
+                Else
+                    MamuteEditEnsureCursorVisible(docIndex)
+                    mamuteEditStatusText(docIndex) = Trim(Str(delCount)) & " LINHA(S) APAGADA(S)"
+                End If
+
+            Case "RENUM"
+                If Mamute_AsmRenum(vArgs) <> 0 Then
+                    MamuteEditEnsureCursorVisible(docIndex)
+                    mamuteEditStatusText(docIndex) = "RENUMERADO"
+                Else
+                    mamuteEditStatusText(docIndex) = "?ERRO DE SINTAXE"
+                End If
+
+            Case "CHANGE"
+                Dim ch1 As String
+                Dim ch2 As String
+                If MamuteEditParseChangeArgs(vArgs, ch1, ch2) <> 0 Then
+                    Dim chCount As Integer = Mamute_AsmChange(ch1, ch2)
+                    MamuteEditEnsureCursorVisible(docIndex)
+                    mamuteEditStatusText(docIndex) = Trim(Str(chCount)) & " LINHA(S) ALTERADA(S)"
+                Else
+                    mamuteEditStatusText(docIndex) = "?ERRO DE SINTAXE"
+                End If
+
+            Case "SAVE"
+                Dim saveMsg As String = Mamute_AsmSave()
+                If Len(saveMsg) > 0 Then
+                    mamuteEditStatusText(docIndex) = saveMsg
+                Else
+                    mamuteEditStatusText(docIndex) = "CANCELADO"
+                End If
+
+            Case "LOAD"
+                Dim loadCount As Integer = Mamute_AsmLoad()
+                If loadCount >= 0 Then
+                    mamuteEditTopIndex(docIndex) = 1
+                    mamuteEditCursorIndex(docIndex) = 1
+                    mamuteEditStatusText(docIndex) = Trim(Str(loadCount)) & " LINHA(S) CARREGADA(S)"
+                Else
+                    mamuteEditStatusText(docIndex) = "CANCELADO"
+                End If
+
+            Case "MERGE"
+                Dim mergeCount As Integer = Mamute_AsmMerge()
+                If mergeCount >= 0 Then
+                    mamuteEditTopIndex(docIndex) = 1
+                    mamuteEditCursorIndex(docIndex) = 1
+                    MamuteEditEnsureCursorVisible(docIndex)
+                    mamuteEditStatusText(docIndex) = Trim(Str(mergeCount)) & " LINHA(S) MESCLADA(S)"
+                Else
+                    mamuteEditStatusText(docIndex) = "CANCELADO"
+                End If
+
+            Case "SEARCH", "FIND"
+                Dim searchCount As Integer = Mamute_AsmSearch(vArgs)
+                If searchCount < 0 Then
+                    mamuteEditStatusText(docIndex) = "?ERRO DE SINTAXE"
+                ElseIf searchCount = 0 Then
+                    mamuteEditStatusText(docIndex) = "NENHUMA OCORRENCIA"
+                Else
+                    mamuteEditFilterMode(docIndex) = -1
+                    mamuteEditTopIndex(docIndex) = 1
+                    mamuteEditCursorIndex(docIndex) = 1
+                    mamuteEditStatusText(docIndex) = Trim(Str(searchCount)) & " OCORRENCIA(S) - digite LIST pra voltar ao programa completo"
+                End If
+
+            Case "LSEARCH"
+                Dim lsCount As Integer = Mamute_AsmSearch(vArgs)
+                If lsCount < 0 Then
+                    mamuteEditStatusText(docIndex) = "?ERRO DE SINTAXE"
+                ElseIf lsCount = 0 Then
+                    mamuteEditStatusText(docIndex) = "NENHUMA OCORRENCIA"
+                Else
+                    Dim lsCanceled As Integer
+                    Dim lsPath As String = PromptPathDialog("LSEARCH - Salvar busca", "Arquivo .txt de saida:", "busca.txt", lsCanceled)
+                    If lsCanceled <> 0 Or Len(lsPath) = 0 Then
+                        mamuteEditStatusText(docIndex) = "CANCELADO"
+                    Else
+                        Dim lsFf As Integer = FreeFile
+                        Open lsPath For Output As #lsFf
+                        Print #lsFf, "LSEARCH " & Trim(vArgs)
+                        Dim si2 As Integer
+                        For si2 = 1 To MamuteAsmSearchCount
+                            Dim realI As Integer = MamuteAsmSearchMatches(si2)
+                            Print #lsFf, Right(Space(5) & Trim(Str(MamuteAsmProgram(realI).lineNum)), 5) & "   " & MamuteEdit_FormatLine(MamuteAsmProgram(realI))
+                        Next si2
+                        Close #lsFf
+                        mamuteEditStatusText(docIndex) = "GRAVADO: " & lsPath
+                    End If
+                End If
+
+            Case "QUIT"
+                CloseDocument(docIndex)
+                Exit Sub
+
+            Case "A"
+                Dim asmFlags As String = UCase(Trim(vArgs))
+                Dim asmOffsetValue As Integer = 0
+                Dim asmOffsetOk As Integer = -1
+                Dim asmSlashPos As Integer = InStr(asmFlags, "/")
+                Dim asmLetterPart As String = asmFlags
+                If asmSlashPos > 0 Then
+                    asmLetterPart = Left(asmFlags, asmSlashPos - 1)
+                    Dim asmOffsetText As String = Mid(asmFlags, asmSlashPos + 1)
+                    If Len(asmOffsetText) = 0 Or Mamute_ParseHexAddr(asmOffsetText, asmOffsetValue) = 0 Then
+                        asmOffsetOk = 0
+                    End If
+                End If
+
+                Dim asmHasO As Integer = 0, asmHasN As Integer = 0, asmHasP As Integer = 0, asmHasI As Integer = 0
+                Dim asmHasR As Integer = 0, asmHasS As Integer = 0, asmHasD As Integer = 0, asmHasH As Integer = 0
+                Dim asmFlagsOk As Integer = -1
+                Dim fi As Integer
+                For fi = 1 To Len(asmLetterPart)
+                    Select Case Mid(asmLetterPart, fi, 1)
+                        Case "O" : asmHasO = -1
+                        Case "N" : asmHasN = -1
+                        Case "P" : asmHasP = -1
+                        Case "I" : asmHasI = -1
+                        Case "R" : asmHasR = -1
+                        Case "S" : asmHasS = -1
+                        Case "D" : asmHasD = -1
+                        Case "H" : asmHasH = -1
+                        Case Else : asmFlagsOk = 0
+                    End Select
+                Next fi
+
+                If asmFlagsOk = 0 Then
+                    mamuteEditStatusText(docIndex) = "?OPCAO NAO IMPLEMENTADA (combine 'O'/'N'/'P'/'I'/'R'/'S'/'D'/'H', ex. 'A', 'A O', 'A ONPIRSDH')"
+                ElseIf asmOffsetOk = 0 Then
+                    mamuteEditStatusText(docIndex) = "?OFFSET INVALIDO (hexa, 0000-FFFF, ex. 'A O/8000')"
+                ElseIf asmHasH <> 0 And asmHasS = 0 And asmHasD = 0 Then
+                    mamuteEditStatusText(docIndex) = "?OPCAO H PRECISA DE 'S' OU 'D' JUNTO (ex. 'A SH', 'A DH')"
+                Else
+                    Dim asmRes As MamuteAsmResult
+                    Mamute_AsmAssemble(asmRes, asmHasN, asmOffsetValue)
+
+                    If asmRes.okFlag = 0 Then
+                        If asmRes.errorLine > 0 Then
+                            Dim errIdx As Integer = MamuteEditIndexOfLine(asmRes.errorLine)
+                            If errIdx > 0 Then
+                                mamuteEditCursorIndex(docIndex) = errIdx
+                                MamuteEditEnsureCursorVisible(docIndex)
+                            End If
+                            mamuteEditStatusText(docIndex) = "ERRO NA LINHA " & Trim(Str(asmRes.errorLine)) & ": " & asmRes.errorText
+                        Else
+                            mamuteEditStatusText(docIndex) = "ERRO: " & asmRes.errorText
+                        End If
+                    ElseIf asmRes.byteCount = 0 Then
+                        mamuteEditStatusText(docIndex) = "MONTADO SEM ERROS - NADA GERADO (so rotulos/EQU/diretivas)"
+                    Else
+                        If asmHasO <> 0 Then
+                            Dim wByte As Integer
+                            For wByte = 0 To asmRes.byteCount - 1
+                                Mamute_WriteByte((asmRes.startAddr + wByte) And 65535, MamuteAsmOutBytesBuf(wByte))
+                            Next wByte
+                        End If
+
+                        ' R/S/D - anexa ao final de MamuteAsmListingLines (com 1
+                        ' linha em branco de separador) - vira parte da MESMA
+                        ' listagem que aparece na tela (ListingMode) e que "P"
+                        ' grava no arquivo abaixo.
+                        If asmHasR <> 0 Then
+                            If MamuteAsmListingLineCount < Z80_MAX_LISTING_ROWS Then
+                                MamuteAsmListingLineCount += 1 : MamuteAsmListingLines(MamuteAsmListingLineCount) = ""
+                            End If
+                            Dim ri As Integer
+                            For ri = 1 To MamuteAsmXrefLineCount
+                                If MamuteAsmListingLineCount < Z80_MAX_LISTING_ROWS Then
+                                    MamuteAsmListingLineCount += 1 : MamuteAsmListingLines(MamuteAsmListingLineCount) = MamuteAsmXrefLines(ri)
+                                End If
+                            Next ri
+                        End If
+                        If asmHasS <> 0 Then
+                            If MamuteAsmListingLineCount < Z80_MAX_LISTING_ROWS Then
+                                MamuteAsmListingLineCount += 1 : MamuteAsmListingLines(MamuteAsmListingLineCount) = ""
+                            End If
+                            Dim si2 As Integer
+                            For si2 = 1 To MamuteAsmLabelListLineCount
+                                If MamuteAsmListingLineCount < Z80_MAX_LISTING_ROWS Then
+                                    MamuteAsmListingLineCount += 1 : MamuteAsmListingLines(MamuteAsmListingLineCount) = MamuteAsmLabelListLines(si2)
+                                End If
+                            Next si2
+                        End If
+                        If asmHasD <> 0 Then
+                            If MamuteAsmListingLineCount < Z80_MAX_LISTING_ROWS Then
+                                MamuteAsmListingLineCount += 1 : MamuteAsmListingLines(MamuteAsmListingLineCount) = ""
+                            End If
+                            Dim di As Integer
+                            For di = 1 To MamuteAsmLabelOrderLineCount
+                                If MamuteAsmListingLineCount < Z80_MAX_LISTING_ROWS Then
+                                    MamuteAsmListingLineCount += 1 : MamuteAsmListingLines(MamuteAsmListingLineCount) = MamuteAsmLabelOrderLines(di)
+                                End If
+                            Next di
+                        End If
+
+                        Dim asmSuffix As String = ""
+                        If asmHasP <> 0 Then
+                            Dim pCanceled As Integer
+                            Dim pPath As String = PromptPathDialog("A P - Salvar listagem", "Arquivo .txt de saida:", "montagem.txt", pCanceled)
+                            If pCanceled = 0 And Len(pPath) > 0 Then
+                                Dim pFf As Integer = FreeFile
+                                Open pPath For Output As #pFf
+                                Print #pFf, "MONTAGEM " & Hex(asmRes.startAddr, 4) & "-" & Hex(asmRes.endAddr, 4)
+                                Dim pi As Integer
+                                For pi = 1 To MamuteAsmListingLineCount
+                                    Print #pFf, MamuteAsmListingLines(pi)
+                                Next pi
+                                Close #pFf
+                                asmSuffix &= " - LISTAGEM: " & pPath
+                            End If
+                        End If
+
+                        If asmHasI <> 0 Then
+                            Dim iCanceled As Integer
+                            Dim iPath As String = PromptPathDialog("A I - Gravar codigo-objeto", "Arquivo de saida:", "montagem.bin", iCanceled)
+                            If iCanceled = 0 And Len(iPath) > 0 Then
+                                Dim iFf As Integer = FreeFile
+                                Open iPath For Binary Access Write As #iFf
+                                Dim iHdr(0 To 6) As UByte
+                                iHdr(0) = &HFE
+                                iHdr(1) = asmRes.startAddr And 255 : iHdr(2) = (asmRes.startAddr \ 256) And 255
+                                iHdr(3) = asmRes.endAddr And 255 : iHdr(4) = (asmRes.endAddr \ 256) And 255
+                                iHdr(5) = asmRes.startAddr And 255 : iHdr(6) = (asmRes.startAddr \ 256) And 255
+                                Put #iFf, 1, iHdr()
+                                Dim iBuf(0 To asmRes.byteCount - 1) As UByte
+                                Dim ibi As Integer
+                                For ibi = 0 To asmRes.byteCount - 1
+                                    iBuf(ibi) = MamuteAsmOutBytesBuf(ibi) And 255
+                                Next ibi
+                                Put #iFf, 8, iBuf()
+                                Close #iFf
+                                asmSuffix &= " - GRAVADO: " & iPath
+                            End If
+                        End If
+
+                        Dim asmHSuffix As String = ""
+                        If asmHasH <> 0 Then
+                            Dim hCanceled As Integer
+                            Dim hPath As String = PromptPathDialog("A H - Salvar labels", "Arquivo .txt de saida:", "labels.txt", hCanceled)
+                            If hCanceled = 0 And Len(hPath) > 0 Then
+                                Dim hFf As Integer = FreeFile
+                                Open hPath For Output As #hFf
+                                Print #hFf, "LABELS " & Hex(asmRes.startAddr, 4) & "-" & Hex(asmRes.endAddr, 4)
+                                Dim hi As Integer
+                                If asmHasS <> 0 Then
+                                    For hi = 1 To MamuteAsmLabelListLineCount
+                                        Print #hFf, MamuteAsmLabelListLines(hi)
+                                    Next hi
+                                End If
+                                If asmHasD <> 0 Then
+                                    If asmHasS <> 0 Then Print #hFf, ""
+                                    For hi = 1 To MamuteAsmLabelOrderLineCount
+                                        Print #hFf, MamuteAsmLabelOrderLines(hi)
+                                    Next hi
+                                End If
+                                Close #hFf
+                                asmHSuffix = " - LABELS: " & hPath
+                            End If
+                        End If
+
+                        mamuteEditListingMode(docIndex) = -1
+                        mamuteEditTopIndex(docIndex) = 1
+                        mamuteEditCursorIndex(docIndex) = 1
+
+                        If MamuteAsmListingLineCount > GetClientTextHeight(d) Then
+                            mamuteEditPendingScroll(docIndex) = -1
+                            mamuteEditStatusText(docIndex) = "Rolar mais uma tela? (S/N)" & asmSuffix & asmHSuffix
+                        ElseIf asmHasO <> 0 Then
+                            mamuteEditStatusText(docIndex) = "MONTADO E GRAVADO NA RAM " & Hex(asmRes.startAddr, 4) & "-" & Hex(asmRes.endAddr, 4) & " (" & Trim(Str(asmRes.byteCount)) & " BYTES)" & asmSuffix & asmHSuffix
+                        Else
+                            mamuteEditStatusText(docIndex) = "MONTADO SEM ERROS " & Hex(asmRes.startAddr, 4) & "-" & Hex(asmRes.endAddr, 4) & " (" & Trim(Str(asmRes.byteCount)) & " BYTES)" & asmSuffix & asmHSuffix
+                        End If
+                    End If
+                End If
+
+            Case "MAP"
+                If MamuteAsmHasResult = 0 Then
+                    mamuteEditStatusText(docIndex) = "PROGRAMA AINDA NAO MONTADO - USE A (OU A O) PRIMEIRO"
+                ElseIf MamuteAsmLastByteCount = 0 Then
+                    mamuteEditStatusText(docIndex) = "ULTIMA MONTAGEM NAO GEROU CODIGO (SO ROTULOS/EQU/DIRETIVAS)"
+                Else
+                    mamuteEditStatusText(docIndex) = "ENDERECO INICIAL: " & Hex(MamuteAsmLastStartAddr, 4) & "  ENDERECO FINAL: " & Hex(MamuteAsmLastEndAddr, 4)
+                End If
+
+            Case Else
+                Dim newLine As MamuteAsmLine
+                If Mamute_ParseAsmLine(typedText, newLine) <> 0 Then
+                    Mamute_AsmStoreLine(newLine)
+                    Dim newIdx As Integer = MamuteEditIndexOfLine(newLine.lineNum)
+                    If newIdx > 0 Then mamuteEditCursorIndex(docIndex) = newIdx
+                    MamuteEditEnsureCursorVisible(docIndex)
+                    mamuteEditStatusText(docIndex) = ""
+                Else
+                    mamuteEditStatusText(docIndex) = "?ERRO DE SINTAXE"
+                End If
+        End Select
+        Exit Sub
+    End If
+
+    If keyText = Chr(27) Then
+        mamuteInputBuf(docIndex) = ""
+        mamuteInputCursor(docIndex) = 0
+        mamuteEditPendingScroll(docIndex) = 0
+        mamuteEditStatusText(docIndex) = ""
+        Exit Sub
+    End If
+
+    If keyText = Chr(8) Then
+        Dim caretPos As Integer = mamuteInputCursor(docIndex)
+        If caretPos > 0 Then
+            Dim txt As String = mamuteInputBuf(docIndex)
+            mamuteInputBuf(docIndex) = Left(txt, caretPos - 1) & Mid(txt, caretPos + 1)
+            mamuteInputCursor(docIndex) = caretPos - 1
+        End If
+        Exit Sub
+    End If
+
+    If Len(keyText) = 1 Then
+        Dim c As Integer = Asc(keyText)
+        If c >= 32 And c <= 126 Then
+            Dim caretPos2 As Integer = mamuteInputCursor(docIndex)
+            Dim txt2 As String = mamuteInputBuf(docIndex)
+            mamuteInputBuf(docIndex) = Left(txt2, caretPos2) & keyText & Mid(txt2, caretPos2 + 1)
+            mamuteInputCursor(docIndex) = caretPos2 + 1
+        End If
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+        Select Case Asc(Right(keyText, 1))
+            Case 75 ' Left
+                If mamuteInputCursor(docIndex) > 0 Then mamuteInputCursor(docIndex) -= 1
+            Case 77 ' Right
+                If mamuteInputCursor(docIndex) < Len(mamuteInputBuf(docIndex)) Then mamuteInputCursor(docIndex) += 1
+            Case 71 ' Home
+                mamuteInputCursor(docIndex) = 0
+            Case 79 ' End
+                mamuteInputCursor(docIndex) = Len(mamuteInputBuf(docIndex))
+            Case 83 ' Delete
+                Dim caretPos3 As Integer = mamuteInputCursor(docIndex)
+                Dim txt3 As String = mamuteInputBuf(docIndex)
+                If caretPos3 < Len(txt3) Then
+                    mamuteInputBuf(docIndex) = Left(txt3, caretPos3) & Mid(txt3, caretPos3 + 2)
+                End If
+            Case 72 ' Up
+                If mamuteEditPendingScroll(docIndex) = 0 Then
+                    mamuteEditCursorIndex(docIndex) -= 1
+                    If mamuteEditCursorIndex(docIndex) < 1 Then mamuteEditCursorIndex(docIndex) = 1
+                    MamuteEditEnsureCursorVisible(docIndex)
+                End If
+            Case 80 ' Down
+                If mamuteEditPendingScroll(docIndex) = 0 Then
+                    Dim totalD As Integer = MamuteEditActiveCount(docIndex)
+                    If mamuteEditCursorIndex(docIndex) < totalD Then mamuteEditCursorIndex(docIndex) += 1
+                    MamuteEditEnsureCursorVisible(docIndex)
+                End If
+        End Select
+    End If
+End Sub
+
+Sub EditorCreateMamuteEdit()
+    Dim i As Integer
+    For i = 1 To docCount
+        If docs(i).isMamuteEdit <> 0 Then
+            BringDocumentToFront(i)
+            forceFullRedraw = 1
+            renderMode = RENDER_FULL
+            Exit Sub
+        End If
+    Next i
+
+    If docCount >= MAX_DOCS Then Exit Sub
+
+    docCount += 1
+    activeDoc = docCount
+
+    InitBlankDocument(docs(docCount), "Mamute Assembler - EDIT")
+    LayoutNewDocumentWindow(docCount)
+    docs(docCount).isMamuteEdit = -1
+
+    mamuteInputBuf(docCount) = ""
+    mamuteInputCursor(docCount) = 0
+    mamuteEditTopIndex(docCount) = 1
+    mamuteEditCursorIndex(docCount) = 1
+    mamuteEditPendingScroll(docCount) = 0
+    mamuteEditFilterMode(docCount) = 0
+    mamuteEditListingMode(docCount) = 0
+    mamuteEditStatusText(docCount) = ""
+
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
+End Sub
 
 ' ---------------------------------------------------------------------------
 ' Implementacao dos comandos do monitor (alem de CLS/PAGE/BA/QUIT, ja
@@ -8163,9 +12247,167 @@ Private Sub MamuteCmd_SAVE(ByRef d As Document, ByRef argsText As String)
     AppendMamuteLine(d, "SALVO " & Chr(34) & filePath & Chr(34) & " - SLOT " & Trim(Str(srcSlot)) & " - " & Hex(startAddr, 4) & "H-" & Hex(endAddr, 4) & "H - TAMANHO " & Hex(total, 4) & "H")
 End Sub
 
-Private Sub MamuteCmd_MDumpAt(ByRef d As Document, ByVal addr As Integer)
-    MamuteRenderDump(d, addr, 0)
-    AppendMamuteLine(d, "(despejo somente-leitura nesta versao do msxIDE - use M " & Chr(60) & "endereco" & Chr(62) & " " & Chr(60) & "byte" & Chr(62) & " pra gravar um byte direto)")
+' ---------------------------------------------------------------------------
+' Editor interativo de memoria do comando M: grade de 128 bytes (16 linhas x
+' 8 colunas) ocupando o corpo inteiro do terminal, adaptado de MamuteM_Open
+' (paleobasic, MamuteMGui.pbi) - la e' uma janela GUI clicavel com botoes,
+' aqui e' o proprio documento do terminal trocando de modo (mesma ideia da
+' linha de entrada reservada: GetClientTextHeight ja desconta 1 linha extra
+' pra isMamuteTerm, que uso aqui como linha de status em vez do prompt MON>).
+' Diferencas deliberadas do original, a pedido do usuario: nao ha estagio de
+' "campo de texto ASCII" nem tabela de teclas configuravel (isso e' o "S", que
+' continua so' leitura por enquanto); ENTER aqui avanca sem gravar (no
+' original, ENTER sempre fechava a janela); e navegar/digitar alem da ultima
+' celula da tela rola pra pagina de 128 bytes seguinte/anterior automatico,
+' em vez de travar no canto como no original.
+' ---------------------------------------------------------------------------
+
+Private Function MamuteMEditCellAddr(ByVal docIndex As Integer, ByVal row As Integer, ByVal col As Integer) As Integer
+    Return (mamuteMEditBaseAddr(docIndex) + row * 8 + col) And 65535
+End Function
+
+Sub MamuteMEditOpen(ByVal docIndex As Integer, ByVal startAddr As Integer)
+    mamuteMEditActive(docIndex) = -1
+    mamuteMEditBaseAddr(docIndex) = startAddr And 65535
+    mamuteMEditCursorRow(docIndex) = 0
+    mamuteMEditCursorCol(docIndex) = 0
+    mamuteMEditNibbleStage(docIndex) = 0
+    mamuteMEditPendingHigh(docIndex) = 0
+End Sub
+
+' Move o cursor por linha/coluna (setas). Passar da ultima celula da tela
+' (linha 15 col 7) ou da primeira (linha 0 col 0) rola BaseAddr em blocos de
+' 128 bytes, ao inves de travar no canto.
+Private Sub MamuteMEditMove(ByVal docIndex As Integer, ByVal dRow As Integer, ByVal dCol As Integer)
+    Dim newCol As Integer = mamuteMEditCursorCol(docIndex) + dCol
+    Dim newRow As Integer = mamuteMEditCursorRow(docIndex) + dRow
+
+    If newCol > 7 Then
+        newCol = 0
+        newRow += 1
+    ElseIf newCol < 0 Then
+        newCol = 7
+        newRow -= 1
+    End If
+
+    If newRow > 15 Then
+        newRow = 0
+        mamuteMEditBaseAddr(docIndex) = (mamuteMEditBaseAddr(docIndex) + 128) And 65535
+    ElseIf newRow < 0 Then
+        newRow = 15
+        mamuteMEditBaseAddr(docIndex) = (mamuteMEditBaseAddr(docIndex) - 128) And 65535
+    End If
+
+    mamuteMEditCursorRow(docIndex) = newRow
+    mamuteMEditCursorCol(docIndex) = newCol
+    mamuteMEditNibbleStage(docIndex) = 0
+End Sub
+
+Private Sub HandleMamuteMEditKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+    renderHint = RENDER_CLIENT
+    Dim docIndex As Integer = activeDoc
+
+    If keyText = Chr(27) Then
+        mamuteMEditActive(docIndex) = 0
+        AppendMamuteLine(d, "M: EDICAO ENCERRADA EM " & Hex(mamuteMEditBaseAddr(docIndex), 4) & "H")
+        MamuteLastMAddr = mamuteMEditBaseAddr(docIndex)
+        MamuteLastMValid = -1
+        Exit Sub
+    End If
+
+    If keyText = Chr(13) Then
+        mamuteMEditNibbleStage(docIndex) = 0
+        MamuteMEditMove(docIndex, 0, 1)
+        Exit Sub
+    End If
+
+    If Len(keyText) = 1 Then
+        Dim nibbleVal As Integer = -1
+        Dim ch As String = UCase(keyText)
+        If ch >= "0" And ch <= "9" Then nibbleVal = Asc(ch) - Asc("0")
+        If ch >= "A" And ch <= "F" Then nibbleVal = Asc(ch) - Asc("A") + 10
+        If nibbleVal >= 0 Then
+            If mamuteMEditNibbleStage(docIndex) = 0 Then
+                mamuteMEditPendingHigh(docIndex) = nibbleVal
+                mamuteMEditNibbleStage(docIndex) = -1
+            Else
+                Dim cellAddr As Integer = MamuteMEditCellAddr(docIndex, mamuteMEditCursorRow(docIndex), mamuteMEditCursorCol(docIndex))
+                Dim newByte As Integer = (mamuteMEditPendingHigh(docIndex) * 16) + nibbleVal
+                Mamute_WriteByte(cellAddr, newByte)
+                mamuteMEditNibbleStage(docIndex) = 0
+                MamuteMEditMove(docIndex, 0, 1)
+            End If
+            Exit Sub
+        End If
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+        Select Case Asc(Right(keyText, 1))
+            Case 72 : MamuteMEditMove(docIndex, -1, 0) ' Up
+            Case 80 : MamuteMEditMove(docIndex, 1, 0)  ' Down
+            Case 75 : MamuteMEditMove(docIndex, 0, -1) ' Left
+            Case 77 : MamuteMEditMove(docIndex, 0, 1)  ' Right
+            Case 73 ' PgUp
+                mamuteMEditBaseAddr(docIndex) = (mamuteMEditBaseAddr(docIndex) - 128) And 65535
+                mamuteMEditNibbleStage(docIndex) = 0
+            Case 81 ' PgDn
+                mamuteMEditBaseAddr(docIndex) = (mamuteMEditBaseAddr(docIndex) + 128) And 65535
+                mamuteMEditNibbleStage(docIndex) = 0
+        End Select
+    End If
+End Sub
+
+Sub DrawMamuteMEditGrid(ByVal docIndex As Integer)
+    Dim ByRef d As Document = docs(docIndex)
+    Dim clientW As Integer = GetClientTextWidth(d)
+    Dim clientH As Integer = GetClientTextHeight(d)
+    Dim curRow As Integer = mamuteMEditCursorRow(docIndex)
+    Dim curCol As Integer = mamuteMEditCursorCol(docIndex)
+
+    Dim row As Integer
+    For row = 0 To 15
+        If row >= clientH Then Continue For
+        Dim rowY As Integer = d.winY + 1 + row
+        Dim rowAddr As Integer = MamuteMEditCellAddr(docIndex, row, 0)
+
+        Dim lineText As String = Hex(rowAddr, 4) & ": "
+        Dim asciiText As String = ""
+        Dim col As Integer
+        For col = 0 To 7
+            Dim rb As Integer = Mamute_ReadByte(MamuteMEditCellAddr(docIndex, row, col))
+            Dim hexTxt As String
+            If row = curRow And col = curCol And mamuteMEditNibbleStage(docIndex) <> 0 Then
+                hexTxt = Mid("0123456789ABCDEF", mamuteMEditPendingHigh(docIndex) + 1, 1) & "_"
+            Else
+                hexTxt = Hex(rb, 2)
+            End If
+            lineText &= hexTxt & " "
+            asciiText &= Mamute_PrintableChar(rb)
+        Next col
+        lineText &= " " & asciiText
+
+        Dim padded As String = Left(lineText & Space(clientW), clientW)
+        Dim hexStartCol As Integer = 7 + curCol * 3
+        Dim i As Integer
+        For i = 1 To clientW
+            Dim cellFg As UByte = 15
+            Dim cellBg As UByte = 0
+            If row = curRow And (i = hexStartCol Or i = hexStartCol + 1) Then
+                cellFg = 0 : cellBg = 7
+            End If
+            ConsoleSetCell(d.winX + i, rowY, Asc(Mid(padded, i, 1)), cellFg, cellBg)
+        Next i
+    Next row
+
+    Dim statusRow As Integer = d.winY + 1 + clientH
+    Dim statusText As String = "M " & Hex(mamuteMEditBaseAddr(docIndex), 4) & "H - Setas/PgUp/PgDn move  0-F edita  ENTER prox  ESC sai"
+    Dim statusPadded As String = Left(statusText & Space(clientW), clientW)
+    Dim si As Integer
+    For si = 1 To clientW
+        ConsoleSetCell(d.winX + si, statusRow, Asc(Mid(statusPadded, si, 1)), 10, 0)
+    Next si
+
+    DrawScrollBars(docIndex)
 End Sub
 
 Private Sub MamuteCmd_M(ByRef d As Document, ByRef argsText As String)
@@ -8175,7 +12417,7 @@ Private Sub MamuteCmd_M(ByRef d As Document, ByRef argsText As String)
             AppendMamuteLine(d, "?ERRO DE SINTAXE")
             Exit Sub
         End If
-        MamuteCmd_MDumpAt(d, MamuteLastMAddr)
+        MamuteMEditOpen(activeDoc, MamuteLastMAddr)
         Exit Sub
     End If
 
@@ -8204,7 +12446,7 @@ Private Sub MamuteCmd_M(ByRef d As Document, ByRef argsText As String)
     End If
     MamuteLastMAddr = onlyAddr
     MamuteLastMValid = -1
-    MamuteCmd_MDumpAt(d, onlyAddr)
+    MamuteMEditOpen(activeDoc, onlyAddr)
 End Sub
 
 Private Sub MamuteCmd_S(ByRef d As Document, ByRef argsText As String)
@@ -8865,6 +13107,8 @@ Private Sub ExecuteMamuteCommand(ByRef d As Document, ByRef cmdTextIn As String)
             MamuteCmd_LP(d, genericArgs)
         Case "HELP"
             MamuteCmd_HELP(d, genericArgs)
+        Case "EDIT"
+            EditorCreateMamuteEdit()
         Case "BA", "QUIT"
             CloseDocument(activeDoc)
         Case Else
@@ -8966,12 +13210,13 @@ Private Sub EditorCreateMamuteTerm()
     MamuteLastDisasmValid = 0
     MamuteXWalking(docCount) = 0
     MamuteXWalkIdx(docCount) = 0
+    mamuteMEditActive(docCount) = 0
 
     InitBlankDocument(docs(docCount), "Mamute Assembler")
     docs(docCount).isMamuteTerm = -1
     docs(docCount).lineCount = 3
     docs(docCount).lines(1) = "Mamute Assembler - MON>"
-    docs(docCount).lines(2) = "Comandos: CLS, PAGE, DM, ZAP, SCR, SH, MS, LOAD, SAVE, M, S, C, D, P, V, T, F, G, X, R, L, LP, HELP, BA/QUIT."
+    docs(docCount).lines(2) = "Comandos: CLS, PAGE, DM, ZAP, SCR, SH, MS, LOAD, SAVE, M, S, C, D, P, V, T, F, G, X, R, EDIT, L, LP, HELP, BA/QUIT."
     docs(docCount).lines(3) = MamuteActivePageSummary()
     mamuteInputBuf(docCount) = ""
     mamuteInputCursor(docCount) = 0
@@ -9118,7 +13363,7 @@ Sub EditorHandleKey(ByRef keyText As String, ByRef running As Integer, ByRef men
     ' de comando, nao pra d.lines()). Chamar EnsureCursorVisible aqui pra um
     ' documento assim prendia a rolagem sempre no topo, escondendo a saida
     ' nova de todo comando digitado.
-    If docs(activeDoc).isMamuteTerm = 0 Then EnsureCursorVisible(docs(activeDoc))
+    If docs(activeDoc).isMamuteTerm = 0 And docs(activeDoc).isMamuteEdit = 0 Then EnsureCursorVisible(docs(activeDoc))
 
     If docs(activeDoc).scrollX <> oldScrollX Or docs(activeDoc).scrollY <> oldScrollY Then
         renderHint = RENDER_CLIENT
@@ -9941,6 +14186,25 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
+    ' Confere que a acentuacao do .md (gravado em UTF-8 em disco) foi
+    ' convertida pra bytes da codepage OEM ativa no console (860, definida
+    ' em ConsoleInit), e nao ficou como bytes UTF-8 crus (que apareceriam
+    ' bagunçados num Windows com locale em ingles - ver ConsoleUtf8ToActiveCp
+    ' em console_win.bas). "e" com circunflexo em CP860 = Chr(136) (&H88),
+    ' valor conferido de forma independente via .NET Encoding.GetEncoding(860).
+    Dim accentFound As Integer = 0
+    Dim accentLineIdx As Integer
+    For accentLineIdx = 1 To docs(activeDoc).lineCount
+        If InStr(docs(activeDoc).lines(accentLineIdx), "Refer" & Chr(&H88) & "ncia") > 0 Then
+            accentFound = -1
+            Exit For
+        End If
+    Next accentLineIdx
+    If accentFound = 0 Then
+        report = "SMOKE HELP FAIL: acentuacao de mamute.md nao foi convertida pra CP860 (esperava 'Refer' + Chr(136) + 'ncia' de 'Referencia' em alguma linha)"
+        Return 0
+    End If
+
     report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword & ", refdict biosdoc (" & Trim(Str(biosdocLineCount)) & " linhas), redbook (" & Trim(Str(rbTopicCount)) & " topicos/" & Trim(Str(rbGroupHeaders)) & " grupos, Ver tambem OK), msxmanuals (" & Trim(Str(mmTopicCount)) & " topicos, sem duplicata), openmsx (" & Trim(Str(omTopicCount)) & " topicos), nestorbasic/seetracker/msxbas2rom/editor/mamute OK, th2handbook (" & Trim(Str(thTopicCount)) & "), bioscalls (" & Trim(Str(bcTopicCount)) & "), hardware (" & Trim(Str(hwTopicCount)) & ")"
     Return -1
 End Function
@@ -10187,6 +14451,49 @@ Function EditorRunMamuteSmokeTest(ByRef report As String) As Integer
     End If
 
     Kill tempRomPath
+
+    ' Regressao: pagina BASIC "orfa" (cellType=BASIC mas romPath vazio -
+    ' config antiga/dessincronizada, o bug relatado onde a BIOS estava
+    ' configurada certinho mas a pagina BASIC vizinha ficou sem arquivo
+    ' proprio porque o split automatico nao rodou na hora certa, ex.: nome de
+    ' arquivo digitado errado na hora, corrigido so' depois) tem que herdar o
+    ' arquivo da BIOS vizinha (mesmo slot/sub-slot, pagina anterior) na
+    ' leitura fisica (Mamute_LoadPhysicalMemory), offset 16384.
+    Dim tempRomPathB As String = Environ("TEMP") & Chr(92) & "msxide_mamute_smoke_rom_orphan.bin"
+    Dim romFfB As Integer = FreeFile
+    Open tempRomPathB For Binary Access Write As #romFfB
+    Dim orphanBuf(0 To 32767) As UByte
+    Dim orphanIdx As Integer
+    For orphanIdx = 0 To 16383
+        orphanBuf(orphanIdx) = &HAA
+    Next orphanIdx
+    For orphanIdx = 16384 To 32767
+        orphanBuf(orphanIdx) = &HBB
+    Next orphanIdx
+    Put #romFfB, 1, orphanBuf()
+    Close #romFfB
+
+    MamuteMemGrid(0, 1, 0).cellType = MAMUTE_CELL_BIOS
+    MamuteMemGrid(0, 1, 0).romPath = tempRomPathB
+    MamuteMemGrid(0, 1, 0).romOffset = 0
+    MamuteMemGrid(0, 1, 1).cellType = MAMUTE_CELL_BASIC
+    MamuteMemGrid(0, 1, 1).romPath = ""
+    MamuteMemGrid(0, 1, 1).romOffset = 0
+
+    Mamute_LoadPhysicalMemory()
+
+    If MamuteMem(0, 1, 0, 0) <> &HAA Then
+        Kill tempRomPathB
+        report = "SMOKE MAMUTE FAIL: pagina BIOS nao carregou o arquivo temporario (teste de pagina BASIC orfa)"
+        Return 0
+    End If
+    If MamuteMem(0, 1, 1, 0) <> &HBB Then
+        Kill tempRomPathB
+        report = "SMOKE MAMUTE FAIL: pagina BASIC orfa (sem romPath proprio) nao herdou os dados da BIOS vizinha (offset 16384)"
+        Return 0
+    End If
+
+    Kill tempRomPathB
 
     ' Endereco de cada pagina de 16KB no espaco Z80 de 64KB.
     If MamutePageAddrRange(0) <> "0000-3FFF" Or MamutePageAddrRange(1) <> "4000-7FFF" Or MamutePageAddrRange(2) <> "8000-BFFF" Or MamutePageAddrRange(3) <> "C000-FFFF" Then
@@ -10536,7 +14843,287 @@ Function EditorRunMamuteSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
-    report = "SMOKE MAMUTE OK: round-trip do mapa de memoria (ROM 32KB no Slot 0, sub-slots + RAM no Slot 2.3), AssignMamuteRomFile (BIOS/BASIC/ROM/EXTBIOS), PAGE default, enderecos de pagina, VRAM (64KB + ciclo 16-192), comando PAGE (sem args/posicional/?/erro), disassembler Z80 (plain/DD/CB/ED/DD+CB/JR), comandos F/T/MS/SH/C/D/G/X, aviso de escrita nao-RAM e rolagem automatica do terminal"
+    ' Testa o editor interativo de memoria do comando M (grade de 128 bytes)
+    ' fim-a-fim, via EditorHandleKey de verdade (mesmo mamDocIdx/terminal real
+    ' do teste de rolagem acima) - pedido explicito: "M <endereco>" sozinho
+    ' deve abrir uma grade editavel com cursor na 1a celula, setas/PgUp/PgDn
+    ' navegando, digitos hexa gravando e avancando sozinhos, ENTER avancando
+    ' SEM gravar, e ESC encerrando so' a edicao (sem fechar o msxIDE inteiro -
+    ' o Esc "global" de HandleEditorKey roda bem antes do isMamuteTerm normal).
+    MamuteMemGrid(2, 0, 2).cellType = MAMUTE_CELL_RAM
+    MamuteActiveSlot(2) = 2 : MamuteActiveSub(2) = 0
+    Mamute_WriteByte(&H8000, 0)
+    Mamute_WriteByte(&H8001, 0)
+
+    mamuteInputBuf(mamDocIdx) = "M 8000"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If mamuteMEditActive(mamDocIdx) = 0 Then
+        report = "SMOKE MAMUTE FAIL: M <endereco> deveria abrir o editor de grade de 128 bytes"
+        Return 0
+    End If
+    If mamuteMEditBaseAddr(mamDocIdx) <> &H8000 Or mamuteMEditCursorRow(mamDocIdx) <> 0 Or mamuteMEditCursorCol(mamDocIdx) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: M 8000 deveria abrir a grade com BaseAddr=8000H e cursor na 1a celula"
+        Return 0
+    End If
+
+    Dim keyF As String = "F"
+    EditorHandleKey(keyF, runningDummy, menuOpenDummy)
+    If mamuteMEditNibbleStage(mamDocIdx) = 0 Or mamuteMEditPendingHigh(mamDocIdx) <> 15 Then
+        report = "SMOKE MAMUTE FAIL: 1o digito hexa (F) na grade deveria ficar pendente como nibble alto"
+        Return 0
+    End If
+    EditorHandleKey(keyF, runningDummy, menuOpenDummy)
+    If Mamute_ReadByte(&H8000) <> &HFF Then
+        report = "SMOKE MAMUTE FAIL: 2 digitos hexa (FF) na grade deveriam gravar o byte 8000H=FFH, veio " & Hex(Mamute_ReadByte(&H8000), 2)
+        Return 0
+    End If
+    If mamuteMEditNibbleStage(mamDocIdx) <> 0 Or mamuteMEditCursorCol(mamDocIdx) <> 1 Then
+        report = "SMOKE MAMUTE FAIL: apos completar um byte, o cursor deveria avancar sozinho pra proxima coluna"
+        Return 0
+    End If
+
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If mamuteMEditCursorCol(mamDocIdx) <> 2 Then
+        report = "SMOKE MAMUTE FAIL: ENTER na grade deveria avancar o cursor sem gravar"
+        Return 0
+    End If
+    If Mamute_ReadByte(&H8001) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: ENTER na grade nao deveria ter alterado o byte pulado"
+        Return 0
+    End If
+
+    Dim pgDnKey As String = Chr(0) & Chr(81)
+    Dim pgUpKey As String = Chr(0) & Chr(73)
+    EditorHandleKey(pgDnKey, runningDummy, menuOpenDummy)
+    If mamuteMEditBaseAddr(mamDocIdx) <> &H8080 Then
+        report = "SMOKE MAMUTE FAIL: PgDn na grade deveria avancar 128 bytes (8080H), veio " & Hex(mamuteMEditBaseAddr(mamDocIdx), 4)
+        Return 0
+    End If
+    EditorHandleKey(pgUpKey, runningDummy, menuOpenDummy)
+    If mamuteMEditBaseAddr(mamDocIdx) <> &H8000 Then
+        report = "SMOKE MAMUTE FAIL: PgUp na grade deveria voltar 128 bytes (8000H), veio " & Hex(mamuteMEditBaseAddr(mamDocIdx), 4)
+        Return 0
+    End If
+
+    mamuteMEditCursorRow(mamDocIdx) = 15
+    mamuteMEditCursorCol(mamDocIdx) = 7
+    Dim rightKey As String = Chr(0) & Chr(77)
+    EditorHandleKey(rightKey, runningDummy, menuOpenDummy)
+    If mamuteMEditBaseAddr(mamDocIdx) <> &H8080 Or mamuteMEditCursorRow(mamDocIdx) <> 0 Or mamuteMEditCursorCol(mamDocIdx) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: seta direita na ultima celula da tela deveria rolar pra pagina seguinte (8080H) e voltar o cursor pro inicio"
+        Return 0
+    End If
+
+    Dim escKey As String = Chr(27)
+    EditorHandleKey(escKey, runningDummy, menuOpenDummy)
+    If mamuteMEditActive(mamDocIdx) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: ESC deveria encerrar a edicao da grade (mamuteMEditActive continuou ligado)"
+        Return 0
+    End If
+    If runningDummy = 0 Then
+        report = "SMOKE MAMUTE FAIL: ESC dentro da grade nao deveria fechar o msxIDE inteiro (running virou 0)"
+        Return 0
+    End If
+
+    ' Testa o comando EDIT (editor de linhas do programa-fonte Z80, estilo
+    ' ZX-81) fim-a-fim, via EditorHandleKey de verdade (mesmo padrao dos
+    ' testes acima).
+    Mamute_AsmNew()
+    EditorCreateMamuteEdit()
+    Dim editDocIdx As Integer = docCount
+
+    mamuteInputBuf(editDocIdx) = "10 START: LD HL,100H ;comeco"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If MamuteAsmProgramCount <> 1 Then
+        report = "SMOKE MAMUTE FAIL: EDIT nao gravou a 1a linha do programa"
+        Return 0
+    End If
+    If MamuteAsmProgram(1).lineNum <> 10 Or MamuteAsmProgram(1).labelText <> "START" Or MamuteAsmProgram(1).instr <> "LD" Or MamuteAsmProgram(1).operand <> "HL,100H" Or MamuteAsmProgram(1).comment <> "comeco" Then
+        report = "SMOKE MAMUTE FAIL: EDIT nao separou label/instrucao/operando/comentario corretamente"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "20 JR START"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If MamuteAsmProgramCount <> 2 Then
+        report = "SMOKE MAMUTE FAIL: EDIT nao gravou a 2a linha"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "10 START: LD HL,200H"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If MamuteAsmProgramCount <> 2 Or MamuteAsmProgram(1).operand <> "HL,200H" Then
+        report = "SMOKE MAMUTE FAIL: repetir o NN deveria SUBSTITUIR a linha 10, nao duplicar"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "30 XXXNOTAMNEMONIC 5"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If MamuteAsmProgramCount <> 2 Then
+        report = "SMOKE MAMUTE FAIL: instrucao invalida nao deveria ter sido aceita no EDIT"
+        Return 0
+    End If
+    If InStr(mamuteEditStatusText(editDocIdx), "ERRO") = 0 Then
+        report = "SMOKE MAMUTE FAIL: instrucao invalida deveria mostrar ?ERRO DE SINTAXE no status do EDIT"
+        Return 0
+    End If
+
+    mamuteEditCursorIndex(editDocIdx) = 1
+    mamuteInputBuf(editDocIdx) = ""
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If mamuteInputBuf(editDocIdx) <> "10 START: LD HL,200H" Then
+        report = "SMOKE MAMUTE FAIL: ENTER com campo vazio deveria puxar a linha do cursor pro campo (EDIT)"
+        Return 0
+    End If
+
+    Dim escKeyE As String = Chr(27)
+    EditorHandleKey(escKeyE, runningDummy, menuOpenDummy)
+    If Len(mamuteInputBuf(editDocIdx)) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: ESC deveria limpar o campo de entrada do EDIT"
+        Return 0
+    End If
+    If runningDummy = 0 Then
+        report = "SMOKE MAMUTE FAIL: ESC dentro do EDIT nao deveria fechar o msxIDE inteiro"
+        Return 0
+    End If
+
+    mamuteEditCursorIndex(editDocIdx) = 1
+    Dim downKeyE As String = Chr(0) & Chr(80)
+    EditorHandleKey(downKeyE, runningDummy, menuOpenDummy)
+    If mamuteEditCursorIndex(editDocIdx) <> 2 Then
+        report = "SMOKE MAMUTE FAIL: seta Baixo deveria mover o cursor do EDIT pra proxima linha"
+        Return 0
+    End If
+    Dim upKeyE As String = Chr(0) & Chr(72)
+    EditorHandleKey(upKeyE, runningDummy, menuOpenDummy)
+    If mamuteEditCursorIndex(editDocIdx) <> 1 Then
+        report = "SMOKE MAMUTE FAIL: seta Cima deveria mover o cursor do EDIT de volta"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "DELETE 20"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If MamuteAsmProgramCount <> 1 Then
+        report = "SMOKE MAMUTE FAIL: DELETE 20 deveria ter apagado a linha 20 no EDIT"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "RENUM 100,,50"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If MamuteAsmProgram(1).lineNum <> 100 Then
+        report = "SMOKE MAMUTE FAIL: RENUM 100,,50 deveria renumerar a unica linha pra 100 no EDIT"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "CHANGE '200H','300H'"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If MamuteAsmProgram(1).operand <> "HL,300H" Then
+        report = "SMOKE MAMUTE FAIL: CHANGE nao trocou 200H por 300H no operando (EDIT)"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "SEARCH 'START'"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If mamuteEditFilterMode(editDocIdx) = 0 Then
+        report = "SMOKE MAMUTE FAIL: SEARCH deveria ligar o modo filtro do EDIT"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "LIST"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If mamuteEditFilterMode(editDocIdx) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: LIST deveria sair do modo filtro do EDIT"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "NEW"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If MamuteAsmProgramCount <> 0 Then
+        report = "SMOKE MAMUTE FAIL: NEW deveria apagar o programa inteiro do EDIT"
+        Return 0
+    End If
+
+    ' Testa o comando A (monta de verdade via Z80_Assemble/motor Z80 acima)
+    ' fim-a-fim atraves do EDIT de verdade: linhas digitadas -> Mamute_AsmAssemble
+    ' (que traduz "100" pro dialeto hexa-por-padrao do motor, "100H") -> "A O"
+    ' grava na RAM simulada mapeada pelo PAGE ativo -> MAP mostra o intervalo.
+    MamuteMemGrid(2, 0, 3).cellType = MAMUTE_CELL_RAM
+    MamuteActiveSlot(3) = 2 : MamuteActiveSub(3) = 0
+    Mamute_WriteByte(&HC000, 0) : Mamute_WriteByte(&HC001, 0) : Mamute_WriteByte(&HC002, 0)
+    Mamute_WriteByte(&HC003, 0) : Mamute_WriteByte(&HC004, 0) : Mamute_WriteByte(&HC005, 0)
+
+    mamuteInputBuf(editDocIdx) = "10 ORG 0C000H"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    mamuteInputBuf(editDocIdx) = "20 START: LD HL,100"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    mamuteInputBuf(editDocIdx) = "30 JP START"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If MamuteAsmProgramCount <> 3 Then
+        report = "SMOKE MAMUTE FAIL: EDIT nao gravou as 3 linhas do programa de teste do comando A"
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "A O"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If InStr(mamuteEditStatusText(editDocIdx), "GRAVADO NA RAM") = 0 Then
+        report = "SMOKE MAMUTE FAIL: A O deveria montar e gravar na RAM, status foi: " & mamuteEditStatusText(editDocIdx)
+        Return 0
+    End If
+    If Mamute_ReadByte(&HC000) <> &H21 Or Mamute_ReadByte(&HC001) <> &H00 Or Mamute_ReadByte(&HC002) <> &H01 Then
+        report = "SMOKE MAMUTE FAIL: A O deveria ter gravado LD HL,0100H (21 00 01) em C000H - veio " & Hex(Mamute_ReadByte(&HC000),2) & " " & Hex(Mamute_ReadByte(&HC001),2) & " " & Hex(Mamute_ReadByte(&HC002),2)
+        Return 0
+    End If
+    If Mamute_ReadByte(&HC003) <> &HC3 Or Mamute_ReadByte(&HC004) <> &H00 Or Mamute_ReadByte(&HC005) <> &HC0 Then
+        report = "SMOKE MAMUTE FAIL: A O deveria ter gravado JP START (C3 00 C0) em C003H - veio " & Hex(Mamute_ReadByte(&HC003),2) & " " & Hex(Mamute_ReadByte(&HC004),2) & " " & Hex(Mamute_ReadByte(&HC005),2)
+        Return 0
+    End If
+    If MamuteAsmLastStartAddr <> &HC000 Or MamuteAsmLastEndAddr <> &HC005 Then
+        report = "SMOKE MAMUTE FAIL: A O deveria ter registrado StartAddr=C000H/EndAddr=C005H pro MAP, veio " & Hex(MamuteAsmLastStartAddr,4) & "/" & Hex(MamuteAsmLastEndAddr,4)
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "MAP"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If InStr(mamuteEditStatusText(editDocIdx), "C000") = 0 Or InStr(mamuteEditStatusText(editDocIdx), "C005") = 0 Then
+        report = "SMOKE MAMUTE FAIL: MAP deveria mostrar C000/C005, status foi: " & mamuteEditStatusText(editDocIdx)
+        Return 0
+    End If
+
+    ' Linha sintaticamente aceita pelo EDIT (Mamute_ParseAsmLine so' confere
+    ' vocabulario/formato, nao modo de enderecamento) mas semanticamente
+    ' invalida pro Z80 de verdade (PUSH so' aceita par de 16 bits/AF/IX/IY,
+    ' nao o registrador de 8 bits A) - so' o motor real (Z80_EncodeInstruction)
+    ' pega isso, exatamente o comportamento pretendido ("por hora aceita o
+    ' programa, a validacao semantica fica pro comando de montagem").
+    mamuteInputBuf(editDocIdx) = "40 PUSH A"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    mamuteInputBuf(editDocIdx) = "A"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If InStr(mamuteEditStatusText(editDocIdx), "ERRO NA LINHA 40") = 0 Then
+        report = "SMOKE MAMUTE FAIL: A deveria rejeitar PUSH A com erro na linha 40, status foi: " & mamuteEditStatusText(editDocIdx)
+        Return 0
+    End If
+    If mamuteEditCursorIndex(editDocIdx) <> 4 Then
+        report = "SMOKE MAMUTE FAIL: erro do comando A deveria ter posicionado o cursor na linha 40 (indice 4), veio indice " & Trim(Str(mamuteEditCursorIndex(editDocIdx)))
+        Return 0
+    End If
+
+    mamuteInputBuf(editDocIdx) = "NEW"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+
+    Dim docCountBeforeQuit As Integer = docCount
+    mamuteInputBuf(editDocIdx) = "QUIT"
+    EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    If docCount <> docCountBeforeQuit - 1 Then
+        report = "SMOKE MAMUTE FAIL: QUIT deveria fechar so' a janela EDIT"
+        Return 0
+    End If
+    If runningDummy = 0 Then
+        report = "SMOKE MAMUTE FAIL: QUIT do EDIT nao deveria fechar o msxIDE inteiro"
+        Return 0
+    End If
+
+    report = "SMOKE MAMUTE OK: round-trip do mapa de memoria (ROM 32KB no Slot 0, sub-slots + RAM no Slot 2.3), AssignMamuteRomFile (BIOS/BASIC/ROM/EXTBIOS), pagina BASIC orfa herdando arquivo da BIOS vizinha, PAGE default, enderecos de pagina, VRAM (64KB + ciclo 16-192), comando PAGE (sem args/posicional/?/erro), disassembler Z80 (plain/DD/CB/ED/DD+CB/JR), comandos F/T/MS/SH/C/D/G/X, aviso de escrita nao-RAM, rolagem automatica do terminal, editor de grade do M (128 bytes, setas/PgUp/PgDn/hexa/ENTER/ESC), comando EDIT (linhas/label/instr/operando/comentario, substituir por NN, NEW/DELETE/RENUM/CHANGE/SEARCH/LIST/QUIT) e motor Z80/comando A (montagem real, traducao hexa-por-padrao, A O grava na RAM, MAP, erro semantico mapeado pra linha certa)"
     Return -1
 End Function
 

@@ -2,7 +2,7 @@
 
 ![msxIDE](images/msxide.png)
 
-**v0.1.1 — "MAMUTE.SYS"**
+**v0.2.0 — "MAMUTE.COM"** — *o mamute aprendeu a montar sozinho.*
 
 Um ambiente de desenvolvimento em modo texto (TUI) para MSX BASIC e Z80 Assembly, escrito em
 FreeBASIC. Inspirado nas ferramentas clássicas de MS-DOS (EDIT, QuickBasic) e nos monitores/assemblers
@@ -28,9 +28,17 @@ interativos da era 8-bit do MSX.
 - **Menu Referência**: dez documentos técnicos MSX portados pra dentro do IDE — The MSX Red Book, MSX2
   Technical Handbook, manuais MSX-DOS2/Z80/R800/Turbo-Basic/FM-PAC, BIOS Chamadas/Hardware/
   Documentação, openMSX, Nestor Basic, SEE Tracker, MSXBAS2ROM.
-- **Mamute Assembler** (início): configurador de memória simulada (slots, sub-slots, páginas, RAM/ROM)
-  e um terminal `MON>` estilo ZX-81 — réplica em andamento de um monitor/assembler Z80 interativo.
-  Roadmap completo em [SPEC.md](SPEC.md#2-módulo-mamute-assembler).
+- **Mamute Assembler**: monitor/assembler Z80 interativo completo, réplica de um monitor de MSX
+  clássico. Configurador de memória simulada (slots, sub-slots, páginas, RAM/ROM/BIOS/BASIC/EXTBIOS) e
+  terminal `MON>` estilo ZX-81 com todos os comandos do monitor (`PAGE`, `DM`, `ZAP`, `SCR`, `SH`, `MS`,
+  `LOAD`/`SAVE`, `M`/`S`/`C`/`D`/`P`/`V`, `T`/`F`, `G`/`X`/`R`, `L`/`LP`, `HELP`). O comando `M` abre um
+  editor hexadecimal interativo em grade (128 bytes, navegação por setas/PgUp/PgDn); o comando `EDIT`
+  abre um editor de linhas de programa-fonte estilo ZX-81 (`NN Label: instrução ;comentário`, com
+  `NEW`/`DELETE`/`RENUM`/`CHANGE`/`SEARCH`/`LSEARCH`/`SAVE`/`LOAD`/`MERGE`) que monta o programa de
+  verdade com um **assembler Z80 nativo** (compatível M80/Nestor80, todos os modos de endereçamento
+  documentados e indocumentados) através do comando `A` (grava na RAM simulada, gera listagem/referência
+  cruzada/lista de símbolos, exporta binário `BSAVE`). Detalhes em
+  [SPEC.md](SPEC.md#2-módulo-mamute-assembler).
 
 ## Ferramentas usadas neste projeto
 

@@ -7,8 +7,8 @@ Guia de instalação, compilação e uso do msxIDE. Para arquitetura/decisões d
 
 Um ambiente de desenvolvimento em modo texto (TUI) pra MSX BASIC (via a suíte **Basic Dignified**) e
 Z80 Assembly (via **asMSX**), com editor multi-janela, compilação/execução no **openMSX**, sistema de
-projetos, ajuda integrada com dez documentos de referência MSX, e o início de um monitor/assembler
-interativo (**Mamute Assembler**).
+projetos, ajuda integrada com dez documentos de referência MSX, e um monitor/assembler Z80 interativo
+completo (**Mamute Assembler**), com editor de linhas estilo ZX-81 e assembler nativo próprio.
 
 ## 2. Dependências
 
@@ -132,7 +132,10 @@ powershell -ExecutionPolicy Bypass -File .\tests\smoke\run-help-smoke.ps1       
   editor (atalhos de teclado — veja também a seção 7 abaixo).
 - **Referência**: dez documentos técnicos MSX (Red Book, manuais, BIOS, openMSX, Nestor Basic, SEE
   Tracker, MSXBAS2ROM).
-- **Mamute**: abre o terminal do Mamute Assembler (ainda em desenvolvimento — ver [SPEC.md](SPEC.md)).
+- **Mamute**: abre o terminal `MON>` do Mamute Assembler.
+- **Ajuda**: além da documentação dos dialetos e do guia do editor, também traz a referência completa do
+  Mamute Assembler (todos os comandos do monitor, o editor `EDIT` e o comando `A`) — digite `HELP` no
+  próprio terminal `MON>` ou use `Ajuda -> Mamute Assembler`.
 
 ## 7. Atalhos essenciais
 

@@ -163,44 +163,75 @@ mão, sem lib externa — mas sem valor numa TUI, o equivalente natural é só a
   funciona offline) **ou** depurar contra o openMSX real via o protocolo de debug dele (mais integração,
   comportamento 100% real de MSX de brinde). Ainda não decidido — avaliar nessa fase.
 
-### 2.4. Estado atual (Fase 1 — concluída)
+### 2.4. Estado atual (Fase 1 e 2 — concluídas)
+
+**Fase 1 — configurador de memória e casca do terminal:**
 
 - **Configurador de memória** (`Configurar -> Mamute (Memória)`): tela em grade, linhas = Slot 0-3
   (expansível em `Slot N.0`-`N.3` quando sub-slots ligados via tecla `T`), colunas = Página 0-3.
-  `Espaço`/`Enter` cicla None→RAM→ROM (pedindo arquivo+offset para ROM). Tecla `L` = "Carregar ROM
-  32KB", que preenche automaticamente página 0 (BIOS, offset 0) e página 1 (MSX-BASIC, offset 16384)
-  do slot/sub-slot selecionado a partir de um único arquivo `.rom` de 32KB. `F2` salva, `Esc` avisa se
-  há mudanças pendentes.
-- **Terminal básico** (`Mamute -> Abrir Mamute Assembler`): janela MDI com scrollback + linha `MON>`
-  fixa embaixo. Comandos implementados: `CLS` (limpa scrollback), `PAGE` (imprime o mapa de memória
-  salvo pelo configurador — prova a integração ponta a ponta), `BA`/`QUIT` (fecha a janela). Qualquer
-  outra entrada ecoa `?COMANDO INVALIDO`, a mensagem real do Mega Assembler original.
+  `Espaço`/`Enter` cicla Vazio→RAM→ROM→BIOS→BASIC→EXTBIOS (pedindo arquivo+offset quando não é
+  RAM/Vazio). Tecla `L` = "Carregar ROM", que preenche automaticamente a página atual + a seguinte a
+  partir de um único arquivo maior que 16KB (BIOS+BASIC combinados, offset 0/16384). `F2` salva, `Esc`
+  avisa se há mudanças pendentes. Tamanho de VRAM simulada selecionável (16/32/64/128/192KB).
+- **Terminal** (`Mamute -> Abrir Mamute Assembler`): janela MDI com scrollback + linha `MON>` fixa
+  embaixo, rolagem automática (nunca esconde saída nova mesmo com a tela cheia).
+
+**Fase 2 — monitor completo + editor de fonte + assembler nativo:**
+
+- **Todos os comandos clássicos do monitor**: `CLS`, `PAGE` (mapa de slots ativo, aceita forma
+  posicional `PAGE X[,Y][,Z][,K]` com campos opcionais), `DM` (dump hex+ASCII), `ZAP` (edição de setor
+  de disco cru), `SCR` (visualização reduzida de tela gráfica em ASCII), `SH` (busca de bytes/texto),
+  `MS` (grava string), `LOAD`/`SAVE`, `C`/`D`/`P`/`V` (modo de exibição + dump formatado, memória e
+  VRAM), `T`/`F` (copia/preenche bloco), `G`/`X`/`R` (registradores/execução — `G`/`R` só validam
+  sintaxe, igual ao original), `L`/`LP` (disassembler Z80 completo, documentado + indocumentado),
+  `HELP`, `BA`/`QUIT`. Escrita numa página que não é RAM agora mostra aviso explícito em vez de falhar
+  silenciosamente (divergência deliberada do hardware real, justificada por ser uma ferramenta de
+  depuração).
+- **Comando `M`**: editor hexadecimal interativo em grade (128 bytes, 16×8), navegação por
+  setas/PgUp/PgDn, edição por dígito hexadecimal com avanço automático de cursor, rolagem contínua ao
+  passar do fim da tela, `ENTER` avança sem gravar, `ESC` sai da edição sem fechar a janela.
+- **Comando `EDIT`**: editor de linhas do programa-fonte Z80 estilo ZX-81/ZX Spectrum, janela própria —
+  listagem com cursor `>`, campo `ASM>` reservado embaixo. Sintaxe `NN Label: instrução operando
+  ;comentário` (`NN` decimal, números no operando hexadecimal por padrão). `ENTER` com campo vazio puxa
+  a linha do cursor pra editar; com campo preenchido grava (mesmo `NN` substitui). Comandos de
+  gerenciamento: `LIST`, `NEW`, `DELETE`, `RENUM`, `CHANGE`, `SEARCH`/`FIND`/`LSEARCH`, `SAVE`/`LOAD`/
+  `MERGE` (formato ASCII próprio `.mza`), `QUIT` (fecha sem apagar o programa).
+- **Assembler Z80 nativo** (motor próprio em FreeBASIC, compatível M80/Nestor80, escopo absoluto — sem
+  macros/condicionais/segmentos relocáveis, já que a gramática do `EDIT` nunca produz isso): tokenizador
+  de expressão completo, avaliador RPN (shunting-yard), tabela de símbolos com 2 passes, e o codificador
+  cobrindo toda a tabela de opcodes Z80 documentados + indocumentados (`IXH`/`IXL`/`IYH`/`IYL`,
+  `(IX+d)`/`(IY+d)`). Acionado pelo comando `A [<opções>][/<offset>]` dentro do `EDIT`: `A` sozinho
+  valida e mostra a listagem clássica (NN/endereço/hexa/conteúdo); opções combináveis `O` (grava na RAM
+  simulada, resolvido pelo `PAGE` ativo), `N` (esconde nº de linha), `P` (grava listagem em `.txt`), `I`
+  (grava código-objeto em disco no formato `BSAVE`/`BLOAD` real do MSX), `R` (referência cruzada de
+  símbolos), `S`/`D` (lista de símbolos alfabética/por ordem de aparição), `H` (lista de símbolos em
+  arquivo `.txt` separado), `/<offset>` (remonta com `ORG` deslocado). Comando `MAP` mostra o intervalo
+  da última montagem bem-sucedida. Erro de montagem posiciona o cursor `>` direto na linha problemática.
 - Implementado em `src/editor.bas` (Tiranossauro) — sem necessidade de schema novo no banco (reusa
   `DbGetSetting`/`DbSetSetting` já existentes, chaves `cfg.mamute.mem.*`).
-- Verificação: `msxide.exe --smoke-mamute` faz o round-trip completo do mapa de memória (grava, suja de
-  propósito, relê, compara campo a campo, incluindo o caso com sub-slots) contra um banco SQLite
-  descartável próprio — nunca toca no `msxide.db` real do usuário.
+- Verificação: `msxide.exe --smoke-mamute` cobre o round-trip completo do mapa de memória, todos os
+  comandos do monitor, o disassembler, a grade do `M`, o `EDIT` fim-a-fim (incluindo o comando `A`
+  montando um programa real, gravando na RAM simulada e mapeando um erro semântico pra linha certa) —
+  tudo via `EditorHandleKey`/teclas reais, não chamadas isoladas às funções internas.
 
-### 2.5. Roadmap (fora de escopo na Fase 1, ordem recomendada)
+### 2.5. Roadmap (fora de escopo por enquanto)
 
-1. **Motor `Z80Asm.pbi`** — porta o assembler de 2 passes pra FreeBASIC (maior valor: lógica pura, já
-   provada correta no paleobasic, reaproveitável por tudo o que vem depois).
-2. **`EDIT`** (fonte numerado) + comandos clássicos de memória/disassembler do `MON>` (`DM`/`L`/`LP`/
-   `X`/`CL`/`T`/`F`/`SH`/`MS`/`LOAD`/`SAVE`).
-3. **Execução** (`G`/`R`/`XGO`/`XTR`/`XRG`) — decidir entre emulador Z80 próprio vs. debug contra
-   openMSX real (ver 2.3). Debugger, se feito, começa em texto puro (registradores + disassembly ao
-   vivo + breakpoints), não a versão visual com minimapa clicável.
-4. **Família de disco do Super-X** (`XFS`/`XSV`/`XLD`/`XS#`/`XL#`/`XL%`/`XS%`/`XDK`/`XCI`/`XTP`) —
-   reaproveita a infraestrutura de disco que o `compiler.bas`/Pteranodonte já tem.
-5. **Sistema de notas** (`XIM`/`XIC`/`XIL`/`XIS`/`XIR`) — barato, é só parsing de arquivo texto; boa
-   janela pra também trazer as 471 notas da BIOS já traduzidas.
-6. **`SCR`/`XH`** (tela gráfica e editor de sprite/fonte 16×16) — únicos que exigem a técnica de pixel
-   em meio-bloco (▀/▄) já cogitada pros editores de sprite/fonte discutidos separadamente. Deixar por
-   último.
-7. **Fora de escopo definitivo nesta leva**: exportação em PDF (sem valor numa TUI); debugger visual
-   com minimapa clicável (GUI-nativo, sem porte direto); `KR`/`KT`/`KL` (fonte japonesa, nicho); `CU`
-   (troca Z80/R800 — sem R800 simulado); `PP` (mapeador de RAM/segmentos completo — o msxIDE já foi
-   além do original com sub-slots, mas MegaRAM paginável fica pra quando fizer falta na prática).
+1. **Execução de verdade** (`G`/`R`/`XGO`/`XTR`/`XRG`) — decidir entre emulador Z80 próprio vs. debug
+   contra openMSX real (ver 2.3). Debugger, se feito, começa em texto puro (registradores + disassembly
+   ao vivo + breakpoints), não a versão visual com minimapa clicável.
+2. **Família `X??` do Super-X** (~36 comandos com prefixo `X` além dos já portados `G`/`X`/`R` básicos)
+   — `XD`/`XA`/`XI`/`XH`/`XM`, `XRG`/`XGO`/`XTR`, família de disco `XFS`/`XSV`/`XLD`/`XDK`/etc.
+3. **Sistema de notas** (`XIM`/`XIC`/`XIL`/`XIS`/`XIR`) — barato, é só parsing de arquivo texto; boa
+   janela pra também trazer as 471 notas da BIOS já traduzidas no paleobasic.
+4. **`SCR`/`XH` com pixel de verdade** (hoje `SCR` é uma visualização reduzida em ASCII) e editor de
+   sprite/fonte 16×16 — exigem a técnica de pixel em meio-bloco (▀/▄) cogitada pros editores de sprite/
+   fonte discutidos separadamente.
+5. **Fora de escopo definitivo nesta leva**: macros/assembly condicional/segmentos relocáveis no motor
+   Z80 (a gramática do `EDIT` nunca os produz); exportação em PDF (sem valor numa TUI, `P`/`H` já usam
+   `.txt`); debugger visual com minimapa clicável (GUI-nativo, sem porte direto); `KR`/`KT`/`KL` (fonte
+   japonesa, nicho); `CU` (troca Z80/R800 — sem R800 simulado); `PP` (mapeador de RAM/segmentos
+   completo — o msxIDE já foi além do original com sub-slots, mas MegaRAM paginável fica pra quando
+   fizer falta na prática).
 
 ### 2.6. Modelo de dados (memória simulada)
 

@@ -368,3 +368,9 @@ Sub ConsoleGetMouseHud(ByRef available As Integer, ByRef enabled As Integer, ByR
     x = gVirtualMouseX
     y = gVirtualMouseY
 End Sub
+
+' Terminais Linux (onde este backend roda) ja exibem UTF-8 nativamente -
+' nao ha codepage de console pra converter, entao devolve o texto intacto.
+Function ConsoleUtf8ToActiveCp(ByRef txt As String) As String
+    Return txt
+End Function

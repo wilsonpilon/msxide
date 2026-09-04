@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $configPath = Join-Path $projectRoot ".build-config.json"
 $outputExe = Join-Path $projectRoot "msxide.exe"
-$releaseCodename = "MAMUTE.SYS"
+$releaseCodename = "MAMUTE.COM"
 
 function New-DefaultConfig {
     return [ordered]@{

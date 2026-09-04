@@ -22,7 +22,7 @@ terminal de verdade daquela época, não um diálogo moderno.
 **Não é o Editor Hexa nem os assemblers já existentes** (Basic Dignified, asMSX) - é uma ferramenta à
 parte, com seu próprio pequeno conjunto de comandos. Comandos disponíveis: **BA / QUIT**, **PAGE**,
 **DM**, **ZAP**, **SCR**, **SH**, **MS**, **LOAD**, **SAVE**, **M**, **S**, **C**, **D**, **P**, **V**,
-**T**, **F**, **G**, **X**, **R**, **L**, **LP** (**G** e **R** ainda só validam a sintaxe e confirmam no
+**T**, **F**, **G**, **X**, **R**, **EDIT**, **L**, **LP** (**G** e **R** ainda só validam a sintaxe e confirmam no
 log - a execução de programas e o carregamento de assemblados ficam pra uma fase futura). **Os
 endereços/setores digitados em qualquer comando são sempre em hexadecimal** - o padrão de entrada do
 Mamute Assembler inteiro.
@@ -659,6 +659,100 @@ parou, se nenhum endereço for passado). Cancelar a janela de salvar não gera a
 
 **Nesta versão do msxIDE**, o `LP` grava um arquivo de texto simples (`.txt`) em vez de um PDF - mesma
 listagem, formato mais simples.
+
+## EDIT
+
+**Abre uma janela separada** com um editor de linhas pro **programa-fonte Z80**, no estilo do editor de
+BASIC do ZX-81/ZX Spectrum - a listagem é a própria área de cima do documento (sem log de comandos nem
+mensagem "OK"), com um cursor `>` marcando a linha atual. Um campo `ASM>` reservado embaixo (junto de uma
+linha de status logo acima dele) recebe tanto linhas novas do programa quanto os comandos de
+gerenciamento abaixo.
+
+**Sintaxe de cada linha** (formato do manual original do MegaAssembler):
+
+```
+NN Label: instrucao operando ;comentario
+```
+
+- **`NN`** - número da linha, **obrigatório**, **decimal** (0-65529, mesmo teto do número de linha do
+  BASIC/MSX). Digitar de novo o mesmo número **substitui** a linha.
+- **`Label:`** - opcional, termina em `:`.
+- **`instrucao`** - um mnemônico Z80 válido ou uma das pseudo-instruções `ORG`/`DEFB`/`DEFW`/`DEFM`/
+  `DEFS`/`EQU`/`END`. `EQU` exige `Label:`.
+- **`;comentario`** - opcional, até o fim da linha.
+
+**Números dentro do operando** seguem a mesma convenção já estabelecida no resto do Mamute:
+**hexadecimal por padrão** (diferente do manual original, que usa decimal) - sufixos opcionais `H`
+(hexa, redundante), `B` (binário), `D` (decimal, único jeito de escrever decimal agora).
+
+**Navegação e edição, ao estilo ZX-81:**
+
+- **Setas Cima/Baixo** movem o cursor `>` pela listagem.
+- **ENTER com o campo VAZIO** puxa a linha do cursor `>` pro campo, pronta pra editar.
+- **ENTER com o campo preenchido** grava a linha digitada (nova ou substituindo por `NN`).
+- **ESC** descarta o que estiver no campo, sem gravar nada (não fecha a janela - use `QUIT` pra isso).
+- **Tela cheia**: ao digitar linhas novas, o cursor rola **meia tela** automaticamente pra caber mais.
+- **`LIST`** (digitado no campo, sem `NN` na frente): lista a partir da 1ª linha. Se o programa não
+  couber inteiro, pergunta `Rolar mais uma tela? (S/N)` no rodapé (responda no mesmo campo + ENTER).
+
+**Comandos de gerenciamento** (também digitados no campo, sem `NN` na frente):
+
+- **`NEW`** - apaga o programa inteiro da memória, sem confirmação.
+- **`DELETE <lininic>[-[<linfin>]]`** - apaga uma linha (`DELETE 50`), um intervalo inclusive
+  (`DELETE 50-90`), ou da linha até o fim do programa (`DELETE 50-`, sem número final).
+- **`RENUM [<novali>[,<antigali>[,<incr>]]]`** - renumera a partir da linha ANTIGA `antigali` pra uma
+  nova sequência começando em `novali` com passo `incr` (`RENUM` sozinho: tudo, começando em 10, passo
+  10).
+- **`CHANGE '<string1>'[,'<string2>']`** - troca todas as ocorrências de `<string1>` por `<string2>` em
+  qualquer lugar de cada linha; se `<string2>` for omitido, apaga as ocorrências de `<string1>`.
+- **`SAVE`**/**`LOAD`** - gravam/lêem o programa-fonte inteiro num arquivo `.mza` em **ASCII simples**
+  (pede o nome do arquivo no mesmo estilo do `LOAD`/`SAVE` do `MON>`) - formato próprio desta versão, não
+  o formato binário proprietário do MegaAssembler original. `LOAD` SUBSTITUI o programa em memória.
+- **`MERGE`** - igual ao `LOAD`, mas NÃO apaga o programa em memória - funde os dois. Uma linha do
+  arquivo com o MESMO número de uma linha já existente SOBREPÕE a existente.
+- **`SEARCH '<string>'`** (entre aspas) - busca LITERAL, case-sensitive. **`SEARCH <string>`** (sem
+  aspas) - busca LIVRE, case-insensitive. Bem-sucedida, a tela passa a mostrar SÓ as linhas encontradas
+  (mesmas setas/`ENTER` de sempre navegam entre elas) - digite `LIST` pra voltar ao programa completo.
+- **`LSEARCH`** - igual ao `SEARCH`, mas em vez de filtrar a tela, grava a listagem das linhas
+  encontradas num arquivo `.txt` (pede o nome do arquivo).
+- **`FIND`** - apelido de `SEARCH` (mesmo resultado).
+- **`QUIT`** - fecha a janela do `EDIT` e volta pro `MON>`, SEM apagar o programa da memória - abrir
+  `EDIT` de novo continua exatamente de onde parou.
+
+- **`A [<opções>][/<offset>]`** - monta o programa-fonte de verdade, com o mesmo assembler Z80 nativo do
+  msxIDE (compatível M80/Nestor80). `A` sozinho só valida - mostra a listagem clássica (número da linha,
+  endereço ou valor do `EQU`, até 4 bytes hexa por linha, conteúdo da linha) com a mesma paginação do
+  `LIST` (`Rolar mais uma tela? (S/N)`) se não couber tudo de uma vez. Em caso de erro, mostra a
+  mensagem descritiva e o cursor `>` pula direto pra linha com problema. As opções (qualquer combinação,
+  coladas, ex. `A ONPIRSDH`):
+  - **`O`** - além de validar, GRAVA o código-objeto montado na RAM simulada, no endereço do `ORG`,
+    resolvido pelo mapeamento de `PAGE` ativo agora (mesma regra do `DM`/`M`: só grava de verdade se a
+    célula mapeada for RAM).
+  - **`N`** - a listagem NÃO mostra a coluna do número de linha (o resto é igual).
+  - **`P`** - grava a MESMA listagem num arquivo `.txt` (pede o nome do arquivo) - **nesta versão do
+    msxIDE**, em vez do PDF do manual original.
+  - **`I`** - grava o código-objeto recém-montado direto em DISCO (pede o nome do arquivo), no formato
+    real do `BSAVE`/`BLOAD` do MSX (cabeçalho `FE` + endereço inicial/final/execução) - funciona sozinho,
+    não depende de `O` ter gravado nada na RAM antes.
+  - **`R`** - anexa ao final da listagem uma referência cruzada dos símbolos (ordem alfabética): nome,
+    valor (constante `EQU` ou endereço de definição do rótulo) e todos os endereços onde foi usado.
+  - **`S`** - anexa ao final uma lista alfabética simples de símbolos (nome + valor, sem os endereços de
+    uso).
+  - **`D`** - igual a `S`, mas em ORDEM DE APARIÇÃO no fonte, não alfabética.
+  - **`H`** - manda só a(s) lista(s) de símbolos (`S`/`D`, pelo menos uma precisa estar ativa) pra um
+    arquivo `.txt` SEPARADO do de `P`.
+  - **`/<offset>`** - monta o programa para o endereço indicado pelo `ORG` MAIS `<offset>` (hexa) - útil
+    pra testar o mesmo código-objeto em outro endereço sem editar o `ORG` do fonte.
+- **`MAP`** - mostra o endereço inicial e final da ÚLTIMA montagem bem-sucedida (`A` ou `A O` - os dois
+  calculam o mesmo intervalo). Sem nenhuma montagem ainda, pede pra rodar `A` primeiro.
+
+**Diferenças desta versão em relação ao manual original**: as opções `P`/`H` gravam um arquivo de texto
+simples em vez de PDF (o msxIDE não tem gerador de PDF - mesma adaptação já usada pelo `L`/`LP`/
+`LSEARCH`). O eco cosmético "PASSO-1"/"PASSO-2" do assembler de 2 passagens não existe aqui (só fazia
+sentido numa janela gráfica animada). O motor Z80 cobre o vocabulário que o `EDIT` realmente aceita
+(mnemônicos Z80 + `ORG`/`DEFB`/`DEFW`/`DEFM`/`DEFS`/`EQU`/`END`) - macros, assembly condicional
+(`IF`/`IFDEF`/etc.) e segmentos relocáveis (`ASEG`/`CSEG`/`PUBLIC`/`EXTRN`) não fazem parte da gramática
+do `EDIT` e por isso não são suportados.
 
 ## CLS
 

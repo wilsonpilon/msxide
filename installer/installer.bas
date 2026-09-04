@@ -4,8 +4,8 @@
 ' Iniciar e registra uma entrada de desinstalacao em "Aplicativos e recursos".
 #Include Once "dir.bi"
 
-Const MSXIDE_INSTALLER_VERSION = "0.1.3"
-Const MSXIDE_INSTALLER_CODENAME = "MAMUTE.SYS"
+Const MSXIDE_INSTALLER_VERSION = "0.2.0"
+Const MSXIDE_INSTALLER_CODENAME = "MAMUTE.COM"
 
 Declare Sub Pause()
 

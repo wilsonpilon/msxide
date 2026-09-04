@@ -11,6 +11,7 @@ Type Document
     filePath As String
     isHelp As Integer
     isMamuteTerm As Integer
+    isMamuteEdit As Integer
     helpTitle As String
     helpWrapWidth As Integer
     lineCount As Integer

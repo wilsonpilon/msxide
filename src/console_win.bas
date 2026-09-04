@@ -117,6 +117,15 @@ Sub ConsoleInit(ByVal w As Integer, ByVal h As Integer)
     gOut = GetStdHandle(STD_OUTPUT_HANDLE)
     gIn = GetStdHandle(STD_INPUT_HANDLE)
 
+    ' Codepage OEM 860 (Portugues) em vez do padrao 437 (EUA) de um Windows
+    ' em ingles: mantem os mesmos caracteres de linha/caixa (176-223, iguais
+    ' em qualquer codepage OEM) mas cobre corretamente as letras acentuadas
+    ' do portugues que faltam na 437 (ã, õ, Á, Í, Ó, Ú). Se falhar (SO nao
+    ' suporta essa codepage por algum motivo), segue com o que ja estava
+    ' ativo - ConsoleUtf8ToActiveCp le a codepage realmente ativa depois.
+    SetConsoleOutputCP(860)
+    SetConsoleCP(860)
+
     gHasOriginalInMode = 0
     If GetConsoleMode(gIn, @gOriginalInMode) <> 0 Then
         gHasOriginalInMode = -1
@@ -341,6 +350,47 @@ Sub ConsoleSetCell(ByVal x As Integer, ByVal y As Integer, ByVal ch As UByte, By
     gRowAttr(y, x) = MakeAttr(fg, bg)
     MarkDirtyRange(y, x, x)
 End Sub
+
+' Converte texto UTF-8 (a codificacao em que os arquivos .md de ajuda e o
+' banco de dados guardam o texto) para a codepage de saida realmente ativa
+' no console (normalmente 860, definida em ConsoleInit; le a ativa de novo
+' aqui em vez de assumir, caso o SO tenha recusado o SetConsoleOutputCP).
+' Sem isso, cada acento vira 2-3 bytes UTF-8 exibidos como glifos errados.
+Function ConsoleUtf8ToActiveCp(ByRef txt As String) As String
+    Dim srcLen As Long = Len(txt)
+    If srcLen <= 0 Then Return txt
+
+    Dim targetCp As UInteger = GetConsoleOutputCP()
+    If targetCp = 0 Then Return txt
+
+    Dim wLen As Long = MultiByteToWideChar(CP_UTF8, 0, StrPtr(txt), srcLen, 0, 0)
+    If wLen <= 0 Then Return txt
+
+    Dim wBuf As Any Ptr = CAllocate((wLen + 1) * 2)
+    If wBuf = 0 Then Return txt
+    MultiByteToWideChar(CP_UTF8, 0, StrPtr(txt), srcLen, Cast(LPWSTR, wBuf), wLen)
+
+    Dim outLen As Long = WideCharToMultiByte(targetCp, 0, Cast(LPCWCH, wBuf), wLen, 0, 0, 0, 0)
+    If outLen <= 0 Then
+        DeAllocate(wBuf)
+        Return txt
+    End If
+
+    Dim outBuf As Any Ptr = CAllocate(outLen + 1)
+    If outBuf = 0 Then
+        DeAllocate(wBuf)
+        Return txt
+    End If
+    WideCharToMultiByte(targetCp, 0, Cast(LPCWCH, wBuf), wLen, Cast(LPSTR, outBuf), outLen, 0, 0)
+
+    Dim result As String = Space(outLen)
+    CopyMemory(StrPtr(result), outBuf, outLen)
+
+    DeAllocate(wBuf)
+    DeAllocate(outBuf)
+
+    Return result
+End Function
 
 Sub ConsoleWriteText(ByVal x As Integer, ByVal y As Integer, ByRef txt As String, ByVal fg As UByte = 7, ByVal bg As UByte = 0, ByVal maxLen As Integer = -1)
     If y < 1 Or y > gH Then Exit Sub
