@@ -40,5 +40,6 @@ Declare Sub EditorSaveAllToDb()
 Declare Sub EditorShutdown()
 Declare Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
 Declare Function EditorRunMamuteSmokeTest(ByRef report As String) As Integer
+Declare Function EditorRunMamuteDiag(ByRef report As String) As Integer
 
 #endif

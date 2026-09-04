@@ -58,6 +58,7 @@ Const MENU_CMD_REF_OPENMSX = 38
 Const MENU_CMD_REF_MSXBAS2ROM = 39
 Const MENU_CMD_CFG_MAMUTE_MEM = 40
 Const MENU_CMD_MAMUTE_OPEN = 41
+Const MENU_CMD_MAMUTE_HELP = 42
 
 Const MENU_VIEW_NONE = 0
 Const MENU_VIEW_FILE = 1
@@ -115,6 +116,13 @@ Dim Shared msxDictReturnHelpTitle As String
 Const MAMUTE_PROMPT = "MON> "
 Dim Shared mamuteInputBuf(1 To MAX_DOCS) As String
 Dim Shared mamuteInputCursor(1 To MAX_DOCS) As Integer
+
+' Estado da "caminhada" de edicao sequencial do comando X (ver o motor do
+' Mamute mais abaixo no arquivo) - declarado aqui em cima, e nao perto do
+' resto do motor, porque BringDocumentToFront/CloseDocument (que shiftam
+' esses arrays em lockstep com docs()) ficam bem antes no arquivo.
+Dim Shared MamuteXWalking(1 To MAX_DOCS) As Integer
+Dim Shared MamuteXWalkIdx(1 To MAX_DOCS) As Integer
 
 Const MSX_DICT_DATA_PATH = "ajuda\\MsxBasicDictData.pbi"
 Const MSX_DICT_DATA_PATH_2P = "ajuda\\MsxBasic2PlusDictData.pbi"
@@ -223,6 +231,7 @@ Declare Sub EditorCreateAsmUntitled()
 Declare Sub EditorCreateMamuteTerm()
 Declare Sub ShowMamuteMemoryConfig()
 Declare Sub HandleMamuteTermKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+Declare Function MamuteCurrentPromptText(ByVal docIndex As Integer) As String
 Declare Sub CompileDlgReset(ByRef titleText As String)
 Declare Sub CompileDlgLog(ByRef lineText As String)
 Declare Sub CompileDlgFinish(ByRef msg1 As String, ByRef msg2 As String, ByVal isSuccess As Integer)
@@ -263,6 +272,9 @@ End Type
 Const MAMUTE_CELL_NONE = 0
 Const MAMUTE_CELL_RAM = 1
 Const MAMUTE_CELL_ROM = 2
+Const MAMUTE_CELL_BIOS = 3
+Const MAMUTE_CELL_BASIC = 4
+Const MAMUTE_CELL_EXTBIOS = 5
 
 Type MamuteMemCell
     cellType As Integer
@@ -272,6 +284,58 @@ End Type
 
 Dim Shared MamuteMemGrid(0 To 3, 0 To 3, 0 To 3) As MamuteMemCell
 Dim Shared MamuteMemSubOn(0 To 3) As Integer
+
+' Tamanho da VRAM simulada, em KB - so os valores reais existentes em
+' hardware MSX (16/32 = MSX1, 64/128 = MSX2 comum, 192 = MSX2+/turboR).
+Dim Shared MamuteVramKB As Integer
+
+' Mapeamento "ativo" de PAGE: pra cada pagina da CPU (0-3), qual slot/sub-slot
+' esta visivel ali agora (equivalente ao registrador de selecao de slot
+' primario/secundario do MSX de verdade). Preenchido por
+' SetMamuteDefaultPageMapping() quando o terminal abre.
+Dim Shared MamuteActiveSlot(0 To 3) As Integer
+Dim Shared MamuteActiveSub(0 To 3) As Integer
+
+' Memoria FISICA simulada: um byte de verdade por Slot x Sub-slot x Pagina x
+' Deslocamento (4x4x4x16384 = 4MB, trivial hoje em dia). So e populada por
+' Mamute_LoadPhysicalMemory() (chamada quando o terminal abre - nunca a cada
+' comando, senao RAM escrita seria perdida toda hora): celulas RAM comecam
+' zeradas; celulas ROM/BASIC/BIOS/EXTBIOS com arquivo configurado sao lidas
+' de verdade do arquivo, a partir do offset configurado, ate 16KB (arquivo
+' menor = resto zerado). MamuteVram e' um bloco plano separado (a VRAM real
+' de um MSX nunca fica mapeada no espaco de enderecos do Z80).
+Dim Shared MamuteMem(0 To 3, 0 To 3, 0 To 3, 0 To 16383) As UByte
+Dim Shared MamuteVram(0 To 196607) As UByte
+
+' Registradores do Z80 simulado (comando X) - pares de 16 bits; os de 8 bits
+' (A/F/B/C/D/E/H/L) sao as metades alta/baixa dos 4 primeiros. Resetam pra
+' 0000 toda vez que o terminal abre (mesmo espirito volatil do PAGE/C).
+Dim Shared MamuteRegAF As Integer
+Dim Shared MamuteRegBC As Integer
+Dim Shared MamuteRegDE As Integer
+Dim Shared MamuteRegHL As Integer
+Dim Shared MamuteRegIX As Integer
+Dim Shared MamuteRegIY As Integer
+Dim Shared MamuteRegSP As Integer
+
+' (MamuteXWalking/MamuteXWalkIdx ja declarados perto do topo do arquivo,
+' junto de mamuteInputBuf/mamuteInputCursor - ver linha ~120.)
+
+' Modo de exibicao (comando C) usado por D/P/V - dura so' enquanto o
+' terminal estiver aberto (reseta pra 0 quando reabre).
+Dim Shared MamuteDisplayMode As Integer
+
+' Ultimo endereco/estado de continuacao dos comandos que "lembram de onde
+' pararam" quando chamados sem argumento: SH (busca), M, S (edicao rapida),
+' L/LP (disassembler, os dois avancam o MESMO ponteiro).
+Dim Shared MamuteLastShAddr As Integer
+Dim Shared MamuteLastShValid As Integer
+Dim Shared MamuteLastMAddr As Integer
+Dim Shared MamuteLastMValid As Integer
+Dim Shared MamuteLastSAddr As Integer
+Dim Shared MamuteLastSValid As Integer
+Dim Shared MamuteLastDisasmAddr As Integer
+Dim Shared MamuteLastDisasmValid As Integer
 
 Private Function CompileDebugLogPath() As String
     Dim p As String = Environ("TEMP")
@@ -2388,6 +2452,8 @@ Private Sub BringDocumentToFront(ByVal docIndex As Integer)
     Dim tempMap(1 To MAX_LINES) As String
     Dim tempInputBuf As String = mamuteInputBuf(docIndex)
     Dim tempInputCursor As Integer = mamuteInputCursor(docIndex)
+    Dim tempXWalking As Integer = MamuteXWalking(docIndex)
+    Dim tempXWalkIdx As Integer = MamuteXWalkIdx(docIndex)
     Dim i As Integer
     Dim j As Integer
 
@@ -2399,6 +2465,8 @@ Private Sub BringDocumentToFront(ByVal docIndex As Integer)
         docs(i) = docs(i + 1)
         mamuteInputBuf(i) = mamuteInputBuf(i + 1)
         mamuteInputCursor(i) = mamuteInputCursor(i + 1)
+        MamuteXWalking(i) = MamuteXWalking(i + 1)
+        MamuteXWalkIdx(i) = MamuteXWalkIdx(i + 1)
         For j = 1 To MAX_LINES
             msxDictLineCommand(i, j) = msxDictLineCommand(i + 1, j)
         Next j
@@ -2407,6 +2475,8 @@ Private Sub BringDocumentToFront(ByVal docIndex As Integer)
     docs(docCount) = temp
     mamuteInputBuf(docCount) = tempInputBuf
     mamuteInputCursor(docCount) = tempInputCursor
+    MamuteXWalking(docCount) = tempXWalking
+    MamuteXWalkIdx(docCount) = tempXWalkIdx
     For j = 1 To MAX_LINES
         msxDictLineCommand(docCount, j) = tempMap(j)
     Next j
@@ -2422,6 +2492,8 @@ Private Sub CloseDocument(ByVal docIndex As Integer)
         docs(i) = docs(i + 1)
         mamuteInputBuf(i) = mamuteInputBuf(i + 1)
         mamuteInputCursor(i) = mamuteInputCursor(i + 1)
+        MamuteXWalking(i) = MamuteXWalking(i + 1)
+        MamuteXWalkIdx(i) = MamuteXWalkIdx(i + 1)
         For j = 1 To MAX_LINES
             msxDictLineCommand(i, j) = msxDictLineCommand(i + 1, j)
         Next j
@@ -2429,6 +2501,8 @@ Private Sub CloseDocument(ByVal docIndex As Integer)
 
     mamuteInputBuf(docCount) = ""
     mamuteInputCursor(docCount) = 0
+    MamuteXWalking(docCount) = 0
+    MamuteXWalkIdx(docCount) = 0
     For j = 1 To MAX_LINES
         msxDictLineCommand(docCount, j) = ""
     Next j
@@ -2474,7 +2548,7 @@ Private Sub PlaceActiveCursor()
     If d.isMamuteTerm <> 0 Then
         Dim clientW2 As Integer = GetClientTextWidth(d)
         Dim inputRow As Integer = d.winY + 1 + GetClientTextHeight(d)
-        Dim cx2 As Integer = Len(MAMUTE_PROMPT) + mamuteInputCursor(activeDoc) + 1
+        Dim cx2 As Integer = Len(MamuteCurrentPromptText(activeDoc)) + mamuteInputCursor(activeDoc) + 1
         If cx2 >= 1 And cx2 <= clientW2 Then
             ConsoleSetCursor(d.winX + cx2, inputRow, 1)
         End If
@@ -2637,22 +2711,22 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
         ConsoleWriteText(23, 1, "Compilar", 15, 1)
     End If
 
-    If menuOpen = MENU_VIEW_HELP Then
-        ConsoleWriteText(33, 1, "Ajuda", 0, 7)
-    Else
-        ConsoleWriteText(33, 1, "Ajuda", 15, 1)
-    End If
-
     If menuOpen = MENU_VIEW_REFERENCE Then
-        ConsoleWriteText(40, 1, "Referencia", 0, 7)
+        ConsoleWriteText(33, 1, "Referencia", 0, 7)
     Else
-        ConsoleWriteText(40, 1, "Referencia", 15, 1)
+        ConsoleWriteText(33, 1, "Referencia", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_MAMUTE Then
-        ConsoleWriteText(52, 1, "Mamute", 0, 7)
+        ConsoleWriteText(45, 1, "Mamute", 0, 7)
     Else
-        ConsoleWriteText(52, 1, "Mamute", 15, 1)
+        ConsoleWriteText(45, 1, "Mamute", 15, 1)
+    End If
+
+    If menuOpen = MENU_VIEW_HELP Then
+        ConsoleWriteText(53, 1, "Ajuda", 0, 7)
+    Else
+        ConsoleWriteText(53, 1, "Ajuda", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_FILE Then
@@ -2686,32 +2760,33 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
         ConsoleWriteText(23, 7, Chr(186) & " L Abrir log de compilacao                  " & Chr(186), 0, 7)
         ConsoleWriteText(23, 8, Chr(200) & String(42, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_HELP Then
-        ConsoleWriteText(33, 2, Chr(201) & String(34, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(33, 3, Chr(186) & " B Basic Dignified                  " & Chr(186), 0, 7)
-        ConsoleWriteText(33, 4, Chr(186) & " D Dignified                        " & Chr(186), 0, 7)
-        ConsoleWriteText(33, 5, Chr(186) & " T BaToken                          " & Chr(186), 0, 7)
-        ConsoleWriteText(33, 6, Chr(186) & " A asMSX                            " & Chr(186), 0, 7)
-        ConsoleWriteText(33, 7, Chr(186) & " M MSX BASIC Dictionary             " & Chr(186), 0, 7)
-        ConsoleWriteText(33, 8, Chr(186) & " E Editor                           " & Chr(186), 0, 7)
-        ConsoleWriteText(33, 9, Chr(186) & IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    ") & Chr(186), 0, 7)
-        ConsoleWriteText(33, 10, Chr(200) & String(34, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(53, 2, Chr(201) & String(34, Chr(205)) & Chr(187), 15, 1)
+        ConsoleWriteText(53, 3, Chr(186) & " B Basic Dignified                  " & Chr(186), 0, 7)
+        ConsoleWriteText(53, 4, Chr(186) & " D Dignified                        " & Chr(186), 0, 7)
+        ConsoleWriteText(53, 5, Chr(186) & " T BaToken                          " & Chr(186), 0, 7)
+        ConsoleWriteText(53, 6, Chr(186) & " A asMSX                            " & Chr(186), 0, 7)
+        ConsoleWriteText(53, 7, Chr(186) & " M MSX BASIC Dictionary             " & Chr(186), 0, 7)
+        ConsoleWriteText(53, 8, Chr(186) & " E Editor                           " & Chr(186), 0, 7)
+        ConsoleWriteText(53, 9, Chr(186) & " N Mamute Assembler                 " & Chr(186), 0, 7)
+        ConsoleWriteText(53, 10, Chr(186) & IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    ") & Chr(186), 0, 7)
+        ConsoleWriteText(53, 11, Chr(200) & String(34, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_REFERENCE Then
-        ConsoleWriteText(40, 2, Chr(201) & String(40, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(40, 3, Chr(186) & Left(" R The MSX Red Book" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 4, Chr(186) & Left(" N Nestor Basic" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 5, Chr(186) & Left(" T MSX2 Technical Handbook" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 6, Chr(186) & Left(" M Manuais MSX" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 7, Chr(186) & Left(" C BIOS Chamadas" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 8, Chr(186) & Left(" W BIOS Hardware" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 9, Chr(186) & Left(" D BIOS Documentacao" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 10, Chr(186) & Left(" S SEE Tracker" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 11, Chr(186) & Left(" O openMSX" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 12, Chr(186) & Left(" X MSXBAS2ROM" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(40, 13, Chr(200) & String(40, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(33, 2, Chr(201) & String(40, Chr(205)) & Chr(187), 15, 1)
+        ConsoleWriteText(33, 3, Chr(186) & Left(" R The MSX Red Book" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 4, Chr(186) & Left(" N Nestor Basic" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 5, Chr(186) & Left(" T MSX2 Technical Handbook" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 6, Chr(186) & Left(" M Manuais MSX" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 7, Chr(186) & Left(" C BIOS Chamadas" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 8, Chr(186) & Left(" W BIOS Hardware" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 9, Chr(186) & Left(" D BIOS Documentacao" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 10, Chr(186) & Left(" S SEE Tracker" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 11, Chr(186) & Left(" O openMSX" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 12, Chr(186) & Left(" X MSXBAS2ROM" & Space(40), 40) & Chr(186), 0, 7)
+        ConsoleWriteText(33, 13, Chr(200) & String(40, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_MAMUTE Then
-        ConsoleWriteText(52, 2, Chr(201) & String(30, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(52, 3, Chr(186) & Left(" A Abrir Mamute Assembler" & Space(30), 30) & Chr(186), 0, 7)
-        ConsoleWriteText(52, 4, Chr(200) & String(30, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(45, 2, Chr(201) & String(30, Chr(205)) & Chr(187), 15, 1)
+        ConsoleWriteText(45, 3, Chr(186) & Left(" A Abrir Mamute Assembler" & Space(30), 30) & Chr(186), 0, 7)
+        ConsoleWriteText(45, 4, Chr(200) & String(30, Chr(205)) & Chr(188), 15, 1)
     End If
 End Sub
 
@@ -5301,6 +5376,12 @@ Private Function MamuteCellTypeLabel(ByVal cellType As Integer) As String
             Return "RAM"
         Case MAMUTE_CELL_ROM
             Return "ROM"
+        Case MAMUTE_CELL_BIOS
+            Return "BIOS"
+        Case MAMUTE_CELL_BASIC
+            Return "BASIC"
+        Case MAMUTE_CELL_EXTBIOS
+            Return "EXTBIOS"
     End Select
     Return "."
 End Function
@@ -5323,6 +5404,12 @@ Private Sub LoadMamuteMemConfig()
                     cellType = MAMUTE_CELL_RAM
                 ElseIf typeText = "rom" Then
                     cellType = MAMUTE_CELL_ROM
+                ElseIf typeText = "bios" Then
+                    cellType = MAMUTE_CELL_BIOS
+                ElseIf typeText = "basic" Then
+                    cellType = MAMUTE_CELL_BASIC
+                ElseIf typeText = "extbios" Then
+                    cellType = MAMUTE_CELL_EXTBIOS
                 End If
                 MamuteMemGrid(slot, subIdx, pageIdx).cellType = cellType
                 MamuteMemGrid(slot, subIdx, pageIdx).romPath = DbGetSetting(prefix & "rompath", "")
@@ -5330,6 +5417,11 @@ Private Sub LoadMamuteMemConfig()
             Next pageIdx
         Next subIdx
     Next slot
+
+    MamuteVramKB = ValInt(DbGetSetting("cfg.mamute.mem.vramkb", "16"))
+    If MamuteVramKB <> 16 And MamuteVramKB <> 32 And MamuteVramKB <> 64 And MamuteVramKB <> 128 And MamuteVramKB <> 192 Then
+        MamuteVramKB = 16
+    End If
 End Sub
 
 Private Sub SaveMamuteMemConfig()
@@ -5348,13 +5440,981 @@ Private Sub SaveMamuteMemConfig()
                 Dim typeText As String = "none"
                 If cell.cellType = MAMUTE_CELL_RAM Then typeText = "ram"
                 If cell.cellType = MAMUTE_CELL_ROM Then typeText = "rom"
+                If cell.cellType = MAMUTE_CELL_BIOS Then typeText = "bios"
+                If cell.cellType = MAMUTE_CELL_BASIC Then typeText = "basic"
+                If cell.cellType = MAMUTE_CELL_EXTBIOS Then typeText = "extbios"
                 DbSetSetting(prefix & "type", typeText)
                 DbSetSetting(prefix & "rompath", cell.romPath)
                 DbSetSetting(prefix & "romoffset", Trim(Str(cell.romOffset)))
             Next pageIdx
         Next subIdx
     Next slot
+
+    DbSetSetting("cfg.mamute.mem.vramkb", Trim(Str(MamuteVramKB)))
 End Sub
+
+' Aplica um arquivo de ROM numa pagina, com o preenchimento automatico das
+' paginas vizinhas que o Mega Assembler/Super-X original faz quando a ROM
+' informada tem mais de 16KB (BIOS+BASIC juntos no mesmo arquivo):
+'   BIOS   -> pagina atual = 1os 16KB (BIOS); pagina SEGUINTE do mesmo
+'             slot/sub-slot = 16KB seguintes, marcada BASIC.
+'   BASIC  -> o inverso: pagina atual = 16KB seguintes (BASIC); pagina
+'             ANTERIOR do mesmo slot/sub-slot = 1os 16KB, marcada BIOS.
+'   ROM    -> mesma divisao em 16KB da BIOS (atual + seguinte): a pagina
+'             atual continua ROM (foi o tipo escolhido), mas a seguinte
+'             tambem vira BASIC, ja que na pratica e a mesma dupla
+'             BIOS+BASIC de 32KB - so a pagina inicial recebe o rotulo que
+'             o usuario escolheu.
+'   EXTBIOS-> so a pagina atual, sem particionar (nao faz parte do par
+'             BIOS/BASIC de 32KB).
+' Arquivos com 16KB ou menos nao disparam o preenchimento da vizinha - so a
+' pagina selecionada recebe o arquivo, a partir do offset 0 (ou 16384 pro
+' caso BASIC "sozinho", ja que BASIC sem BIOS junto so faz sentido como a
+' segunda metade de uma imagem maior).
+Private Sub AssignMamuteRomFile(ByVal slot As Integer, ByVal subIdx As Integer, ByVal pageIdx As Integer, ByVal cellType As Integer, ByRef romFile As String, ByRef resultMsg As String)
+    Dim fileSize As LongInt = 0
+    If Dir(romFile) <> "" Then
+        Dim sizeFf As Integer = FreeFile
+        Open romFile For Binary Access Read As #sizeFf
+        fileSize = Lof(sizeFf)
+        Close #sizeFf
+    End If
+    Dim needsSplit As Integer = IIf(fileSize > 16384, -1, 0)
+    Dim pageLabel As String = "pag." & Trim(Str(pageIdx))
+    Dim spaceHint As String = " Espaco troca o tipo de qualquer pagina."
+
+    Select Case cellType
+        Case MAMUTE_CELL_BIOS
+            MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_BIOS
+            MamuteMemGrid(slot, subIdx, pageIdx).romPath = romFile
+            MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 0
+            If needsSplit <> 0 And pageIdx <= 2 Then
+                MamuteMemGrid(slot, subIdx, pageIdx + 1).cellType = MAMUTE_CELL_BASIC
+                MamuteMemGrid(slot, subIdx, pageIdx + 1).romPath = romFile
+                MamuteMemGrid(slot, subIdx, pageIdx + 1).romOffset = 16384
+                resultMsg = "BIOS na " & pageLabel & " + BASIC na pag." & Trim(Str(pageIdx + 1)) & " (ROM dividida)." & spaceHint
+            ElseIf needsSplit <> 0 Then
+                resultMsg = "BIOS na " & pageLabel & " (ROM maior que 16KB, mas nao ha pagina seguinte no slot p/ BASIC)." & spaceHint
+            Else
+                resultMsg = "BIOS na " & pageLabel & " (arquivo de 16KB ou menos, so essa pagina)." & spaceHint
+            End If
+
+        Case MAMUTE_CELL_BASIC
+            MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_BASIC
+            MamuteMemGrid(slot, subIdx, pageIdx).romPath = romFile
+            If needsSplit <> 0 And pageIdx >= 1 Then
+                MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 16384
+                MamuteMemGrid(slot, subIdx, pageIdx - 1).cellType = MAMUTE_CELL_BIOS
+                MamuteMemGrid(slot, subIdx, pageIdx - 1).romPath = romFile
+                MamuteMemGrid(slot, subIdx, pageIdx - 1).romOffset = 0
+                resultMsg = "BASIC na " & pageLabel & " + BIOS na pag." & Trim(Str(pageIdx - 1)) & " (ROM dividida)." & spaceHint
+            ElseIf needsSplit <> 0 Then
+                MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 16384
+                resultMsg = "BASIC na " & pageLabel & " (ROM maior que 16KB, mas nao ha pagina anterior no slot p/ BIOS)." & spaceHint
+            Else
+                MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 0
+                resultMsg = "BASIC na " & pageLabel & " (arquivo de 16KB ou menos, so essa pagina)." & spaceHint
+            End If
+
+        Case MAMUTE_CELL_ROM
+            MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_ROM
+            MamuteMemGrid(slot, subIdx, pageIdx).romPath = romFile
+            MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 0
+            If needsSplit <> 0 And pageIdx <= 2 Then
+                MamuteMemGrid(slot, subIdx, pageIdx + 1).cellType = MAMUTE_CELL_BASIC
+                MamuteMemGrid(slot, subIdx, pageIdx + 1).romPath = romFile
+                MamuteMemGrid(slot, subIdx, pageIdx + 1).romOffset = 16384
+                resultMsg = "ROM na " & pageLabel & " + BASIC na pag." & Trim(Str(pageIdx + 1)) & " (ROM dividida)." & spaceHint
+            ElseIf needsSplit <> 0 Then
+                resultMsg = "ROM na " & pageLabel & " (ROM maior que 16KB, mas nao ha pagina seguinte no slot)." & spaceHint
+            Else
+                resultMsg = "ROM na " & pageLabel & " (offset 0)." & spaceHint
+            End If
+
+        Case MAMUTE_CELL_EXTBIOS
+            MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_EXTBIOS
+            MamuteMemGrid(slot, subIdx, pageIdx).romPath = romFile
+            MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 0
+            resultMsg = "EXTBIOS na " & pageLabel & "." & spaceHint
+    End Select
+End Sub
+
+' Mapeamento inicial de PAGE quando o terminal do Mamute abre: paginas 0 e 1
+' apontam pro primeiro slot/sub-slot com BIOS na pag.0 (o mesmo que tem BASIC
+' na pag.1, gracas ao preenchimento automatico de AssignMamuteRomFile); as
+' paginas 2 e 3 apontam pro primeiro slot/sub-slot com RAM em cada uma delas.
+' Sem BIOS/RAM configurados ainda, fica tudo no Slot 0 (mesmo default de um
+' MSX real recem-ligado, antes do boot escolher os slots primarios).
+Private Sub SetMamuteDefaultPageMapping()
+    Dim p As Integer
+    For p = 0 To 3
+        MamuteActiveSlot(p) = 0
+        MamuteActiveSub(p) = 0
+    Next p
+
+    Dim slot As Integer
+    Dim subIdx As Integer
+    Dim maxSub As Integer
+    Dim foundBios As Integer = 0
+    For slot = 0 To 3
+        maxSub = IIf(MamuteMemSubOn(slot) <> 0, 3, 0)
+        For subIdx = 0 To maxSub
+            If foundBios = 0 And MamuteMemGrid(slot, subIdx, 0).cellType = MAMUTE_CELL_BIOS Then
+                MamuteActiveSlot(0) = slot : MamuteActiveSub(0) = subIdx
+                MamuteActiveSlot(1) = slot : MamuteActiveSub(1) = subIdx
+                foundBios = -1
+            End If
+        Next subIdx
+    Next slot
+
+    Dim foundRam2 As Integer = 0
+    For slot = 0 To 3
+        maxSub = IIf(MamuteMemSubOn(slot) <> 0, 3, 0)
+        For subIdx = 0 To maxSub
+            If foundRam2 = 0 And MamuteMemGrid(slot, subIdx, 2).cellType = MAMUTE_CELL_RAM Then
+                MamuteActiveSlot(2) = slot : MamuteActiveSub(2) = subIdx
+                foundRam2 = -1
+            End If
+        Next subIdx
+    Next slot
+
+    Dim foundRam3 As Integer = 0
+    For slot = 0 To 3
+        maxSub = IIf(MamuteMemSubOn(slot) <> 0, 3, 0)
+        For subIdx = 0 To maxSub
+            If foundRam3 = 0 And MamuteMemGrid(slot, subIdx, 3).cellType = MAMUTE_CELL_RAM Then
+                MamuteActiveSlot(3) = slot : MamuteActiveSub(3) = subIdx
+                foundRam3 = -1
+            End If
+        Next subIdx
+    Next slot
+End Sub
+
+' Acha o primeiro slot/sub-slot (varrendo slot 0-3, sub 0-3, pag. 0-3, nessa
+' ordem) que tem alguma pagina marcada como RAM - usado pelo comando "PAGE"
+' sem argumentos, que joga as 4 paginas inteiras pra esse slot (workspace de
+' RAM full pro assembler ter onde escrever, igual ao Mega Assembler/Super-X).
+Private Function FindMamuteRamSlot(ByRef foundSlot As Integer, ByRef foundSub As Integer) As Integer
+    Dim slot As Integer
+    Dim subIdx As Integer
+    Dim pageIdx As Integer
+    Dim maxSub As Integer
+    For slot = 0 To 3
+        maxSub = IIf(MamuteMemSubOn(slot) <> 0, 3, 0)
+        For subIdx = 0 To maxSub
+            For pageIdx = 0 To 3
+                If MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_RAM Then
+                    foundSlot = slot
+                    foundSub = subIdx
+                    Return -1
+                End If
+            Next pageIdx
+        Next subIdx
+    Next slot
+    Return 0
+End Function
+
+Private Function MamuteActivePageSummary() As String
+    Dim txt As String = "PAGE ativo:"
+    Dim p As Integer
+    For p = 0 To 3
+        Dim s As Integer = MamuteActiveSlot(p)
+        Dim label As String = "Slot " & Trim(Str(s))
+        If MamuteMemSubOn(s) <> 0 Then label &= "." & Trim(Str(MamuteActiveSub(p)))
+        txt &= " P" & Trim(Str(p)) & "=" & label
+    Next p
+    Return txt
+End Function
+
+' Intervalo de enderecos (Z80, 16 bits) da pagina de 16KB indicada:
+' pag.0=0000-3FFF, pag.1=4000-7FFF, pag.2=8000-BFFF, pag.3=C000-FFFF.
+Private Function MamutePageAddrRange(ByVal pageIdx As Integer) As String
+    Dim startAddr As Integer = pageIdx * 16384
+    Dim endAddr As Integer = startAddr + 16383
+    Return Hex(startAddr, 4) & "-" & Hex(endAddr, 4)
+End Function
+
+Private Function NextMamuteVramSize(ByVal current As Integer) As Integer
+    Select Case current
+        Case 16
+            Return 32
+        Case 32
+            Return 64
+        Case 64
+            Return 128
+        Case 128
+            Return 192
+        Case Else
+            Return 16
+    End Select
+End Function
+
+' ---------------------------------------------------------------------------
+' Motor de memoria fisica do Mamute Assembler: le/escreve MamuteMem() de
+' verdade, resolvendo endereco Z80 (0000-FFFF) pelo mapeamento PAGE ativo
+' agora. Chamado por todos os comandos que tocam memoria de verdade (DM, M,
+' S, SH, MS, T, F, D, P, L, LP).
+' ---------------------------------------------------------------------------
+
+' Popula MamuteMem() a partir da config fisica atual (MamuteMemGrid): RAM
+' comeca zerada, ROM/BASIC/BIOS/EXTBIOS com arquivo configurado sao lidas de
+' verdade do disco. So' deve ser chamada quando o terminal ABRE - nunca a
+' cada comando, ou RAM escrita durante a sessao seria perdida.
+' Resolve um caminho de ROM configurado: se nao existir exatamente como
+' digitado (relativo ao diretorio de trabalho atual), tenta de novo dentro
+' de uma pasta "roms\" ao lado do executavel - convencao onde este usuario
+' guarda os arquivos de BIOS/firmware (fora do controle de versao, por
+' direitos autorais). Sem isso, um caminho salvo como so "expert1.rom" (sem
+' a pasta na frente) nunca era encontrado e a pagina ficava sempre zerada,
+' sem aviso nenhum.
+Private Function Mamute_ResolveRomPath(ByRef rawPath As String) As String
+    If Len(rawPath) = 0 Then Return rawPath
+    If Dir(rawPath) <> "" Then Return rawPath
+    Dim tryRoms As String = "roms" & Chr(92) & rawPath
+    If Dir(tryRoms) <> "" Then Return tryRoms
+    Return rawPath
+End Function
+
+Private Sub Mamute_LoadPhysicalMemory()
+    Dim slot As Integer
+    Dim subIdx As Integer
+    Dim pageIdx As Integer
+    Dim i As Integer
+
+    For slot = 0 To 3
+        For subIdx = 0 To 3
+            For pageIdx = 0 To 3
+                For i = 0 To 16383
+                    MamuteMem(slot, subIdx, pageIdx, i) = 0
+                Next i
+
+                Dim ByRef cell As MamuteMemCell = MamuteMemGrid(slot, subIdx, pageIdx)
+                Dim isRomLike As Integer = 0
+                If cell.cellType = MAMUTE_CELL_ROM Or cell.cellType = MAMUTE_CELL_BIOS Or cell.cellType = MAMUTE_CELL_BASIC Or cell.cellType = MAMUTE_CELL_EXTBIOS Then isRomLike = -1
+
+                Dim resolvedRomPath As String = ""
+                If isRomLike <> 0 And Len(cell.romPath) > 0 Then resolvedRomPath = Mamute_ResolveRomPath(cell.romPath)
+
+                If isRomLike <> 0 And Len(resolvedRomPath) > 0 And Dir(resolvedRomPath) <> "" Then
+                    Dim ff As Integer = FreeFile
+                    Open resolvedRomPath For Binary Access Read As #ff
+                    Dim fsize As LongInt = Lof(ff)
+                    If cell.romOffset < fsize Then
+                        Dim avail As LongInt = fsize - cell.romOffset
+                        Dim toRead As Integer = 16384
+                        If avail < toRead Then toRead = CInt(avail)
+                        If toRead > 0 Then
+                            Dim buf(0 To toRead - 1) As UByte
+                            Get #ff, cell.romOffset + 1, buf()
+                            For i = 0 To toRead - 1
+                                MamuteMem(slot, subIdx, pageIdx, i) = buf(i)
+                            Next i
+                        End If
+                    End If
+                    Close #ff
+                End If
+            Next pageIdx
+        Next subIdx
+    Next slot
+
+    For i = 0 To 196607
+        MamuteVram(i) = 0
+    Next i
+End Sub
+
+Private Sub Mamute_ResolveAddress(ByVal addr As Integer, ByRef outSlot As Integer, ByRef outSub As Integer, ByRef outPage As Integer, ByRef outOffset As Integer)
+    outPage = (addr \ 16384) And 3
+    outSlot = MamuteActiveSlot(outPage)
+    outSub = MamuteActiveSub(outPage)
+    outOffset = addr And 16383
+End Sub
+
+Private Function Mamute_ReadByte(ByVal addr As Integer) As Integer
+    Dim slot As Integer, subIdx As Integer, pageIdx As Integer, offset As Integer
+    Mamute_ResolveAddress(addr, slot, subIdx, pageIdx, offset)
+    Return MamuteMem(slot, subIdx, pageIdx, offset)
+End Function
+
+Private Function Mamute_CanWriteAt(ByVal addr As Integer) As Integer
+    Dim slot As Integer, subIdx As Integer, pageIdx As Integer, offset As Integer
+    Mamute_ResolveAddress(addr, slot, subIdx, pageIdx, offset)
+    Return IIf(MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_RAM, -1, 0)
+End Function
+
+' Sufixo de aviso pra comandos de escrita (M/S/MS/T/F) - a escrita em si
+' continua silenciosa igual hardware real (nao ha erro, o byte so nao muda),
+' mas um monitor de debug ganha muito em avisar quando isso acontece, ao
+' inves de deixar o usuario decifrar sozinho por que nada mudou.
+Private Function Mamute_WriteWarnSuffix(ByVal addr As Integer) As String
+    If Mamute_CanWriteAt(addr) = 0 Then
+        Return " (AVISO: pagina nao e RAM agora - escrita sem efeito, ver PAGE/Configurar -> Mamute (Memoria))"
+    End If
+    Return ""
+End Function
+
+' Escrita silenciosa: nao ha o que gravar fisicamente numa celula que nao
+' seja RAM (ROM/BASIC/BIOS/EXTBIOS/Vazio), igual hardware real - o byte
+' simplesmente nao muda, sem erro nenhum. Regra usada por DM/M/S/MS/T/F.
+Private Sub Mamute_WriteByte(ByVal addr As Integer, ByVal value As Integer)
+    Dim slot As Integer, subIdx As Integer, pageIdx As Integer, offset As Integer
+    Mamute_ResolveAddress(addr, slot, subIdx, pageIdx, offset)
+    If MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_RAM Then
+        MamuteMem(slot, subIdx, pageIdx, offset) = value And 255
+    End If
+End Sub
+
+' ---------------------------------------------------------------------------
+' Helpers de parsing compartilhados por (quase) todo comando do Mamute:
+' enderecos/bytes/deslocamentos sempre em hexadecimal, listas separadas por
+' virgula onde um campo vazio e valido (fica "nao informado").
+' ---------------------------------------------------------------------------
+
+Private Function Mamute_IsHexString(ByRef token As String, ByVal maxLen As Integer) As Integer
+    If Len(token) < 1 Or Len(token) > maxLen Then Return 0
+    Dim i As Integer
+    For i = 1 To Len(token)
+        If InStr("0123456789ABCDEFabcdef", Mid(token, i, 1)) = 0 Then Return 0
+    Next i
+    Return -1
+End Function
+
+' Endereco de 1-4 digitos hexa (memoria Z80, 0000-FFFF). maxDigits=5 pra V
+' (VRAM, ate 192KB precisa de 5 digitos).
+Private Function Mamute_ParseHexAddr(ByRef token As String, ByRef outAddr As Integer, ByVal maxDigits As Integer = 4) As Integer
+    Dim t As String = Trim(token)
+    If Mamute_IsHexString(t, maxDigits) = 0 Then Return 0
+    outAddr = ValInt("&H" & t)
+    Return -1
+End Function
+
+Private Function Mamute_ParseHexByte(ByRef token As String, ByRef outByte As Integer) As Integer
+    Dim t As String = Trim(token)
+    If Mamute_IsHexString(t, 2) = 0 Then Return 0
+    outByte = ValInt("&H" & t) And 255
+    Return -1
+End Function
+
+' Deslocamento com sinal opcional, -7F a 80 (faixa usada por DM/ZAP/SH/MS).
+Private Function Mamute_ParseHexOffset(ByRef token As String, ByRef outOffset As Integer) As Integer
+    Dim t As String = Trim(token)
+    Dim sign As Integer = 1
+    If Len(t) > 0 And (Left(t, 1) = "+" Or Left(t, 1) = "-") Then
+        If Left(t, 1) = "-" Then sign = -1
+        t = Mid(t, 2)
+    End If
+    If Mamute_IsHexString(t, 2) = 0 Then Return 0
+    Dim v As Integer = ValInt("&H" & t) * sign
+    If v < -127 Or v > 128 Then Return 0
+    outOffset = v
+    Return -1
+End Function
+
+' Separa argsText em ate maxTokens campos por virgula - um campo vazio entre
+' duas virgulas (ou no comeco/fim) vira uma string vazia no array, nao e'
+' descartado (assim "PAGE ,,2"/"SH ,2A,40" preservam as posicoes certas).
+Private Sub Mamute_SplitArgs(ByRef argsText As String, tokens() As String, ByRef tokCount As Integer, ByVal maxTokens As Integer)
+    ReDim tokens(0 To maxTokens - 1)
+    tokCount = 0
+    Dim remaining As String = argsText
+    Do While tokCount < maxTokens
+        Dim commaPos As Integer = InStr(remaining, ",")
+        If commaPos = 0 Then
+            tokens(tokCount) = Trim(remaining)
+            tokCount += 1
+            Exit Do
+        Else
+            tokens(tokCount) = Trim(Left(remaining, commaPos - 1))
+            remaining = Mid(remaining, commaPos + 1)
+            tokCount += 1
+        End If
+    Loop
+End Sub
+
+Private Function Mamute_PrintableChar(ByVal b As Integer) As String
+    If b >= 32 And b <= 126 Then Return Chr(b)
+    Return "."
+End Function
+
+' ---------------------------------------------------------------------------
+' Registradores do Z80 simulado (comando X).
+' ---------------------------------------------------------------------------
+
+Private Function MamuteXRegName(ByVal mode As Integer, ByVal idx As Integer) As String
+    If mode = 1 Then
+        Select Case idx
+            Case 0 : Return "AF"
+            Case 1 : Return "BC"
+            Case 2 : Return "DE"
+            Case 3 : Return "HL"
+            Case 4 : Return "IX"
+            Case 5 : Return "IY"
+            Case 6 : Return "SP"
+        End Select
+    Else
+        Select Case idx
+            Case 0 : Return "A"
+            Case 1 : Return "F"
+            Case 2 : Return "B"
+            Case 3 : Return "C"
+            Case 4 : Return "D"
+            Case 5 : Return "E"
+            Case 6 : Return "H"
+            Case 7 : Return "L"
+        End Select
+    End If
+    Return ""
+End Function
+
+Private Function MamuteXRegCount(ByVal mode As Integer) As Integer
+    If mode = 1 Then Return 7
+    Return 8
+End Function
+
+' Acha (mode,idx) do nome de registrador dado - mode=0 se nao reconhecido.
+Private Sub MamuteXFindReg(ByRef regName As String, ByRef outMode As Integer, ByRef outIdx As Integer)
+    Dim n As String = UCase(Trim(regName))
+    Dim i As Integer
+    For i = 0 To 6
+        If MamuteXRegName(1, i) = n Then
+            outMode = 1 : outIdx = i
+            Exit Sub
+        End If
+    Next i
+    For i = 0 To 7
+        If MamuteXRegName(2, i) = n Then
+            outMode = 2 : outIdx = i
+            Exit Sub
+        End If
+    Next i
+    outMode = 0 : outIdx = 0
+End Sub
+
+Private Function MamuteXGetReg(ByRef regName As String) As Integer
+    Select Case UCase(Trim(regName))
+        Case "AF" : Return MamuteRegAF
+        Case "BC" : Return MamuteRegBC
+        Case "DE" : Return MamuteRegDE
+        Case "HL" : Return MamuteRegHL
+        Case "IX" : Return MamuteRegIX
+        Case "IY" : Return MamuteRegIY
+        Case "SP" : Return MamuteRegSP
+        Case "A" : Return (MamuteRegAF \ 256) And 255
+        Case "F" : Return MamuteRegAF And 255
+        Case "B" : Return (MamuteRegBC \ 256) And 255
+        Case "C" : Return MamuteRegBC And 255
+        Case "D" : Return (MamuteRegDE \ 256) And 255
+        Case "E" : Return MamuteRegDE And 255
+        Case "H" : Return (MamuteRegHL \ 256) And 255
+        Case "L" : Return MamuteRegHL And 255
+    End Select
+    Return 0
+End Function
+
+Private Sub MamuteXSetReg(ByRef regName As String, ByVal value As Integer)
+    Select Case UCase(Trim(regName))
+        Case "AF" : MamuteRegAF = value And 65535
+        Case "BC" : MamuteRegBC = value And 65535
+        Case "DE" : MamuteRegDE = value And 65535
+        Case "HL" : MamuteRegHL = value And 65535
+        Case "IX" : MamuteRegIX = value And 65535
+        Case "IY" : MamuteRegIY = value And 65535
+        Case "SP" : MamuteRegSP = value And 65535
+        Case "A" : MamuteRegAF = (MamuteRegAF And 255) Or ((value And 255) * 256)
+        Case "F" : MamuteRegAF = (MamuteRegAF And 65280) Or (value And 255)
+        Case "B" : MamuteRegBC = (MamuteRegBC And 255) Or ((value And 255) * 256)
+        Case "C" : MamuteRegBC = (MamuteRegBC And 65280) Or (value And 255)
+        Case "D" : MamuteRegDE = (MamuteRegDE And 255) Or ((value And 255) * 256)
+        Case "E" : MamuteRegDE = (MamuteRegDE And 65280) Or (value And 255)
+        Case "H" : MamuteRegHL = (MamuteRegHL And 255) Or ((value And 255) * 256)
+        Case "L" : MamuteRegHL = (MamuteRegHL And 65280) Or (value And 255)
+    End Select
+End Sub
+
+Private Sub Mamute_ResetRegs()
+    MamuteRegAF = 0 : MamuteRegBC = 0 : MamuteRegDE = 0 : MamuteRegHL = 0
+    MamuteRegIX = 0 : MamuteRegIY = 0 : MamuteRegSP = 0
+End Sub
+
+' Prompt do terminal agora: "MON> " normalmente, ou "REG(valor)> " enquanto o
+' comando X estiver caminhando pelos registradores (ver DrawMamuteInputLine/
+' PlaceActiveCursor).
+Private Function MamuteCurrentPromptText(ByVal docIndex As Integer) As String
+    If MamuteXWalking(docIndex) <> 0 Then
+        Dim wRegName As String = MamuteXRegName(MamuteXWalking(docIndex), MamuteXWalkIdx(docIndex))
+        Dim wDigits As Integer = 4
+        If MamuteXWalking(docIndex) = 2 Then wDigits = 2
+        Return wRegName & "(" & Hex(MamuteXGetReg(wRegName), wDigits) & ")> "
+    End If
+    Return MAMUTE_PROMPT
+End Function
+
+' ---------------------------------------------------------------------------
+' Disassembler Z80 (comandos L/LP/D/P) - decodificacao padrao por
+' x=(op>>6)&3, y=(op>>3)&7, z=op&7, p=y>>1, q=y&1 sobre o byte de opcode
+' (depois de consumir prefixos DD/FD/CB/ED). Conjunto documentado inteiro +
+' as formas nao documentadas mais estaveis (IXH/IXL/IYH/IYL, DD/FD CB
+' indexado).
+' ---------------------------------------------------------------------------
+
+Private Function MamuteDisasmNextByte(ByRef curPos As Integer, ByRef consumed As Integer) As Integer
+    Dim v As Integer = Mamute_ReadByte(curPos)
+    curPos += 1
+    consumed += 1
+    Return v
+End Function
+
+Private Function MamuteDisasmNextWord(ByRef curPos As Integer, ByRef consumed As Integer) As Integer
+    Dim lo As Integer = MamuteDisasmNextByte(curPos, consumed)
+    Dim hi As Integer = MamuteDisasmNextByte(curPos, consumed)
+    Return (hi * 256 + lo) And 65535
+End Function
+
+' "+05"/"-05" - deslocamento assinado de 2 digitos hexa, formato do IX+d/IY+d.
+Private Function MamuteDispText(ByVal d As Integer) As String
+    Dim sd As Integer = d And 255
+    If sd > 127 Then sd -= 256
+    If sd >= 0 Then Return "+" & Hex(sd, 2) & "H"
+    Return "-" & Hex(-sd, 2) & "H"
+End Function
+
+Private Function MamuteReg8Text(ByVal r As Integer, ByVal idxMode As Integer, ByRef dispText As String) As String
+    Select Case r
+        Case 0 : Return "B"
+        Case 1 : Return "C"
+        Case 2 : Return "D"
+        Case 3 : Return "E"
+        Case 4
+            If idxMode = 1 Then Return "IXH"
+            If idxMode = 2 Then Return "IYH"
+            Return "H"
+        Case 5
+            If idxMode = 1 Then Return "IXL"
+            If idxMode = 2 Then Return "IYL"
+            Return "L"
+        Case 6
+            If idxMode = 1 Then Return "(IX" & dispText & ")"
+            If idxMode = 2 Then Return "(IY" & dispText & ")"
+            Return "(HL)"
+        Case 7 : Return "A"
+    End Select
+    Return "?"
+End Function
+
+' Igual a MamuteReg8Text, mas consome o byte de deslocamento sozinho, na
+' hora certa (logo apos o opcode, antes de qualquer imediato que venha
+' depois), quando r=6 e o modo indexado esta ligado.
+Private Function MamuteReg8TextAuto(ByVal r As Integer, ByVal idxMode As Integer, ByRef curPos As Integer, ByRef consumed As Integer) As String
+    If r = 6 And idxMode <> 0 Then
+        Dim d As Integer = MamuteDisasmNextByte(curPos, consumed)
+        Dim letter As String = "X"
+        If idxMode = 2 Then letter = "Y"
+        Return "(I" & letter & MamuteDispText(d) & ")"
+    End If
+    Return MamuteReg8Text(r, idxMode, "")
+End Function
+
+Private Function MamuteReg16Text(ByVal regP As Integer, ByVal idxMode As Integer) As String
+    Select Case regP
+        Case 0 : Return "BC"
+        Case 1 : Return "DE"
+        Case 2
+            If idxMode = 1 Then Return "IX"
+            If idxMode = 2 Then Return "IY"
+            Return "HL"
+        Case 3 : Return "SP"
+    End Select
+    Return "?"
+End Function
+
+Private Function MamuteReg16AltText(ByVal regP As Integer, ByVal idxMode As Integer) As String
+    If regP = 3 Then Return "AF"
+    Return MamuteReg16Text(regP, idxMode)
+End Function
+
+Private Function MamuteCondText(ByVal y As Integer) As String
+    Select Case y
+        Case 0 : Return "NZ"
+        Case 1 : Return "Z"
+        Case 2 : Return "NC"
+        Case 3 : Return "C"
+        Case 4 : Return "PO"
+        Case 5 : Return "PE"
+        Case 6 : Return "P"
+        Case 7 : Return "M"
+    End Select
+    Return "?"
+End Function
+
+Private Function MamuteAluMnemonic(ByVal y As Integer) As String
+    Select Case y
+        Case 0 : Return "ADD A,"
+        Case 1 : Return "ADC A,"
+        Case 2 : Return "SUB "
+        Case 3 : Return "SBC A,"
+        Case 4 : Return "AND "
+        Case 5 : Return "XOR "
+        Case 6 : Return "OR "
+        Case 7 : Return "CP "
+    End Select
+    Return "?"
+End Function
+
+Private Function MamuteRotMnemonic(ByVal y As Integer) As String
+    Select Case y
+        Case 0 : Return "RLC "
+        Case 1 : Return "RRC "
+        Case 2 : Return "RL "
+        Case 3 : Return "RR "
+        Case 4 : Return "SLA "
+        Case 5 : Return "SRA "
+        Case 6 : Return "SLL "
+        Case 7 : Return "SRL "
+    End Select
+    Return "?"
+End Function
+
+Private Function MamuteDecodeCB(ByVal op As Integer, ByVal idxMode As Integer, ByRef dispText As String) As String
+    Dim x As Integer = (op \ 64) And 3
+    Dim y As Integer = (op \ 8) And 7
+    Dim z As Integer = op And 7
+    Dim operandText As String
+
+    If idxMode <> 0 Then
+        Dim letter As String = "X"
+        If idxMode = 2 Then letter = "Y"
+        operandText = "(I" & letter & dispText & ")"
+    Else
+        operandText = MamuteReg8Text(z, 0, "")
+    End If
+
+    Select Case x
+        Case 0
+            Return MamuteRotMnemonic(y) & operandText
+        Case 1
+            Return "BIT " & Trim(Str(y)) & "," & operandText
+        Case 2
+            Return "RES " & Trim(Str(y)) & "," & operandText
+        Case 3
+            Return "SET " & Trim(Str(y)) & "," & operandText
+    End Select
+    Return "DEFB 0CBh," & Hex(op, 2) & "H"
+End Function
+
+Private Function MamuteDecodeED(ByVal op As Integer, ByRef curPos As Integer, ByRef consumed As Integer) As String
+    Dim x As Integer = (op \ 64) And 3
+    Dim y As Integer = (op \ 8) And 7
+    Dim z As Integer = op And 7
+    Dim regP As Integer = y \ 2
+    Dim regQ As Integer = y And 1
+
+    If x = 1 Then
+        Select Case z
+            Case 0
+                If y = 6 Then Return "IN F,(C)"
+                Return "IN " & MamuteReg8Text(y, 0, "") & ",(C)"
+            Case 1
+                If y = 6 Then Return "OUT (C),0"
+                Return "OUT (C)," & MamuteReg8Text(y, 0, "")
+            Case 2
+                If regQ = 0 Then Return "SBC HL," & MamuteReg16Text(regP, 0)
+                Return "ADC HL," & MamuteReg16Text(regP, 0)
+            Case 3
+                Dim addrVal As Integer = MamuteDisasmNextWord(curPos, consumed)
+                If regQ = 0 Then Return "LD (" & Hex(addrVal, 4) & "H)," & MamuteReg16Text(regP, 0)
+                Return "LD " & MamuteReg16Text(regP, 0) & ",(" & Hex(addrVal, 4) & "H)"
+            Case 4
+                Return "NEG"
+            Case 5
+                If y = 1 Then Return "RETI"
+                Return "RETN"
+            Case 6
+                Select Case y Mod 4
+                    Case 0, 1 : Return "IM 0"
+                    Case 2 : Return "IM 1"
+                    Case 3 : Return "IM 2"
+                End Select
+            Case 7
+                Select Case y
+                    Case 0 : Return "LD I,A"
+                    Case 1 : Return "LD R,A"
+                    Case 2 : Return "LD A,I"
+                    Case 3 : Return "LD A,R"
+                    Case 4 : Return "RRD"
+                    Case 5 : Return "RLD"
+                    Case Else : Return "NOP"
+                End Select
+        End Select
+    ElseIf x = 2 And y >= 4 And z <= 3 Then
+        Select Case z
+            Case 0
+                Select Case y
+                    Case 4 : Return "LDI"
+                    Case 5 : Return "LDD"
+                    Case 6 : Return "LDIR"
+                    Case 7 : Return "LDDR"
+                End Select
+            Case 1
+                Select Case y
+                    Case 4 : Return "CPI"
+                    Case 5 : Return "CPD"
+                    Case 6 : Return "CPIR"
+                    Case 7 : Return "CPDR"
+                End Select
+            Case 2
+                Select Case y
+                    Case 4 : Return "INI"
+                    Case 5 : Return "IND"
+                    Case 6 : Return "INIR"
+                    Case 7 : Return "INDR"
+                End Select
+            Case 3
+                Select Case y
+                    Case 4 : Return "OUTI"
+                    Case 5 : Return "OUTD"
+                    Case 6 : Return "OTIR"
+                    Case 7 : Return "OTDR"
+                End Select
+        End Select
+    End If
+
+    Return "DEFB 0EDh," & Hex(op, 2) & "H"
+End Function
+
+Private Function MamuteDecodePlain(ByVal b As Integer, ByVal idxMode As Integer, ByRef curPos As Integer, ByRef consumed As Integer) As String
+    Dim x As Integer = (b \ 64) And 3
+    Dim y As Integer = (b \ 8) And 7
+    Dim z As Integer = b And 7
+    Dim regP As Integer = y \ 2
+    Dim regQ As Integer = y And 1
+
+    Select Case x
+        Case 0
+            Select Case z
+                Case 0
+                    If y = 0 Then Return "NOP"
+                    If y = 1 Then Return "EX AF,AF'"
+                    Dim relDisp As Integer = MamuteDisasmNextByte(curPos, consumed)
+                    Dim signedDisp As Integer = relDisp
+                    If signedDisp > 127 Then signedDisp -= 256
+                    Dim targetAddr As Integer = (curPos + signedDisp) And 65535
+                    If y = 2 Then Return "DJNZ " & Hex(targetAddr, 4) & "H"
+                    If y = 3 Then Return "JR " & Hex(targetAddr, 4) & "H"
+                    Return "JR " & MamuteCondText(y - 4) & "," & Hex(targetAddr, 4) & "H"
+                Case 1
+                    If regQ = 0 Then
+                        Dim immWord As Integer = MamuteDisasmNextWord(curPos, consumed)
+                        Return "LD " & MamuteReg16Text(regP, idxMode) & "," & Hex(immWord, 4) & "H"
+                    Else
+                        Dim destReg As String = "HL"
+                        If idxMode = 1 Then destReg = "IX"
+                        If idxMode = 2 Then destReg = "IY"
+                        Return "ADD " & destReg & "," & MamuteReg16Text(regP, idxMode)
+                    End If
+                Case 2
+                    If regQ = 0 Then
+                        Select Case regP
+                            Case 0 : Return "LD (BC),A"
+                            Case 1 : Return "LD (DE),A"
+                            Case 2
+                                Dim wa2 As Integer = MamuteDisasmNextWord(curPos, consumed)
+                                Dim rr2 As String = "HL"
+                                If idxMode = 1 Then rr2 = "IX"
+                                If idxMode = 2 Then rr2 = "IY"
+                                Return "LD (" & Hex(wa2, 4) & "H)," & rr2
+                            Case 3
+                                Dim wa3 As Integer = MamuteDisasmNextWord(curPos, consumed)
+                                Return "LD (" & Hex(wa3, 4) & "H),A"
+                        End Select
+                    Else
+                        Select Case regP
+                            Case 0 : Return "LD A,(BC)"
+                            Case 1 : Return "LD A,(DE)"
+                            Case 2
+                                Dim wa4 As Integer = MamuteDisasmNextWord(curPos, consumed)
+                                Dim rr4 As String = "HL"
+                                If idxMode = 1 Then rr4 = "IX"
+                                If idxMode = 2 Then rr4 = "IY"
+                                Return "LD " & rr4 & ",(" & Hex(wa4, 4) & "H)"
+                            Case 3
+                                Dim wa5 As Integer = MamuteDisasmNextWord(curPos, consumed)
+                                Return "LD A,(" & Hex(wa5, 4) & "H)"
+                        End Select
+                    End If
+                Case 3
+                    If regQ = 0 Then Return "INC " & MamuteReg16Text(regP, idxMode)
+                    Return "DEC " & MamuteReg16Text(regP, idxMode)
+                Case 4
+                    Return "INC " & MamuteReg8TextAuto(y, idxMode, curPos, consumed)
+                Case 5
+                    Return "DEC " & MamuteReg8TextAuto(y, idxMode, curPos, consumed)
+                Case 6
+                    Dim destText6 As String = MamuteReg8TextAuto(y, idxMode, curPos, consumed)
+                    Dim immVal6 As Integer = MamuteDisasmNextByte(curPos, consumed)
+                    Return "LD " & destText6 & "," & Hex(immVal6, 2) & "H"
+                Case 7
+                    Select Case y
+                        Case 0 : Return "RLCA"
+                        Case 1 : Return "RRCA"
+                        Case 2 : Return "RLA"
+                        Case 3 : Return "RRA"
+                        Case 4 : Return "DAA"
+                        Case 5 : Return "CPL"
+                        Case 6 : Return "SCF"
+                        Case 7 : Return "CCF"
+                    End Select
+            End Select
+
+        Case 1
+            Dim dstText As String
+            Dim srcText As String
+            If y = 6 Or z = 6 Then
+                If y = 6 Then
+                    dstText = MamuteReg8TextAuto(6, idxMode, curPos, consumed)
+                    srcText = MamuteReg8Text(z, 0, "")
+                Else
+                    dstText = MamuteReg8Text(y, 0, "")
+                    srcText = MamuteReg8TextAuto(6, idxMode, curPos, consumed)
+                End If
+            Else
+                dstText = MamuteReg8Text(y, idxMode, "")
+                srcText = MamuteReg8Text(z, idxMode, "")
+            End If
+            Return "LD " & dstText & "," & srcText
+
+        Case 2
+            Return MamuteAluMnemonic(y) & MamuteReg8TextAuto(z, idxMode, curPos, consumed)
+
+        Case 3
+            Select Case z
+                Case 0
+                    Return "RET " & MamuteCondText(y)
+                Case 1
+                    If regQ = 0 Then
+                        Return "POP " & MamuteReg16AltText(regP, idxMode)
+                    Else
+                        Select Case regP
+                            Case 0 : Return "RET"
+                            Case 1 : Return "EXX"
+                            Case 2
+                                Dim jpReg As String = "HL"
+                                If idxMode = 1 Then jpReg = "IX"
+                                If idxMode = 2 Then jpReg = "IY"
+                                Return "JP (" & jpReg & ")"
+                            Case 3
+                                Dim ldReg As String = "HL"
+                                If idxMode = 1 Then ldReg = "IX"
+                                If idxMode = 2 Then ldReg = "IY"
+                                Return "LD SP," & ldReg
+                        End Select
+                    End If
+                Case 2
+                    Dim jpAddr As Integer = MamuteDisasmNextWord(curPos, consumed)
+                    Return "JP " & MamuteCondText(y) & "," & Hex(jpAddr, 4) & "H"
+                Case 3
+                    Select Case y
+                        Case 0
+                            Dim jpAddr2 As Integer = MamuteDisasmNextWord(curPos, consumed)
+                            Return "JP " & Hex(jpAddr2, 4) & "H"
+                        Case 2
+                            Dim outN As Integer = MamuteDisasmNextByte(curPos, consumed)
+                            Return "OUT (" & Hex(outN, 2) & "H),A"
+                        Case 3
+                            Dim inN As Integer = MamuteDisasmNextByte(curPos, consumed)
+                            Return "IN A,(" & Hex(inN, 2) & "H)"
+                        Case 4
+                            Dim exReg As String = "HL"
+                            If idxMode = 1 Then exReg = "IX"
+                            If idxMode = 2 Then exReg = "IY"
+                            Return "EX (SP)," & exReg
+                        Case 5
+                            Return "EX DE,HL"
+                        Case 6
+                            Return "DI"
+                        Case 7
+                            Return "EI"
+                    End Select
+                Case 4
+                    Dim callAddr As Integer = MamuteDisasmNextWord(curPos, consumed)
+                    Return "CALL " & MamuteCondText(y) & "," & Hex(callAddr, 4) & "H"
+                Case 5
+                    If regQ = 0 Then
+                        Return "PUSH " & MamuteReg16AltText(regP, idxMode)
+                    Else
+                        If regP = 0 Then
+                            Dim callAddr2 As Integer = MamuteDisasmNextWord(curPos, consumed)
+                            Return "CALL " & Hex(callAddr2, 4) & "H"
+                        End If
+                    End If
+                Case 6
+                    Dim aluN As Integer = MamuteDisasmNextByte(curPos, consumed)
+                    Return MamuteAluMnemonic(y) & Hex(aluN, 2) & "H"
+                Case 7
+                    Return "RST " & Hex(y * 8, 2) & "H"
+            End Select
+    End Select
+
+    Return "DEFB " & Hex(b, 2) & "H"
+End Function
+
+' Decodifica UMA instrucao a partir de addr (consumindo prefixos DD/FD/CB/ED
+' como precisar). outLen = quantos bytes a instrucao ocupou; outText = texto
+' mnemonico pronto (sem o endereco/bytes crus na frente - quem chama monta
+' isso).
+Private Sub MamuteDisasmOne(ByVal addr As Integer, ByRef outLen As Integer, ByRef outText As String)
+    Dim idxMode As Integer = 0
+    Dim curPos As Integer = addr
+    Dim consumed As Integer = 0
+    Dim b As Integer = MamuteDisasmNextByte(curPos, consumed)
+
+    Do While b = &HDD Or b = &HFD
+        If b = &HDD Then idxMode = 1 Else idxMode = 2
+        b = MamuteDisasmNextByte(curPos, consumed)
+    Loop
+
+    If b = &HCB Then
+        Dim dispText As String = ""
+        If idxMode <> 0 Then
+            Dim d As Integer = MamuteDisasmNextByte(curPos, consumed)
+            dispText = MamuteDispText(d)
+        End If
+        Dim op As Integer = MamuteDisasmNextByte(curPos, consumed)
+        outText = MamuteDecodeCB(op, idxMode, dispText)
+        outLen = consumed
+        Exit Sub
+    End If
+
+    If b = &HED Then
+        Dim op2 As Integer = MamuteDisasmNextByte(curPos, consumed)
+        outText = MamuteDecodeED(op2, curPos, consumed)
+        outLen = consumed
+        Exit Sub
+    End If
+
+    If b = &H76 Then
+        outText = "HALT"
+        outLen = consumed
+        Exit Sub
+    End If
+
+    outText = MamuteDecodePlain(b, idxMode, curPos, consumed)
+    outLen = consumed
+End Sub
+
+' Monta uma linha "AAAA  XX XX XX     MNEMONICO" pronta pra AppendMamuteLine.
+Private Function MamuteDisasmLine(ByVal addr As Integer) As String
+    Dim instrLen As Integer
+    Dim mnemonic As String
+    MamuteDisasmOne(addr, instrLen, mnemonic)
+    If instrLen < 1 Then instrLen = 1
+
+    Dim bytesText As String = ""
+    Dim i As Integer
+    For i = 0 To instrLen - 1
+        bytesText &= Hex(Mamute_ReadByte((addr + i) And 65535), 2) & " "
+    Next i
+
+    Return Hex(addr, 4) & "  " & Left(bytesText & Space(13), 13) & mnemonic
+End Function
 
 ' Reconstroi a lista de linhas visiveis da grade (1 linha por slot sem
 ' sub-slots, ou 4 linhas Slot N.0-N.3 quando ligados) - chamado a cada volta
@@ -5390,7 +6450,7 @@ Private Sub ShowMamuteMemoryConfig()
 
     Dim selRowIdx As Integer = 1
     Dim selCol As Integer = 0
-    Dim message As String = "Setas navega | Espaco/Enter tipo | T sub-slots | L Carregar ROM 32KB | F2 salva | Esc cancela"
+    Dim message As String = "Setas navega | Espaco tipo | Enter arquivo ROM | T sub-slots | V VRAM | L Carregar ROM 32KB | F2 salva | Esc cancela"
 
     Dim dialogW As Integer = Clamp(uiW - 8, 66, uiW)
     Dim dialogH As Integer = Clamp(uiH - 4, 20, uiH - 1)
@@ -5428,6 +6488,12 @@ Private Sub ShowMamuteMemoryConfig()
         If memDirty <> 0 Then titleStatus = " *NAO SALVO*"
         ConsoleWriteText(dialogX + 2, dialogY, " Configurar: Mamute (Memoria)" & titleStatus & " ", 0, 7, dialogW - 4)
         ConsoleWriteText(dialogX + 2, dialogY + 2, "Slot       Pag.0      Pag.1      Pag.2      Pag.3", 14, 1, dialogW - 4)
+        Dim addrLine As String = Left("Enderecos:" & Space(colW), colW)
+        Dim addrCol As Integer
+        For addrCol = 0 To 3
+            addrLine &= Left(MamutePageAddrRange(addrCol) & Space(colW), colW)
+        Next addrCol
+        ConsoleWriteText(dialogX + 2, dialogY + 3, Left(addrLine & String(dialogW - 4, " "), dialogW - 4), 8, 1)
 
         For r = 0 To listH - 1
             Dim idx As Integer = topIdx + r
@@ -5461,10 +6527,11 @@ Private Sub ShowMamuteMemoryConfig()
         Dim ByRef selCell As MamuteMemCell = MamuteMemGrid(curSlot, curSub, selCol)
         Dim detailText As String = "Selecionado: Slot " & Trim(Str(curSlot))
         If MamuteMemSubOn(curSlot) <> 0 Then detailText &= "." & Trim(Str(curSub))
-        detailText &= " Pag." & Trim(Str(selCol)) & " = " & MamuteCellTypeLabel(selCell.cellType)
-        If selCell.cellType = MAMUTE_CELL_ROM Then
+        detailText &= " Pag." & Trim(Str(selCol)) & " (" & MamutePageAddrRange(selCol) & ") = " & MamuteCellTypeLabel(selCell.cellType)
+        If selCell.cellType = MAMUTE_CELL_ROM Or selCell.cellType = MAMUTE_CELL_BIOS Or selCell.cellType = MAMUTE_CELL_BASIC Or selCell.cellType = MAMUTE_CELL_EXTBIOS Then
             detailText &= " (" & NormalizePathForDisplay(selCell.romPath) & ", offset " & Trim(Str(selCell.romOffset)) & ")"
         End If
+        ConsoleWriteText(dialogX + 2, dialogY + dialogH - 5, Left("VRAM: " & Trim(Str(MamuteVramKB)) & "KB (V troca: 16/32/64/128/192)" & String(dialogW - 4, " "), dialogW - 4), 8, 1)
         ConsoleWriteText(dialogX + 2, dialogY + dialogH - 4, Left(detailText & String(dialogW - 4, " "), dialogW - 4), 11, 1)
         ConsoleWriteText(dialogX + 2, dialogY + dialogH - 3, Left("Sub-slots deste slot: " & IIf(MamuteMemSubOn(curSlot) <> 0, "ligados", "desligados") & String(dialogW - 4, " "), dialogW - 4), 8, 1)
         ConsoleWriteText(dialogX + 2, dialogY + dialogH - 2, Left(message & String(dialogW - 4, " "), dialogW - 4), 8, 1)
@@ -5506,6 +6573,13 @@ Private Sub ShowMamuteMemoryConfig()
             End If
         End If
 
+        If UCase(keyText) = "V" Then
+            MamuteVramKB = NextMamuteVramSize(MamuteVramKB)
+            memDirty = -1
+            message = "VRAM definida para " & Trim(Str(MamuteVramKB)) & "KB."
+            Continue Do
+        End If
+
         If UCase(keyText) = "T" Then
             MamuteMemSubOn(curSlot) = IIf(MamuteMemSubOn(curSlot) <> 0, 0, -1)
             memDirty = -1
@@ -5517,51 +6591,53 @@ Private Sub ShowMamuteMemoryConfig()
             Dim canceled4 As Integer
             Dim romFile As String = PromptPathDialog("Carregar ROM 32KB", "Arquivo .rom (32KB, BIOS+BASIC):", "", canceled4)
             If canceled4 = 0 And Len(romFile) > 0 Then
-                MamuteMemGrid(curSlot, curSub, 0).cellType = MAMUTE_CELL_ROM
-                MamuteMemGrid(curSlot, curSub, 0).romPath = romFile
-                MamuteMemGrid(curSlot, curSub, 0).romOffset = 0
-                MamuteMemGrid(curSlot, curSub, 1).cellType = MAMUTE_CELL_ROM
-                MamuteMemGrid(curSlot, curSub, 1).romPath = romFile
-                MamuteMemGrid(curSlot, curSub, 1).romOffset = 16384
+                Dim assignMsg4 As String
+                AssignMamuteRomFile(curSlot, curSub, 0, MAMUTE_CELL_BIOS, romFile, assignMsg4)
                 memDirty = -1
-                message = "ROM 32KB carregada no Slot " & Trim(Str(curSlot)) & " (BIOS pag.0 / BASIC pag.1)."
+                message = assignMsg4
             End If
             Continue Do
         End If
 
-        If keyText = " " Or keyText = Chr(13) Then
-            Dim ByRef cell As MamuteMemCell = MamuteMemGrid(curSlot, curSub, selCol)
+        ' Espaco so cicla o TIPO da celula (barato pra explorar); o arquivo de
+        ' ROM em si (com o preenchimento automatico de pagina vizinha pra
+        ' BIOS/BASIC/ROM de 32KB) e atribuido separadamente com Enter, via
+        ' AssignMamuteRomFile.
+        If keyText = " " Then
+            Dim ByRef cellSp As MamuteMemCell = MamuteMemGrid(curSlot, curSub, selCol)
+            Select Case cellSp.cellType
+                Case MAMUTE_CELL_NONE
+                    cellSp.cellType = MAMUTE_CELL_RAM
+                Case MAMUTE_CELL_RAM
+                    cellSp.cellType = MAMUTE_CELL_ROM
+                Case MAMUTE_CELL_ROM
+                    cellSp.cellType = MAMUTE_CELL_BIOS
+                Case MAMUTE_CELL_BIOS
+                    cellSp.cellType = MAMUTE_CELL_BASIC
+                Case MAMUTE_CELL_BASIC
+                    cellSp.cellType = MAMUTE_CELL_EXTBIOS
+                Case Else
+                    cellSp.cellType = MAMUTE_CELL_NONE
+            End Select
+            If cellSp.cellType = MAMUTE_CELL_NONE Or cellSp.cellType = MAMUTE_CELL_RAM Then
+                cellSp.romPath = ""
+                cellSp.romOffset = 0
+            End If
+            memDirty = -1
+            Continue Do
+        End If
 
-            If keyText = Chr(13) And cell.cellType = MAMUTE_CELL_ROM Then
+        If keyText = Chr(13) Then
+            Dim ByRef cellEn As MamuteMemCell = MamuteMemGrid(curSlot, curSub, selCol)
+            If cellEn.cellType = MAMUTE_CELL_ROM Or cellEn.cellType = MAMUTE_CELL_BIOS Or cellEn.cellType = MAMUTE_CELL_BASIC Or cellEn.cellType = MAMUTE_CELL_EXTBIOS Then
                 Dim canceled2 As Integer
-                Dim newPath As String = PromptPathDialog("ROM da pagina", "Arquivo .rom:", cell.romPath, canceled2)
-                If canceled2 = 0 Then
-                    cell.romPath = newPath
-                    Dim offCanceled As Integer
-                    Dim offText As String = PromptPathDialog("Offset no arquivo", "Offset em bytes:", Trim(Str(cell.romOffset)), offCanceled)
-                    If offCanceled = 0 Then cell.romOffset = ValInt(offText)
+                Dim newPath As String = PromptPathDialog("ROM da pagina", "Arquivo .rom:", cellEn.romPath, canceled2)
+                If canceled2 = 0 And Len(newPath) > 0 Then
+                    Dim assignMsg As String
+                    AssignMamuteRomFile(curSlot, curSub, selCol, cellEn.cellType, newPath, assignMsg)
                     memDirty = -1
+                    message = assignMsg
                 End If
-            Else
-                Select Case cell.cellType
-                    Case MAMUTE_CELL_NONE
-                        cell.cellType = MAMUTE_CELL_RAM
-                        memDirty = -1
-                    Case MAMUTE_CELL_RAM
-                        Dim canceled3 As Integer
-                        Dim romPath3 As String = PromptPathDialog("ROM da pagina", "Arquivo .rom:", "", canceled3)
-                        If canceled3 = 0 And Len(romPath3) > 0 Then
-                            cell.cellType = MAMUTE_CELL_ROM
-                            cell.romPath = romPath3
-                            cell.romOffset = 0
-                            memDirty = -1
-                        End If
-                    Case Else
-                        cell.cellType = MAMUTE_CELL_NONE
-                        cell.romPath = ""
-                        cell.romOffset = 0
-                        memDirty = -1
-                End Select
             End If
             Continue Do
         End If
@@ -5910,6 +6986,8 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                     Return MENU_CMD_HELP_MSX_DICT
                 Case "E"
                     Return MENU_CMD_HELP_EDITOR
+                Case "N"
+                    Return MENU_CMD_MAMUTE_HELP
                 Case "C"
                     Return MENU_CMD_HELP_THEME
             End Select
@@ -6144,6 +7222,8 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             ShowMamuteMemoryConfig()
         Case MENU_CMD_MAMUTE_OPEN
             EditorCreateMamuteTerm()
+        Case MENU_CMD_MAMUTE_HELP
+            OpenHelpDocument("Mamute Assembler", "dbhelp:MAMUTE|docs\help\mamute.md")
     End Select
 
     menuOpen = 0
@@ -6394,10 +7474,1251 @@ Private Function MamutePageRowText(ByVal slot As Integer, ByVal subIdx As Intege
     Dim txt As String = Left(label & Space(10), 10)
     Dim c As Integer
     For c = 0 To 3
-        txt &= Left(MamuteCellTypeLabel(MamuteMemGrid(slot, subIdx, c).cellType) & Space(6), 6)
+        txt &= Left(MamuteCellTypeLabel(MamuteMemGrid(slot, subIdx, c).cellType) & Space(8), 8)
     Next c
     Return txt
 End Function
+
+' ---------------------------------------------------------------------------
+' Implementacao dos comandos do monitor (alem de CLS/PAGE/BA/QUIT, ja
+' existentes). Cada Mamute_Cmd_XXX recebe o texto de argumentos JA sem o
+' verbo (e sem o espaco separador) e escreve o resultado no scrollback via
+' AppendMamuteLine - ExecuteMamuteCommand so' despacha.
+' ---------------------------------------------------------------------------
+
+Private Function MamuteDisplayModeText(ByVal modeVal As Integer) As String
+    Select Case modeVal
+        Case 0 : Return "HEXA+ASCII, 4 BYTES/LINHA"
+        Case 1 : Return "HEXA+ASCII, 16 BYTES/LINHA"
+        Case 2 : Return "HEXA, 8 BYTES/LINHA + CHECKSUM (SOMA+ENDERECO)"
+        Case 3 : Return "HEXA, 8 BYTES/LINHA + CHECKSUM (SO SOMA)"
+    End Select
+    Return "?"
+End Function
+
+' Grade de 128 bytes (16 linhas de 8) em hexa+ASCII, usada por DM/M/S.
+Private Sub MamuteRenderDump(ByRef d As Document, ByVal baseAddr As Integer, ByVal offsetVal As Integer)
+    AppendMamuteLine(d, "")
+    Dim row As Integer
+    For row = 0 To 15
+        Dim lineAddr As Integer = (baseAddr + row * 8) And 65535
+        Dim hexPart As String = ""
+        Dim asciiPart As String = ""
+        Dim c As Integer
+        For c = 0 To 7
+            Dim rb As Integer = Mamute_ReadByte((lineAddr + c) And 65535)
+            hexPart &= Hex(rb, 2) & " "
+            asciiPart &= Mamute_PrintableChar((rb + offsetVal) And 255)
+        Next c
+        AppendMamuteLine(d, Hex(lineAddr, 4) & ": " & hexPart & asciiPart)
+    Next row
+    AppendMamuteLine(d, "")
+    AppendMamuteLine(d, "Endereco: " & Hex(baseAddr, 4) & "H")
+    Dim offSign As String = "+"
+    If offsetVal < 0 Then offSign = "-"
+    AppendMamuteLine(d, "Desloc.: " & offSign & Hex(Abs(offsetVal), 2) & "H")
+End Sub
+
+' Despejo formatado (modo escolhido em C), usado por D/P/V.
+Private Sub MamuteBuildDumpLines(ByRef d As Document, ByVal startAddr As Integer, ByVal endAddr As Integer)
+    Dim bytesPerLine As Integer = 8
+    If MamuteDisplayMode = 0 Then bytesPerLine = 4
+    If MamuteDisplayMode = 1 Then bytesPerLine = 16
+
+    Dim curAddr As Integer = startAddr
+    Do While curAddr <= endAddr
+        Dim lineAddr As Integer = curAddr
+        Dim hexPart As String = ""
+        Dim asciiPart As String = ""
+        Dim checksum As Integer = 0
+        Dim n As Integer = 0
+        Do While n < bytesPerLine And curAddr <= endAddr
+            Dim rb As Integer = Mamute_ReadByte(curAddr)
+            hexPart &= Hex(rb, 2) & " "
+            If MamuteDisplayMode = 0 Or MamuteDisplayMode = 1 Then asciiPart &= Mamute_PrintableChar(rb)
+            checksum = (checksum + rb) And 255
+            curAddr += 1
+            n += 1
+        Loop
+
+        Dim lineText As String = Hex(lineAddr, 4) & ": " & hexPart
+        If MamuteDisplayMode = 0 Or MamuteDisplayMode = 1 Then
+            lineText &= " " & asciiPart
+        ElseIf MamuteDisplayMode = 2 Then
+            lineText &= Hex((checksum + (lineAddr And 255)) And 255, 2)
+        ElseIf MamuteDisplayMode = 3 Then
+            lineText &= Hex(checksum And 255, 2)
+        End If
+        AppendMamuteLine(d, lineText)
+    Loop
+End Sub
+
+Private Sub MamuteCmd_DM(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 2)
+
+    If tokCount < 1 Or Len(tokens(0)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim baseAddr As Integer
+    If Mamute_ParseHexAddr(tokens(0), baseAddr) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim offsetVal As Integer = 0
+    If tokCount >= 2 And Len(tokens(1)) > 0 Then
+        If Mamute_ParseHexOffset(tokens(1), offsetVal) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+    End If
+
+    MamuteRenderDump(d, baseAddr, offsetVal)
+    AppendMamuteLine(d, "(despejo somente-leitura nesta versao do msxIDE - use M " & Chr(60) & "endereco" & Chr(62) & " " & Chr(60) & "byte" & Chr(62) & " pra gravar um byte direto)")
+End Sub
+
+Private Sub MamuteCmd_ZAP(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 2)
+
+    If tokCount < 1 Or Len(tokens(0)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim sectorNum As Integer
+    If Mamute_ParseHexAddr(tokens(0), sectorNum) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim offsetVal As Integer = 0
+    If tokCount >= 2 And Len(tokens(1)) > 0 Then
+        If Mamute_ParseHexOffset(tokens(1), offsetVal) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+    End If
+
+    Dim canceled As Integer
+    Dim dskPath As String = PromptPathDialog("ZAP - imagem de disco", "Arquivo .dsk:", "", canceled)
+    If canceled <> 0 Or Len(dskPath) = 0 Then
+        AppendMamuteLine(d, "CANCELADO")
+        Exit Sub
+    End If
+    If Dir(dskPath) = "" Then
+        AppendMamuteLine(d, "?ARQUIVO NAO ENCONTRADO: " & dskPath)
+        Exit Sub
+    End If
+
+    Dim ff As Integer = FreeFile
+    Open dskPath For Binary Access Read As #ff
+    Dim fsize As LongInt = Lof(ff)
+    Dim baseByteOff As LongInt = sectorNum * 512
+
+    AppendMamuteLine(d, "")
+    Dim row As Integer
+    For row = 0 To 15
+        Dim rowOff As LongInt = baseByteOff + row * 8
+        Dim hexPart As String = ""
+        Dim asciiPart As String = ""
+        Dim c As Integer
+        For c = 0 To 7
+            Dim thisOff As LongInt = rowOff + c
+            Dim rb As Integer = 0
+            If thisOff < fsize Then
+                Dim buf(0 To 0) As UByte
+                Get #ff, thisOff + 1, buf()
+                rb = buf(0)
+            End If
+            hexPart &= Hex(rb, 2) & " "
+            asciiPart &= Mamute_PrintableChar((rb + offsetVal) And 255)
+        Next c
+        AppendMamuteLine(d, Hex(row * 8, 3) & ": " & hexPart & asciiPart)
+    Next row
+    Close #ff
+
+    AppendMamuteLine(d, "")
+    AppendMamuteLine(d, "Setor: " & Hex(sectorNum, 4) & "H")
+    AppendMamuteLine(d, "Byte: " & Hex(baseByteOff, 8) & "H")
+    AppendMamuteLine(d, "(despejo somente-leitura nesta versao do msxIDE - edicao/gravacao de setor fica pra uma fase futura)")
+End Sub
+
+Private Sub MamuteCmd_SCR(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 4)
+
+    If tokCount < 3 Or Len(tokens(0)) = 0 Or Len(tokens(1)) = 0 Or Len(tokens(2)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim baseAddr As Integer
+    If Mamute_ParseHexAddr(tokens(0), baseAddr) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    If Mamute_IsHexString(tokens(1), 2) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim dxVal As Integer = ValInt("&H" & tokens(1))
+    If Mamute_IsHexString(tokens(2), 2) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim dyVal As Integer = ValInt("&H" & tokens(2))
+    If dxVal < 1 Or dyVal < 1 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim modeVal As Integer = 0
+    If tokCount >= 4 And Len(tokens(3)) > 0 Then
+        If Mamute_IsHexString(tokens(3), 1) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        modeVal = ValInt("&H" & tokens(3))
+        If modeVal <> 0 And modeVal <> 1 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+    End If
+
+    AppendMamuteLine(d, "")
+    AppendMamuteLine(d, "(visualizacao reduzida nesta versao do msxIDE - 1 azulejo " & Trim(Str(dxVal)) & "x" & Trim(Str(dyVal)) & " caracteres em ASCII, nao a tela 256x192 completa)")
+    AppendMamuteLine(d, "")
+
+    Dim charRow As Integer
+    Dim pixRow As Integer
+    For charRow = 0 To dyVal - 1
+        For pixRow = 0 To 7
+            Dim lineText As String = ""
+            Dim charCol As Integer
+            For charCol = 0 To dxVal - 1
+                Dim charIdx As Integer
+                If modeVal = 0 Then
+                    charIdx = charRow * dxVal + charCol
+                Else
+                    charIdx = charCol * dyVal + charRow
+                End If
+                Dim byteAddr As Integer = (baseAddr + charIdx * 8 + pixRow) And 65535
+                Dim rowByte As Integer = Mamute_ReadByte(byteAddr)
+                Dim bitIdx As Integer
+                For bitIdx = 7 To 0 Step -1
+                    If ((rowByte Shr bitIdx) And 1) <> 0 Then
+                        lineText &= "#"
+                    Else
+                        lineText &= "."
+                    End If
+                Next bitIdx
+            Next charCol
+            AppendMamuteLine(d, lineText)
+        Next pixRow
+    Next charRow
+End Sub
+
+Private Sub MamuteCmd_SH(ByRef d As Document, ByRef argsText As String)
+    Dim firstComma As Integer = InStr(argsText, ",")
+    If firstComma = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim addrToken As String = Trim(Left(argsText, firstComma - 1))
+    Dim restText As String = Mid(argsText, firstComma + 1)
+
+    Dim startAddr As Integer
+    If Len(addrToken) > 0 Then
+        If Mamute_ParseHexAddr(addrToken, startAddr) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+    Else
+        If MamuteLastShValid = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        startAddr = (MamuteLastShAddr + 1) And 65535
+    End If
+
+    If Left(Trim(restText), 1) = "'" Then
+        Dim textVal As String = Mid(Trim(restText), 2)
+        If Len(textVal) < 2 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+
+        Dim tryAddr As Integer = startAddr
+        Dim count As Integer = 0
+        Dim found As Integer = 0
+        Dim foundAddr As Integer = 0
+        Dim foundOffset As Integer = 0
+        Do While count < 65536
+            Dim firstByte As Integer = Mamute_ReadByte(tryAddr)
+            Dim firstChar As Integer = Asc(Left(textVal, 1))
+            Dim rawOffset As Integer = firstChar - firstByte
+            rawOffset = ((rawOffset Mod 256) + 256) Mod 256
+            If rawOffset > 127 Then rawOffset -= 256
+            If rawOffset >= -127 And rawOffset <= 128 Then
+                Dim allMatch As Integer = -1
+                Dim k As Integer
+                For k = 1 To Len(textVal)
+                    Dim chAddr As Integer = (tryAddr + k - 1) And 65535
+                    Dim chByte As Integer = Mamute_ReadByte(chAddr)
+                    Dim expectChar As Integer = Asc(Mid(textVal, k, 1))
+                    If ((chByte + rawOffset) And 255) <> expectChar Then
+                        allMatch = 0
+                        Exit For
+                    End If
+                Next k
+                If allMatch <> 0 Then
+                    found = -1
+                    foundAddr = tryAddr
+                    foundOffset = rawOffset
+                    Exit Do
+                End If
+            End If
+            tryAddr = (tryAddr + 1) And 65535
+            count += 1
+        Loop
+
+        If found <> 0 Then
+            MamuteLastShAddr = foundAddr
+            MamuteLastShValid = -1
+            Dim signTxt As String = "+"
+            If foundOffset < 0 Then signTxt = "-"
+            AppendMamuteLine(d, "ACHADO EM " & Hex(foundAddr, 4) & "H DESLOC " & signTxt & Hex(Abs(foundOffset), 2) & "H")
+        Else
+            AppendMamuteLine(d, "NAO ENCONTRADO")
+        End If
+        Exit Sub
+    End If
+
+    Dim byteTokens() As String
+    Dim byteCount As Integer
+    Mamute_SplitArgs(restText, byteTokens(), byteCount, 32)
+    If byteCount < 1 Or Len(Trim(restText)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim wildMask(0 To byteCount - 1) As Integer
+    Dim wantByte(0 To byteCount - 1) As Integer
+    Dim bi As Integer
+    For bi = 0 To byteCount - 1
+        If Len(byteTokens(bi)) = 0 Then
+            wildMask(bi) = -1
+        Else
+            Dim bv As Integer
+            If Mamute_ParseHexByte(byteTokens(bi), bv) = 0 Then
+                AppendMamuteLine(d, "?ERRO DE SINTAXE")
+                Exit Sub
+            End If
+            wildMask(bi) = 0
+            wantByte(bi) = bv
+        End If
+    Next bi
+
+    Dim tryAddr2 As Integer = startAddr
+    Dim count2 As Integer = 0
+    Dim found2 As Integer = 0
+    Dim foundAddr2 As Integer = 0
+    Do While count2 < 65536
+        Dim allMatch2 As Integer = -1
+        Dim k2 As Integer
+        For k2 = 0 To byteCount - 1
+            If wildMask(k2) = 0 Then
+                Dim cAddr As Integer = (tryAddr2 + k2) And 65535
+                If Mamute_ReadByte(cAddr) <> wantByte(k2) Then
+                    allMatch2 = 0
+                    Exit For
+                End If
+            End If
+        Next k2
+        If allMatch2 <> 0 Then
+            found2 = -1
+            foundAddr2 = tryAddr2
+            Exit Do
+        End If
+        tryAddr2 = (tryAddr2 + 1) And 65535
+        count2 += 1
+    Loop
+
+    If found2 <> 0 Then
+        MamuteLastShAddr = foundAddr2
+        MamuteLastShValid = -1
+        AppendMamuteLine(d, "ACHADO EM " & Hex(foundAddr2, 4) & "H")
+    Else
+        AppendMamuteLine(d, "NAO ENCONTRADO")
+    End If
+End Sub
+
+Private Sub MamuteCmd_MS(ByRef d As Document, ByRef argsText As String)
+    Dim firstComma As Integer = InStr(argsText, ",")
+    If firstComma = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim addrToken As String = Trim(Left(argsText, firstComma - 1))
+    Dim restArgs As String = Mid(argsText, firstComma + 1)
+
+    Dim baseAddr As Integer
+    If Mamute_ParseHexAddr(addrToken, baseAddr) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim offsetVal As Integer = 0
+    Dim textVal As String
+    Dim trimRest As String = Trim(restArgs)
+    If Left(trimRest, 1) = "'" Then
+        textVal = Mid(trimRest, 2)
+    Else
+        Dim secondComma As Integer = InStr(restArgs, ",")
+        If secondComma = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        Dim offToken As String = Trim(Left(restArgs, secondComma - 1))
+        If Len(offToken) > 0 Then
+            If Mamute_ParseHexOffset(offToken, offsetVal) = 0 Then
+                AppendMamuteLine(d, "?ERRO DE SINTAXE")
+                Exit Sub
+            End If
+        End If
+        Dim afterOff As String = Trim(Mid(restArgs, secondComma + 1))
+        If Left(afterOff, 1) <> "'" Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        textVal = Mid(afterOff, 2)
+    End If
+
+    If Len(textVal) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim msWarn As String = Mamute_WriteWarnSuffix(baseAddr)
+    Dim k As Integer
+    For k = 1 To Len(textVal)
+        Dim chAddr As Integer = (baseAddr + k - 1) And 65535
+        Dim chVal As Integer = (Asc(Mid(textVal, k, 1)) - offsetVal) And 255
+        Mamute_WriteByte(chAddr, chVal)
+    Next k
+
+    AppendMamuteLine(d, "GRAVADO EM " & Hex(baseAddr, 4) & "H" & msWarn)
+End Sub
+
+Private Sub MamuteCmd_LOAD(ByRef d As Document, ByRef argsText As String)
+    Dim filterHint As String = Trim(argsText)
+    Dim canceled As Integer
+    Dim filePath As String = PromptPathDialog("LOAD", "Arquivo (.rom/.bin/outros):", filterHint, canceled)
+    If canceled <> 0 Or Len(filePath) = 0 Then
+        AppendMamuteLine(d, "CANCELADO")
+        Exit Sub
+    End If
+    If Dir(filePath) = "" Then
+        AppendMamuteLine(d, "?ARQUIVO NAO ENCONTRADO: " & filePath)
+        Exit Sub
+    End If
+
+    Dim ext As String = LCase(Right(filePath, 4))
+    If ext = ".cas" Then
+        AppendMamuteLine(d, "?ARQUIVOS .CAS NAO SUPORTADOS AINDA")
+        Exit Sub
+    End If
+
+    Dim ramSlot As Integer
+    Dim ramSub As Integer
+    Dim defaultSlot As Integer = 0
+    If FindMamuteRamSlot(ramSlot, ramSub) <> 0 Then defaultSlot = ramSlot
+
+    Dim slotCanceled As Integer
+    Dim slotText As String = PromptPathDialog("LOAD - Slot", "Slot de destino (0-3):", Trim(Str(defaultSlot)), slotCanceled)
+    If slotCanceled <> 0 Then
+        AppendMamuteLine(d, "CANCELADO")
+        Exit Sub
+    End If
+    Dim targetSlot As Integer = ValInt(Trim(slotText))
+    If targetSlot < 0 Or targetSlot > 3 Then
+        AppendMamuteLine(d, "?ARGUMENTO INVALIDO (slot deve ser 0-3)")
+        Exit Sub
+    End If
+
+    Dim ff As Integer = FreeFile
+    Open filePath For Binary Access Read As #ff
+    Dim fsize As LongInt = Lof(ff)
+
+    If ext = ".rom" Then
+        If fsize > 32768 Then
+            Close #ff
+            AppendMamuteLine(d, "?ROM MAIOR QUE 32KB NAO SUPORTADA")
+            Exit Sub
+        End If
+        Dim toRead As Integer = CInt(fsize)
+        Dim page1Len As Integer = toRead
+        If page1Len > 16384 Then page1Len = 16384
+        Dim page2Len As Integer = toRead - 16384
+        If page2Len < 0 Then page2Len = 0
+
+        Dim i As Integer
+        For i = 0 To 16383
+            MamuteMem(targetSlot, 0, 1, i) = 0
+            MamuteMem(targetSlot, 0, 2, i) = 0
+        Next i
+
+        If page1Len > 0 Then
+            Dim buf1(0 To page1Len - 1) As UByte
+            Get #ff, 1, buf1()
+            For i = 0 To page1Len - 1
+                MamuteMem(targetSlot, 0, 1, i) = buf1(i)
+            Next i
+        End If
+        MamuteMemGrid(targetSlot, 0, 1).cellType = MAMUTE_CELL_ROM
+
+        Dim finalEndAddr As Integer = &H7FFF
+        If page2Len > 0 Then
+            Dim buf2b(0 To page2Len - 1) As UByte
+            Get #ff, 16385, buf2b()
+            For i = 0 To page2Len - 1
+                MamuteMem(targetSlot, 0, 2, i) = buf2b(i)
+            Next i
+            MamuteMemGrid(targetSlot, 0, 2).cellType = MAMUTE_CELL_ROM
+            finalEndAddr = &HBFFF
+        End If
+        Close #ff
+
+        AppendMamuteLine(d, "CARREGADO NO SLOT " & Trim(Str(targetSlot)) & " EM 4000H - TAMANHO " & Hex(toRead, 4) & "H - FIM " & Hex(finalEndAddr, 4) & "H")
+        Exit Sub
+    End If
+
+    Dim hasHeader As Integer = 0
+    Dim hdrStart As Integer = 0
+    Dim hdrEnd As Integer = 0
+    If fsize >= 7 Then
+        Dim hb(0 To 6) As UByte
+        Get #ff, 1, hb()
+        If hb(0) = &HFE Then
+            hasHeader = -1
+            hdrStart = hb(1) + hb(2) * 256
+            hdrEnd = hb(3) + hb(4) * 256
+        End If
+    End If
+
+    Dim loadAddr As Integer
+    Dim dataStart As LongInt
+    Dim dataLen As LongInt
+
+    If hasHeader <> 0 Then
+        loadAddr = hdrStart
+        dataStart = 7
+        dataLen = fsize - 7
+        If dataLen < 0 Then dataLen = 0
+        Dim expectedLen As LongInt = ((hdrEnd - hdrStart) And 65535) + 1
+        If expectedLen > 0 And expectedLen < dataLen Then dataLen = expectedLen
+    Else
+        Dim addrCanceled As Integer
+        Dim addrText As String = PromptPathDialog("LOAD - Endereco inicial", "Endereco inicial (hexa):", "4000", addrCanceled)
+        If addrCanceled <> 0 Then
+            Close #ff
+            AppendMamuteLine(d, "CANCELADO")
+            Exit Sub
+        End If
+        If Mamute_ParseHexAddr(Trim(addrText), loadAddr) = 0 Then
+            Close #ff
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        dataStart = 1
+        dataLen = fsize
+    End If
+
+    Dim maxBytes As LongInt = dataLen
+    If maxBytes > 65536 Then maxBytes = 65536
+    Dim readLen As Integer = CInt(maxBytes)
+
+    If readLen > 0 Then
+        Dim dataBuf(0 To readLen - 1) As UByte
+        Get #ff, dataStart + 1, dataBuf()
+        Close #ff
+
+        Dim writeAddr As Integer = loadAddr
+        Dim wi As Integer
+        For wi = 0 To readLen - 1
+            Dim wpage As Integer = (writeAddr \ 16384) And 3
+            Dim woff As Integer = writeAddr And 16383
+            MamuteMem(targetSlot, 0, wpage, woff) = dataBuf(wi)
+            MamuteMemGrid(targetSlot, 0, wpage).cellType = MAMUTE_CELL_RAM
+            writeAddr = (writeAddr + 1) And 65535
+        Next wi
+    Else
+        Close #ff
+    End If
+
+    Dim finalEndAddr2 As Integer = (loadAddr + readLen - 1) And 65535
+    AppendMamuteLine(d, "CARREGADO NO SLOT " & Trim(Str(targetSlot)) & " EM " & Hex(loadAddr, 4) & "H - TAMANHO " & Hex(readLen, 4) & "H - FIM " & Hex(finalEndAddr2, 4) & "H")
+End Sub
+
+Private Sub MamuteCmd_SAVE(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 4)
+
+    Dim nameHint As String = ""
+    Dim prefStart As Integer = 0
+    Dim prefEnd As Integer = 0
+    Dim prefExec As Integer = 0
+    Dim haveRange As Integer = 0
+
+    If tokCount >= 1 And Len(tokens(0)) > 0 Then nameHint = tokens(0)
+    If tokCount >= 3 And Len(tokens(1)) > 0 And Len(tokens(2)) > 0 Then
+        If Mamute_ParseHexAddr(tokens(1), prefStart) <> 0 And Mamute_ParseHexAddr(tokens(2), prefEnd) <> 0 Then
+            haveRange = -1
+            prefExec = prefStart
+            If tokCount >= 4 And Len(tokens(3)) > 0 Then
+                Dim execTmp As Integer
+                If Mamute_ParseHexAddr(tokens(3), execTmp) <> 0 Then prefExec = execTmp
+            End If
+        End If
+    End If
+
+    Dim canceled As Integer
+    Dim filePath As String = PromptPathDialog("SAVE", "Arquivo de saida:", nameHint, canceled)
+    If canceled <> 0 Or Len(filePath) = 0 Then
+        AppendMamuteLine(d, "CANCELADO")
+        Exit Sub
+    End If
+
+    Dim startAddr As Integer = prefStart
+    Dim endAddr As Integer = prefEnd
+    If haveRange = 0 Then
+        Dim rangeCanceled As Integer
+        Dim rangeText As String = PromptPathDialog("SAVE - Intervalo", "Endereco inicial,final (hexa):", "4000,7FFF", rangeCanceled)
+        If rangeCanceled <> 0 Then
+            AppendMamuteLine(d, "CANCELADO")
+            Exit Sub
+        End If
+        Dim rTokens() As String
+        Dim rCount As Integer
+        Mamute_SplitArgs(Trim(rangeText), rTokens(), rCount, 2)
+        If rCount < 2 Or Mamute_ParseHexAddr(rTokens(0), startAddr) = 0 Or Mamute_ParseHexAddr(rTokens(1), endAddr) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        prefExec = startAddr
+    End If
+
+    If endAddr < startAddr Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim startPage As Integer = (startAddr \ 16384) And 3
+    Dim suggestSlot As Integer = MamuteActiveSlot(startPage)
+    Dim slotCanceled As Integer
+    Dim slotText As String = PromptPathDialog("SAVE - Slot", "Slot de origem (0-3):", Trim(Str(suggestSlot)), slotCanceled)
+    If slotCanceled <> 0 Then
+        AppendMamuteLine(d, "CANCELADO")
+        Exit Sub
+    End If
+    Dim srcSlot As Integer = ValInt(Trim(slotText))
+    If srcSlot < 0 Or srcSlot > 3 Then
+        AppendMamuteLine(d, "?ARGUMENTO INVALIDO (slot deve ser 0-3)")
+        Exit Sub
+    End If
+
+    Dim isRomFormat As Integer = 0
+    If LCase(Right(filePath, 4)) = ".rom" Then isRomFormat = -1
+
+    Dim ff As Integer = FreeFile
+    Open filePath For Binary Access Write As #ff
+    Dim hdr(0 To 6) As UByte
+    hdr(0) = IIf(isRomFormat <> 0, &HAB, &HFE)
+    hdr(1) = startAddr And 255 : hdr(2) = (startAddr \ 256) And 255
+    hdr(3) = endAddr And 255 : hdr(4) = (endAddr \ 256) And 255
+    hdr(5) = prefExec And 255 : hdr(6) = (prefExec \ 256) And 255
+    Put #ff, 1, hdr()
+
+    Dim total As Integer = (endAddr - startAddr) + 1
+    Dim outBuf(0 To total - 1) As UByte
+    Dim srcAddr As Integer = startAddr
+    Dim oi As Integer
+    For oi = 0 To total - 1
+        Dim spage As Integer = (srcAddr \ 16384) And 3
+        Dim soff As Integer = srcAddr And 16383
+        outBuf(oi) = MamuteMem(srcSlot, 0, spage, soff)
+        srcAddr = (srcAddr + 1) And 65535
+    Next oi
+    Put #ff, 8, outBuf()
+    Close #ff
+
+    AppendMamuteLine(d, "SALVO " & Chr(34) & filePath & Chr(34) & " - SLOT " & Trim(Str(srcSlot)) & " - " & Hex(startAddr, 4) & "H-" & Hex(endAddr, 4) & "H - TAMANHO " & Hex(total, 4) & "H")
+End Sub
+
+Private Sub MamuteCmd_MDumpAt(ByRef d As Document, ByVal addr As Integer)
+    MamuteRenderDump(d, addr, 0)
+    AppendMamuteLine(d, "(despejo somente-leitura nesta versao do msxIDE - use M " & Chr(60) & "endereco" & Chr(62) & " " & Chr(60) & "byte" & Chr(62) & " pra gravar um byte direto)")
+End Sub
+
+Private Sub MamuteCmd_M(ByRef d As Document, ByRef argsText As String)
+    Dim trimmed As String = Trim(argsText)
+    If Len(trimmed) = 0 Then
+        If MamuteLastMValid = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        MamuteCmd_MDumpAt(d, MamuteLastMAddr)
+        Exit Sub
+    End If
+
+    Dim spacePos2 As Integer = InStr(trimmed, " ")
+    If spacePos2 > 0 Then
+        Dim addrTok As String = Trim(Left(trimmed, spacePos2 - 1))
+        Dim byteTok As String = Trim(Mid(trimmed, spacePos2 + 1))
+        Dim addrVal As Integer
+        Dim byteVal As Integer
+        If Mamute_ParseHexAddr(addrTok, addrVal) = 0 Or Mamute_ParseHexByte(byteTok, byteVal) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        Dim mWarn As String = Mamute_WriteWarnSuffix(addrVal)
+        Mamute_WriteByte(addrVal, byteVal)
+        MamuteLastMAddr = addrVal
+        MamuteLastMValid = -1
+        AppendMamuteLine(d, "GRAVADO " & Hex(byteVal, 2) & "H EM " & Hex(addrVal, 4) & "H" & mWarn)
+        Exit Sub
+    End If
+
+    Dim onlyAddr As Integer
+    If Mamute_ParseHexAddr(trimmed, onlyAddr) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    MamuteLastMAddr = onlyAddr
+    MamuteLastMValid = -1
+    MamuteCmd_MDumpAt(d, onlyAddr)
+End Sub
+
+Private Sub MamuteCmd_S(ByRef d As Document, ByRef argsText As String)
+    Dim trimmed As String = Trim(argsText)
+    If Len(trimmed) = 0 Then
+        If MamuteLastSValid = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        MamuteRenderDump(d, MamuteLastSAddr, 0)
+        AppendMamuteLine(d, "(S e' um alias de M nesta versao do msxIDE - o remapeamento de teclado numerico do original nao se aplica a um terminal de texto)")
+        Exit Sub
+    End If
+
+    Dim spacePos2 As Integer = InStr(trimmed, " ")
+    If spacePos2 > 0 Then
+        Dim addrTok As String = Trim(Left(trimmed, spacePos2 - 1))
+        Dim byteTok As String = Trim(Mid(trimmed, spacePos2 + 1))
+        Dim addrVal As Integer
+        Dim byteVal As Integer
+        If Mamute_ParseHexAddr(addrTok, addrVal) = 0 Or Mamute_ParseHexByte(byteTok, byteVal) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        Dim sWarn As String = Mamute_WriteWarnSuffix(addrVal)
+        Mamute_WriteByte(addrVal, byteVal)
+        MamuteLastSAddr = addrVal
+        MamuteLastSValid = -1
+        AppendMamuteLine(d, "GRAVADO " & Hex(byteVal, 2) & "H EM " & Hex(addrVal, 4) & "H" & sWarn)
+        Exit Sub
+    End If
+
+    Dim onlyAddr As Integer
+    If Mamute_ParseHexAddr(trimmed, onlyAddr) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    MamuteLastSAddr = onlyAddr
+    MamuteLastSValid = -1
+    MamuteRenderDump(d, onlyAddr, 0)
+    AppendMamuteLine(d, "(S e' um alias de M nesta versao do msxIDE - o remapeamento de teclado numerico do original nao se aplica a um terminal de texto)")
+End Sub
+
+Private Sub MamuteCmd_C(ByRef d As Document, ByRef argsText As String)
+    Dim trimmed As String = Trim(argsText)
+    If Mamute_IsHexString(trimmed, 1) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim modeVal As Integer = ValInt("&H" & trimmed)
+    If modeVal < 0 Or modeVal > 3 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    MamuteDisplayMode = modeVal
+    AppendMamuteLine(d, "MODO " & Trim(Str(modeVal)) & ": " & MamuteDisplayModeText(modeVal))
+End Sub
+
+Private Sub MamuteCmd_D(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 2)
+    If tokCount < 1 Or Len(tokens(0)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim startAddr As Integer
+    If Mamute_ParseHexAddr(tokens(0), startAddr) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim endAddr As Integer
+    If tokCount >= 2 And Len(tokens(1)) > 0 Then
+        If Mamute_ParseHexAddr(tokens(1), endAddr) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        If endAddr < startAddr Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+    Else
+        endAddr = startAddr + 15
+        If endAddr > 65535 Then endAddr = 65535
+    End If
+    MamuteBuildDumpLines(d, startAddr, endAddr)
+End Sub
+
+Private Sub MamuteCmd_P(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 2)
+    If tokCount < 1 Or Len(tokens(0)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim startAddr As Integer
+    If Mamute_ParseHexAddr(tokens(0), startAddr) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim endAddr As Integer
+    If tokCount >= 2 And Len(tokens(1)) > 0 Then
+        If Mamute_ParseHexAddr(tokens(1), endAddr) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        If endAddr < startAddr Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+    Else
+        endAddr = startAddr + 15
+        If endAddr > 65535 Then endAddr = 65535
+    End If
+
+    Dim canceled As Integer
+    Dim outPath As String = PromptPathDialog("P - Salvar listagem", "Arquivo .txt de saida:", "listagem.txt", canceled)
+    If canceled <> 0 Or Len(outPath) = 0 Then
+        AppendMamuteLine(d, "CANCELADO")
+        Exit Sub
+    End If
+
+    Dim ff As Integer = FreeFile
+    Open outPath For Output As #ff
+    Print #ff, "P " & Hex(startAddr, 4) & "H-" & Hex(endAddr, 4) & "H MODO " & Trim(Str(MamuteDisplayMode))
+
+    Dim tempDoc As Document
+    tempDoc.lineCount = 1
+    tempDoc.lines(1) = ""
+    MamuteBuildDumpLines(tempDoc, startAddr, endAddr)
+    Dim i As Integer
+    For i = 2 To tempDoc.lineCount
+        Print #ff, tempDoc.lines(i)
+    Next i
+    Close #ff
+
+    AppendMamuteLine(d, "ARQUIVO GRAVADO: " & outPath)
+End Sub
+
+Private Sub MamuteCmd_V(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 2)
+    If tokCount < 1 Or Len(tokens(0)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim vramMax As Integer = MamuteVramKB * 1024 - 1
+
+    Dim startAddr As Integer
+    If Mamute_ParseHexAddr(tokens(0), startAddr, 5) = 0 Or startAddr > vramMax Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim endAddr As Integer
+    If tokCount >= 2 And Len(tokens(1)) > 0 Then
+        If Mamute_ParseHexAddr(tokens(1), endAddr, 5) = 0 Or endAddr > vramMax Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        If endAddr < startAddr Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+    Else
+        endAddr = startAddr + 15
+        If endAddr > vramMax Then endAddr = vramMax
+    End If
+
+    Dim canceled As Integer
+    Dim outPath As String = PromptPathDialog("V - Salvar listagem VRAM", "Arquivo .txt de saida:", "vram.txt", canceled)
+    If canceled <> 0 Or Len(outPath) = 0 Then
+        AppendMamuteLine(d, "CANCELADO")
+        Exit Sub
+    End If
+
+    Dim ff As Integer = FreeFile
+    Open outPath For Output As #ff
+    Print #ff, "V " & Hex(startAddr, 5) & "H-" & Hex(endAddr, 5) & "H MODO " & Trim(Str(MamuteDisplayMode))
+
+    Dim bytesPerLine As Integer = 8
+    If MamuteDisplayMode = 0 Then bytesPerLine = 4
+    If MamuteDisplayMode = 1 Then bytesPerLine = 16
+
+    Dim curAddr As Integer = startAddr
+    Do While curAddr <= endAddr
+        Dim lineAddr As Integer = curAddr
+        Dim hexPart As String = ""
+        Dim asciiPart As String = ""
+        Dim checksum As Integer = 0
+        Dim n As Integer = 0
+        Do While n < bytesPerLine And curAddr <= endAddr
+            Dim rb As Integer = MamuteVram(curAddr)
+            hexPart &= Hex(rb, 2) & " "
+            If MamuteDisplayMode = 0 Or MamuteDisplayMode = 1 Then asciiPart &= Mamute_PrintableChar(rb)
+            checksum = (checksum + rb) And 255
+            curAddr += 1
+            n += 1
+        Loop
+        Dim lineText As String = Hex(lineAddr, 5) & ": " & hexPart
+        If MamuteDisplayMode = 0 Or MamuteDisplayMode = 1 Then
+            lineText &= " " & asciiPart
+        ElseIf MamuteDisplayMode = 2 Then
+            lineText &= Hex((checksum + (lineAddr And 255)) And 255, 2)
+        ElseIf MamuteDisplayMode = 3 Then
+            lineText &= Hex(checksum And 255, 2)
+        End If
+        Print #ff, lineText
+    Loop
+    Close #ff
+
+    AppendMamuteLine(d, "ARQUIVO GRAVADO: " & outPath)
+End Sub
+
+Private Sub MamuteCmd_T(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 3)
+    If tokCount < 3 Or Len(tokens(0)) = 0 Or Len(tokens(1)) = 0 Or Len(tokens(2)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim startAddr As Integer
+    Dim endAddr As Integer
+    Dim destAddr As Integer
+    If Mamute_ParseHexAddr(tokens(0), startAddr) = 0 Or Mamute_ParseHexAddr(tokens(1), endAddr) = 0 Or Mamute_ParseHexAddr(tokens(2), destAddr) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    If endAddr < startAddr Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim lengthVal As Integer = endAddr - startAddr + 1
+    If destAddr + lengthVal - 1 > 65535 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim tWarn As String = ""
+    If Mamute_CanWriteAt(destAddr) = 0 Or Mamute_CanWriteAt(destAddr + lengthVal - 1) = 0 Then
+        tWarn = " (AVISO: destino tem pagina que nao e RAM agora - parte ou toda a copia sem efeito)"
+    End If
+
+    Dim i As Integer
+    If destAddr > startAddr Then
+        For i = lengthVal - 1 To 0 Step -1
+            Mamute_WriteByte(destAddr + i, Mamute_ReadByte(startAddr + i))
+        Next i
+    Else
+        For i = 0 To lengthVal - 1
+            Mamute_WriteByte(destAddr + i, Mamute_ReadByte(startAddr + i))
+        Next i
+    End If
+
+    AppendMamuteLine(d, "TRANSFERIDO " & Hex(startAddr, 4) & "H-" & Hex(endAddr, 4) & "H PARA " & Hex(destAddr, 4) & "H" & tWarn)
+End Sub
+
+Private Sub MamuteCmd_F(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 3)
+    If tokCount < 3 Or Len(tokens(0)) = 0 Or Len(tokens(1)) = 0 Or Len(tokens(2)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim startAddr As Integer
+    Dim endAddr As Integer
+    Dim fillByte As Integer
+    If Mamute_ParseHexAddr(tokens(0), startAddr) = 0 Or Mamute_ParseHexAddr(tokens(1), endAddr) = 0 Or Mamute_ParseHexByte(tokens(2), fillByte) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    If endAddr < startAddr Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    Dim fWarn As String = ""
+    If Mamute_CanWriteAt(startAddr) = 0 Or Mamute_CanWriteAt(endAddr) = 0 Then
+        fWarn = " (AVISO: intervalo tem pagina que nao e RAM agora - parte ou todo o preenchimento sem efeito)"
+    End If
+
+    Dim addr As Integer
+    For addr = startAddr To endAddr
+        Mamute_WriteByte(addr, fillByte)
+    Next addr
+
+    AppendMamuteLine(d, "PREENCHIDO " & Hex(startAddr, 4) & "H-" & Hex(endAddr, 4) & "H COM " & Hex(fillByte, 2) & "H" & fWarn)
+End Sub
+
+Private Sub MamuteCmd_G(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 3)
+    If tokCount < 1 Or Len(tokens(0)) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim startAddr As Integer
+    If Mamute_ParseHexAddr(tokens(0), startAddr) = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+    Dim confirmText As String = "G " & Hex(startAddr, 4) & "H"
+    If tokCount >= 2 And Len(tokens(1)) > 0 Then
+        Dim brk1 As Integer
+        If Mamute_ParseHexAddr(tokens(1), brk1) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        confirmText &= "," & Hex(brk1, 4) & "H"
+        If tokCount >= 3 And Len(tokens(2)) > 0 Then
+            Dim brk2 As Integer
+            If Mamute_ParseHexAddr(tokens(2), brk2) = 0 Then
+                AppendMamuteLine(d, "?ERRO DE SINTAXE")
+                Exit Sub
+            End If
+            confirmText &= "," & Hex(brk2, 4) & "H"
+        End If
+    End If
+    AppendMamuteLine(d, confirmText)
+    AppendMamuteLine(d, "(execucao de verdade ainda nao implementada nesta fase)")
+End Sub
+
+Private Sub MamuteCmd_X(ByRef d As Document, ByRef argsText As String)
+    Dim trimmed As String = Trim(argsText)
+    If Len(trimmed) = 0 Then
+        AppendMamuteLine(d, "AF=" & Hex(MamuteRegAF, 4) & " BC=" & Hex(MamuteRegBC, 4) & " DE=" & Hex(MamuteRegDE, 4) & " HL=" & Hex(MamuteRegHL, 4))
+        AppendMamuteLine(d, "IX=" & Hex(MamuteRegIX, 4) & " IY=" & Hex(MamuteRegIY, 4) & " SP=" & Hex(MamuteRegSP, 4))
+        Exit Sub
+    End If
+
+    Dim regMode As Integer
+    Dim regIdx As Integer
+    MamuteXFindReg(trimmed, regMode, regIdx)
+    If regMode = 0 Then
+        AppendMamuteLine(d, "?ERRO DE SINTAXE")
+        Exit Sub
+    End If
+
+    MamuteXWalking(activeDoc) = regMode
+    MamuteXWalkIdx(activeDoc) = regIdx
+End Sub
+
+Private Sub Mamute_ContinueXWalk(ByRef d As Document, ByRef valueText As String)
+    Dim mode As Integer = MamuteXWalking(activeDoc)
+    Dim idx As Integer = MamuteXWalkIdx(activeDoc)
+    Dim regNameW As String = MamuteXRegName(mode, idx)
+    Dim digitsW As Integer = 4
+    If mode = 2 Then digitsW = 2
+    Dim trimmedVal As String = Trim(valueText)
+
+    AppendMamuteLine(d, regNameW & "(" & Hex(MamuteXGetReg(regNameW), digitsW) & ")> " & valueText)
+
+    If Len(trimmedVal) > 0 Then
+        If Mamute_IsHexString(trimmedVal, digitsW) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            MamuteXWalking(activeDoc) = 0
+            MamuteXWalkIdx(activeDoc) = 0
+            Exit Sub
+        End If
+        MamuteXSetReg(regNameW, ValInt("&H" & trimmedVal))
+    End If
+
+    Dim newIdx As Integer = idx + 1
+    If newIdx >= MamuteXRegCount(mode) Then
+        MamuteXWalking(activeDoc) = 0
+        MamuteXWalkIdx(activeDoc) = 0
+        AppendMamuteLine(d, "AF=" & Hex(MamuteRegAF, 4) & " BC=" & Hex(MamuteRegBC, 4) & " DE=" & Hex(MamuteRegDE, 4) & " HL=" & Hex(MamuteRegHL, 4))
+        AppendMamuteLine(d, "IX=" & Hex(MamuteRegIX, 4) & " IY=" & Hex(MamuteRegIY, 4) & " SP=" & Hex(MamuteRegSP, 4))
+    Else
+        MamuteXWalkIdx(activeDoc) = newIdx
+    End If
+End Sub
+
+Private Sub MamuteCmd_R(ByRef d As Document, ByRef argsText As String)
+    AppendMamuteLine(d, "R - CARREGAMENTO DE PROGRAMA ASSEMBLADO AINDA NAO IMPLEMENTADO, FICA PRA UMA FASE FUTURA")
+End Sub
+
+Private Sub MamuteCmd_L(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 2)
+
+    Dim startAddr As Integer
+    Dim endAddr As Integer
+    Dim haveEnd As Integer = 0
+
+    If tokCount >= 1 And Len(tokens(0)) > 0 Then
+        If Mamute_ParseHexAddr(tokens(0), startAddr) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        If tokCount >= 2 And Len(tokens(1)) > 0 Then
+            If Mamute_ParseHexAddr(tokens(1), endAddr) = 0 Then
+                AppendMamuteLine(d, "?ERRO DE SINTAXE")
+                Exit Sub
+            End If
+            haveEnd = -1
+        End If
+    Else
+        If MamuteLastDisasmValid = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        startAddr = MamuteLastDisasmAddr
+    End If
+
+    Dim curAddr As Integer = startAddr
+    If haveEnd <> 0 Then
+        Do While curAddr <= endAddr
+            AppendMamuteLine(d, MamuteDisasmLine(curAddr))
+            Dim instrLen As Integer
+            Dim mnem As String
+            MamuteDisasmOne(curAddr, instrLen, mnem)
+            If instrLen < 1 Then instrLen = 1
+            curAddr += instrLen
+            If curAddr > 65535 Then Exit Do
+        Loop
+    Else
+        Dim nInstr As Integer
+        For nInstr = 1 To 10
+            AppendMamuteLine(d, MamuteDisasmLine(curAddr))
+            Dim instrLen2 As Integer
+            Dim mnem2 As String
+            MamuteDisasmOne(curAddr, instrLen2, mnem2)
+            If instrLen2 < 1 Then instrLen2 = 1
+            curAddr += instrLen2
+            If curAddr > 65535 Then Exit For
+        Next nInstr
+    End If
+
+    MamuteLastDisasmAddr = curAddr And 65535
+    MamuteLastDisasmValid = -1
+End Sub
+
+Private Sub MamuteCmd_LP(ByRef d As Document, ByRef argsText As String)
+    Dim tokens() As String
+    Dim tokCount As Integer
+    Mamute_SplitArgs(argsText, tokens(), tokCount, 2)
+
+    Dim startAddr As Integer
+    Dim endAddr As Integer
+    Dim haveEnd As Integer = 0
+
+    If tokCount >= 1 And Len(tokens(0)) > 0 Then
+        If Mamute_ParseHexAddr(tokens(0), startAddr) = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        If tokCount >= 2 And Len(tokens(1)) > 0 Then
+            If Mamute_ParseHexAddr(tokens(1), endAddr) = 0 Then
+                AppendMamuteLine(d, "?ERRO DE SINTAXE")
+                Exit Sub
+            End If
+            haveEnd = -1
+        End If
+    Else
+        If MamuteLastDisasmValid = 0 Then
+            AppendMamuteLine(d, "?ERRO DE SINTAXE")
+            Exit Sub
+        End If
+        startAddr = MamuteLastDisasmAddr
+    End If
+
+    Dim canceled As Integer
+    Dim outPath As String = PromptPathDialog("LP - Salvar listagem", "Arquivo .txt de saida:", "disassembly.txt", canceled)
+    If canceled <> 0 Or Len(outPath) = 0 Then
+        AppendMamuteLine(d, "CANCELADO")
+        Exit Sub
+    End If
+
+    Dim ff As Integer = FreeFile
+    Open outPath For Output As #ff
+    Dim headerText As String = "L " & Hex(startAddr, 4) & "H"
+    If haveEnd <> 0 Then headerText &= "-" & Hex(endAddr, 4) & "H"
+    Print #ff, headerText
+
+    Dim curAddr As Integer = startAddr
+    If haveEnd <> 0 Then
+        Do While curAddr <= endAddr
+            Print #ff, MamuteDisasmLine(curAddr)
+            Dim instrLen As Integer
+            Dim mnem As String
+            MamuteDisasmOne(curAddr, instrLen, mnem)
+            If instrLen < 1 Then instrLen = 1
+            curAddr += instrLen
+            If curAddr > 65535 Then Exit Do
+        Loop
+    Else
+        Dim nInstr As Integer
+        For nInstr = 1 To 10
+            Print #ff, MamuteDisasmLine(curAddr)
+            Dim instrLen2 As Integer
+            Dim mnem2 As String
+            MamuteDisasmOne(curAddr, instrLen2, mnem2)
+            If instrLen2 < 1 Then instrLen2 = 1
+            curAddr += instrLen2
+            If curAddr > 65535 Then Exit For
+        Next nInstr
+    End If
+    Close #ff
+
+    MamuteLastDisasmAddr = curAddr And 65535
+    MamuteLastDisasmValid = -1
+
+    AppendMamuteLine(d, "ARQUIVO GRAVADO: " & outPath)
+End Sub
+
+Private Sub MamuteCmd_HELP(ByRef d As Document, ByRef argsText As String)
+    OpenHelpDocument("Mamute Assembler", "dbhelp:MAMUTE|docs\help\mamute.md")
+End Sub
 
 Private Sub ExecuteMamuteCommand(ByRef d As Document, ByRef cmdTextIn As String)
     Dim cmdText As String = Trim(cmdTextIn)
@@ -6408,6 +8729,9 @@ Private Sub ExecuteMamuteCommand(ByRef d As Document, ByRef cmdTextIn As String)
     If spacePos > 0 Then verb = Left(cmdText, spacePos - 1)
     verb = UCase(verb)
 
+    Dim genericArgs As String = ""
+    If spacePos > 0 Then genericArgs = Trim(Mid(cmdText, spacePos + 1))
+
     Select Case verb
         Case "CLS"
             d.lineCount = 1
@@ -6415,18 +8739,132 @@ Private Sub ExecuteMamuteCommand(ByRef d As Document, ByRef cmdTextIn As String)
             d.scrollY = 0
         Case "PAGE"
             LoadMamuteMemConfig()
-            AppendMamuteLine(d, "")
-            Dim slot As Integer
-            For slot = 0 To 3
-                If MamuteMemSubOn(slot) <> 0 Then
-                    Dim subIdx As Integer
-                    For subIdx = 0 To 3
-                        AppendMamuteLine(d, MamutePageRowText(slot, subIdx))
-                    Next subIdx
+            Dim pageArgs As String = ""
+            If spacePos > 0 Then pageArgs = Trim(Mid(cmdText, spacePos + 1))
+
+            If Len(pageArgs) = 0 Then
+                ' PAGE sem argumentos: joga as 4 paginas inteiras pro slot
+                ' com RAM (workspace limpo pro assembler), igual ao original.
+                Dim ramSlot As Integer
+                Dim ramSub As Integer
+                If FindMamuteRamSlot(ramSlot, ramSub) <> 0 Then
+                    Dim rp As Integer
+                    For rp = 0 To 3
+                        MamuteActiveSlot(rp) = ramSlot
+                        MamuteActiveSub(rp) = ramSub
+                    Next rp
+                    AppendMamuteLine(d, MamuteActivePageSummary())
                 Else
-                    AppendMamuteLine(d, MamutePageRowText(slot, 0))
+                    AppendMamuteLine(d, "?SEM RAM CONFIGURADA (Configurar -> Mamute (Memoria))")
                 End If
-            Next slot
+
+            ElseIf pageArgs = "?" Then
+                ' PAGE ?: mostra o estado atual completo (slots ativos,
+                ' enderecos, VRAM e o mapa de memoria configurado).
+                AppendMamuteLine(d, "")
+                AppendMamuteLine(d, MamuteActivePageSummary())
+                AppendMamuteLine(d, "Enderecos: Pag.0=" & MamutePageAddrRange(0) & " Pag.1=" & MamutePageAddrRange(1) & " Pag.2=" & MamutePageAddrRange(2) & " Pag.3=" & MamutePageAddrRange(3))
+                AppendMamuteLine(d, "VRAM: " & Trim(Str(MamuteVramKB)) & "KB")
+                AppendMamuteLine(d, "")
+                Dim slot As Integer
+                For slot = 0 To 3
+                    If MamuteMemSubOn(slot) <> 0 Then
+                        Dim subIdx As Integer
+                        For subIdx = 0 To 3
+                            AppendMamuteLine(d, MamutePageRowText(slot, subIdx))
+                        Next subIdx
+                    Else
+                        AppendMamuteLine(d, MamutePageRowText(slot, 0))
+                    End If
+                Next slot
+
+            Else
+                ' PAGE X[,Y][,Z][,K]: X/Y/Z/K sao os slots (0-3) das paginas
+                ' 0/1/2/3 nessa ordem - argumento em branco (ou omitido no
+                ' final) deixa aquela pagina como esta. Ex.: "PAGE 1" muda so
+                ' a pag.0 pro Slot 1; "PAGE ,,2" muda so a pag.2 pro Slot 2.
+                Dim tokens(0 To 3) As String
+                Dim tokCount As Integer = 0
+                Dim remaining As String = pageArgs
+                Do While tokCount < 4
+                    Dim commaPos As Integer = InStr(remaining, ",")
+                    If commaPos = 0 Then
+                        tokens(tokCount) = Trim(remaining)
+                        tokCount += 1
+                        Exit Do
+                    Else
+                        tokens(tokCount) = Trim(Left(remaining, commaPos - 1))
+                        remaining = Mid(remaining, commaPos + 1)
+                        tokCount += 1
+                    End If
+                Loop
+
+                Dim badArg As Integer = 0
+                Dim changedAny As Integer = 0
+                Dim ti As Integer
+                For ti = 0 To tokCount - 1
+                    If Len(tokens(ti)) > 0 Then
+                        Dim slotVal As Integer = ValInt(tokens(ti))
+                        If slotVal < 0 Or slotVal > 3 Then
+                            badArg = -1
+                        Else
+                            MamuteActiveSlot(ti) = slotVal
+                            MamuteActiveSub(ti) = 0
+                            changedAny = -1
+                        End If
+                    End If
+                Next ti
+
+                If badArg <> 0 Then
+                    AppendMamuteLine(d, "?ARGUMENTO INVALIDO (slot deve ser 0-3)")
+                ElseIf changedAny = 0 Then
+                    AppendMamuteLine(d, "?COMANDO INVALIDO")
+                Else
+                    AppendMamuteLine(d, MamuteActivePageSummary())
+                End If
+            End If
+        Case "DM"
+            MamuteCmd_DM(d, genericArgs)
+        Case "ZAP"
+            MamuteCmd_ZAP(d, genericArgs)
+        Case "SCR"
+            MamuteCmd_SCR(d, genericArgs)
+        Case "SH"
+            MamuteCmd_SH(d, genericArgs)
+        Case "MS"
+            MamuteCmd_MS(d, genericArgs)
+        Case "LOAD"
+            MamuteCmd_LOAD(d, genericArgs)
+        Case "SAVE"
+            MamuteCmd_SAVE(d, genericArgs)
+        Case "M"
+            MamuteCmd_M(d, genericArgs)
+        Case "S"
+            MamuteCmd_S(d, genericArgs)
+        Case "C"
+            MamuteCmd_C(d, genericArgs)
+        Case "D"
+            MamuteCmd_D(d, genericArgs)
+        Case "P"
+            MamuteCmd_P(d, genericArgs)
+        Case "V"
+            MamuteCmd_V(d, genericArgs)
+        Case "T"
+            MamuteCmd_T(d, genericArgs)
+        Case "F"
+            MamuteCmd_F(d, genericArgs)
+        Case "G"
+            MamuteCmd_G(d, genericArgs)
+        Case "X"
+            MamuteCmd_X(d, genericArgs)
+        Case "R"
+            MamuteCmd_R(d, genericArgs)
+        Case "L"
+            MamuteCmd_L(d, genericArgs)
+        Case "LP"
+            MamuteCmd_LP(d, genericArgs)
+        Case "HELP"
+            MamuteCmd_HELP(d, genericArgs)
         Case "BA", "QUIT"
             CloseDocument(activeDoc)
         Case Else
@@ -6441,8 +8879,12 @@ Private Sub HandleMamuteTermKey(ByRef d As Document, ByRef keyText As String, By
         Dim cmdText As String = mamuteInputBuf(activeDoc)
         mamuteInputBuf(activeDoc) = ""
         mamuteInputCursor(activeDoc) = 0
-        AppendMamuteLine(d, MAMUTE_PROMPT & cmdText)
-        ExecuteMamuteCommand(d, cmdText)
+        If MamuteXWalking(activeDoc) <> 0 Then
+            Mamute_ContinueXWalk(d, cmdText)
+        Else
+            AppendMamuteLine(d, MAMUTE_PROMPT & cmdText)
+            ExecuteMamuteCommand(d, cmdText)
+        End If
         Exit Sub
     End If
 
@@ -6499,7 +8941,7 @@ Private Sub DrawMamuteInputLine(ByVal docIndex As Integer, ByVal rowY As Integer
     Dim ByRef d As Document = docs(docIndex)
     Dim clientW As Integer = GetClientTextWidth(d)
     If clientW > MAX_SYNTAX_W Then clientW = MAX_SYNTAX_W
-    Dim lineText As String = MAMUTE_PROMPT & mamuteInputBuf(docIndex)
+    Dim lineText As String = MamuteCurrentPromptText(docIndex) & mamuteInputBuf(docIndex)
     Dim padded As String = Left(lineText & Space(clientW), clientW)
     Dim i As Integer
     For i = 1 To clientW
@@ -6513,12 +8955,24 @@ Private Sub EditorCreateMamuteTerm()
     docCount += 1
     activeDoc = docCount
 
+    LoadMamuteMemConfig()
+    SetMamuteDefaultPageMapping()
+    Mamute_LoadPhysicalMemory()
+    Mamute_ResetRegs()
+    MamuteDisplayMode = 0
+    MamuteLastShValid = 0
+    MamuteLastMValid = 0
+    MamuteLastSValid = 0
+    MamuteLastDisasmValid = 0
+    MamuteXWalking(docCount) = 0
+    MamuteXWalkIdx(docCount) = 0
+
     InitBlankDocument(docs(docCount), "Mamute Assembler")
     docs(docCount).isMamuteTerm = -1
     docs(docCount).lineCount = 3
     docs(docCount).lines(1) = "Mamute Assembler - MON>"
-    docs(docCount).lines(2) = "Comandos disponiveis nesta fase: CLS, PAGE, BA/QUIT."
-    docs(docCount).lines(3) = ""
+    docs(docCount).lines(2) = "Comandos: CLS, PAGE, DM, ZAP, SCR, SH, MS, LOAD, SAVE, M, S, C, D, P, V, T, F, G, X, R, L, LP, HELP, BA/QUIT."
+    docs(docCount).lines(3) = MamuteActivePageSummary()
     mamuteInputBuf(docCount) = ""
     mamuteInputCursor(docCount) = 0
 
@@ -6657,7 +9111,14 @@ Sub EditorHandleKey(ByRef keyText As String, ByRef running As Integer, ByRef men
     Dim oldScrollY As Integer = docs(activeDoc).scrollY
 
     HandleEditorKey(keyText, running, needFullRedraw, renderHint)
-    EnsureCursorVisible(docs(activeDoc))
+    ' Terminal do Mamute gerencia d.scrollY sozinho (AppendMamuteLine rola
+    ' pro fim a cada linha nova; PgUp/PgDn/Home/End tem tratamento proprio em
+    ' HandleMamuteTermKey) - nunca usa d.cursorX/d.cursorY (esses ficam
+    ' parados no valor inicial, ja que a "digitacao" vai pro buffer da linha
+    ' de comando, nao pra d.lines()). Chamar EnsureCursorVisible aqui pra um
+    ' documento assim prendia a rolagem sempre no topo, escondendo a saida
+    ' nova de todo comando digitado.
+    If docs(activeDoc).isMamuteTerm = 0 Then EnsureCursorVisible(docs(activeDoc))
 
     If docs(activeDoc).scrollX <> oldScrollX Or docs(activeDoc).scrollY <> oldScrollY Then
         renderHint = RENDER_CLIENT
@@ -6756,17 +9217,8 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
         Exit Sub
     End If
 
-    ' Clique na barra de menu (Ajuda)
-    If mouseY = 1 And mouseX >= 33 And mouseX <= 37 Then
-        menuOpen = IIf(menuOpen = MENU_VIEW_HELP, MENU_VIEW_NONE, MENU_VIEW_HELP)
-        dragMode = DRAG_NONE
-        forceFullRedraw = 1
-        renderMode = RENDER_FULL
-        Exit Sub
-    End If
-
     ' Clique na barra de menu (Referencia)
-    If mouseY = 1 And mouseX >= 40 And mouseX <= 49 Then
+    If mouseY = 1 And mouseX >= 33 And mouseX <= 42 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_REFERENCE, MENU_VIEW_NONE, MENU_VIEW_REFERENCE)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -6775,8 +9227,17 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     End If
 
     ' Clique na barra de menu (Mamute)
-    If mouseY = 1 And mouseX >= 52 And mouseX <= 58 Then
+    If mouseY = 1 And mouseX >= 45 And mouseX <= 51 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_MAMUTE, MENU_VIEW_NONE, MENU_VIEW_MAMUTE)
+        dragMode = DRAG_NONE
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    ' Clique na barra de menu (Ajuda)
+    If mouseY = 1 And mouseX >= 53 And mouseX <= 57 Then
+        menuOpen = IIf(menuOpen = MENU_VIEW_HELP, MENU_VIEW_NONE, MENU_VIEW_HELP)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
         renderMode = RENDER_FULL
@@ -6841,7 +9302,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_HELP Then
-            If mouseX >= 34 And mouseX <= 67 Then
+            If mouseX >= 54 And mouseX <= 87 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_HELP_BASIC
@@ -6856,11 +9317,13 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                     Case 8
                         menuCmd = MENU_CMD_HELP_EDITOR
                     Case 9
+                        menuCmd = MENU_CMD_MAMUTE_HELP
+                    Case 10
                         menuCmd = MENU_CMD_HELP_THEME
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_REFERENCE Then
-            If mouseX >= 40 And mouseX <= 81 Then
+            If mouseX >= 33 And mouseX <= 74 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_REF_REDBOOK
@@ -6885,7 +9348,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_MAMUTE Then
-            If mouseX >= 52 And mouseX <= 82 Then
+            If mouseX >= 45 And mouseX <= 75 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_MAMUTE_OPEN
@@ -7472,7 +9935,100 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
-    report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword & ", refdict biosdoc (" & Trim(Str(biosdocLineCount)) & " linhas), redbook (" & Trim(Str(rbTopicCount)) & " topicos/" & Trim(Str(rbGroupHeaders)) & " grupos, Ver tambem OK), msxmanuals (" & Trim(Str(mmTopicCount)) & " topicos, sem duplicata), openmsx (" & Trim(Str(omTopicCount)) & " topicos), nestorbasic/seetracker/msxbas2rom/editor OK, th2handbook (" & Trim(Str(thTopicCount)) & "), bioscalls (" & Trim(Str(bcTopicCount)) & "), hardware (" & Trim(Str(hwTopicCount)) & ")"
+    OpenHelpDocument("Mamute Assembler", "dbhelp:MAMUTE|docs\help\mamute.md")
+    If docs(activeDoc).lineCount < 100 Then
+        report = "SMOKE HELP FAIL: docs\help\mamute.md nao carregou (" & Trim(Str(docs(activeDoc).lineCount)) & " linhas)"
+        Return 0
+    End If
+
+    report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword & ", refdict biosdoc (" & Trim(Str(biosdocLineCount)) & " linhas), redbook (" & Trim(Str(rbTopicCount)) & " topicos/" & Trim(Str(rbGroupHeaders)) & " grupos, Ver tambem OK), msxmanuals (" & Trim(Str(mmTopicCount)) & " topicos, sem duplicata), openmsx (" & Trim(Str(omTopicCount)) & " topicos), nestorbasic/seetracker/msxbas2rom/editor/mamute OK, th2handbook (" & Trim(Str(thTopicCount)) & "), bioscalls (" & Trim(Str(bcTopicCount)) & "), hardware (" & Trim(Str(hwTopicCount)) & ")"
+    Return -1
+End Function
+
+' Diagnostico manual (--mamute-diag): le a configuracao REAL do msxide.db do
+' usuario (nao um banco descartavel), mostra o que MamuteMemGrid tem gravado
+' pra cada celula fisica, o mapeamento PAGE default calculado, e os
+' primeiros 16 bytes de cada uma das 4 paginas apos Mamute_LoadPhysicalMemory
+' - usado pra investigar "ROM configurada mas DM mostra so' zero".
+Function EditorRunMamuteDiag(ByRef report As String) As Integer
+    LoadMamuteMemConfig()
+
+    Dim diagOut As String = ""
+    Dim slot As Integer
+    Dim subIdx As Integer
+    Dim pageIdx As Integer
+
+    diagOut &= "=== VRAM: " & Trim(Str(MamuteVramKB)) & "KB ===" & Chr(10)
+    diagOut &= "=== Config fisica (MamuteMemGrid) - so celulas nao-vazias ===" & Chr(10)
+    Dim anyCell As Integer = 0
+    For slot = 0 To 3
+        diagOut &= "Slot " & Trim(Str(slot)) & ": subslots=" & IIf(MamuteMemSubOn(slot) <> 0, "ligados", "desligados") & Chr(10)
+        Dim maxSub As Integer = IIf(MamuteMemSubOn(slot) <> 0, 3, 0)
+        For subIdx = 0 To maxSub
+            For pageIdx = 0 To 3
+                Dim ByRef cell As MamuteMemCell = MamuteMemGrid(slot, subIdx, pageIdx)
+                If cell.cellType <> MAMUTE_CELL_NONE Then
+                    anyCell = -1
+                    diagOut &= "  Slot " & Trim(Str(slot)) & "." & Trim(Str(subIdx)) & " Pag." & Trim(Str(pageIdx)) & " = " & MamuteCellTypeLabel(cell.cellType) & " path=[" & cell.romPath & "] offset=" & Trim(Str(cell.romOffset))
+                    If Len(cell.romPath) > 0 Then
+                        Dim resolvedDiagPath As String = Mamute_ResolveRomPath(cell.romPath)
+                        diagOut &= " resolvido=[" & resolvedDiagPath & "] Dir()=" & IIf(Dir(resolvedDiagPath) <> "", "ACHOU", "NAO ACHOU") & " CurDir=[" & CurDir() & "]"
+                        If Dir(resolvedDiagPath) <> "" Then
+                            Dim ff2 As Integer = FreeFile
+                            Open resolvedDiagPath For Binary Access Read As #ff2
+                            diagOut &= " TamanhoArquivo=" & Trim(Str(Lof(ff2)))
+                            Close #ff2
+                        End If
+                    End If
+                    diagOut &= Chr(10)
+                End If
+            Next pageIdx
+        Next subIdx
+    Next slot
+    If anyCell = 0 Then diagOut &= "  (nenhuma celula configurada - tudo Vazio)" & Chr(10)
+
+    SetMamuteDefaultPageMapping()
+    diagOut &= "=== PAGE ativo calculado por SetMamuteDefaultPageMapping ===" & Chr(10)
+    Dim p As Integer
+    For p = 0 To 3
+        diagOut &= "Pag." & Trim(Str(p)) & " = Slot " & Trim(Str(MamuteActiveSlot(p))) & "." & Trim(Str(MamuteActiveSub(p))) & Chr(10)
+    Next p
+
+    Mamute_LoadPhysicalMemory()
+
+    diagOut &= "=== Primeiros 16 bytes de cada pagina (Mamute_ReadByte, PAGE ativo acima) ===" & Chr(10)
+    Dim baseAddrs(0 To 3) As Integer
+    baseAddrs(0) = &H0000 : baseAddrs(1) = &H4000 : baseAddrs(2) = &H8000 : baseAddrs(3) = &HC000
+    For p = 0 To 3
+        Dim lineText As String = "Pag." & Trim(Str(p)) & " (" & Hex(baseAddrs(p), 4) & "H): "
+        Dim i As Integer
+        For i = 0 To 15
+            lineText &= Hex(Mamute_ReadByte(baseAddrs(p) + i), 2) & " "
+        Next i
+        diagOut &= lineText & Chr(10)
+    Next p
+
+    diagOut &= "=== Teste de escrita/leitura via Mamute_WriteByte/Mamute_ReadByte direto ===" & Chr(10)
+    For p = 0 To 3
+        Dim testAddr As Integer = baseAddrs(p)
+        Dim canWrite As Integer = Mamute_CanWriteAt(testAddr)
+        Mamute_WriteByte(testAddr, &H77)
+        Dim readBack As Integer = Mamute_ReadByte(testAddr)
+        diagOut &= "Pag." & Trim(Str(p)) & " (" & Hex(testAddr, 4) & "H): CanWrite=" & IIf(canWrite <> 0, "SIM(RAM)", "NAO(nao-RAM)") & " escreveu 77H, releu " & Hex(readBack, 2) & "H" & Chr(10)
+    Next p
+
+    diagOut &= "=== Teste via ExecuteMamuteCommand (M 8000 FF, depois DM 8000) ===" & Chr(10)
+    Dim diagDoc As Document
+    diagDoc.lineCount = 1
+    diagDoc.lines(1) = ""
+    ExecuteMamuteCommand(diagDoc, "M 8000 FF")
+    ExecuteMamuteCommand(diagDoc, "DM 8000")
+    Dim di As Integer
+    For di = 1 To diagDoc.lineCount
+        If Len(diagDoc.lines(di)) > 0 Then diagOut &= "  > " & diagDoc.lines(di) & Chr(10)
+    Next di
+
+    report = diagOut
     Return -1
 End Function
 
@@ -7551,7 +10107,436 @@ Function EditorRunMamuteSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
-    report = "SMOKE MAMUTE OK: round-trip do mapa de memoria (ROM 32KB no Slot 0, sub-slots + RAM no Slot 2.3)"
+    ' Testa o preenchimento automatico de AssignMamuteRomFile com uma ROM de
+    ' 32KB de verdade (BIOS -> pag. seguinte vira BASIC; BASIC -> pag.
+    ' anterior vira BIOS; EXTBIOS nao particiona).
+    Dim tempRomPath As String = Environ("TEMP") & Chr(92) & "msxide_mamute_smoke_rom.bin"
+    Dim romFf As Integer = FreeFile
+    Open tempRomPath For Output As #romFf
+    Dim fillLine As String = String(1024, "X")
+    Dim fi As Integer
+    For fi = 1 To 32
+        Print #romFf, fillLine;
+    Next fi
+    Close #romFf
+
+    For slot = 0 To 3
+        MamuteMemSubOn(slot) = 0
+        For subIdx = 0 To 3
+            For pageIdx = 0 To 3
+                MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_NONE
+                MamuteMemGrid(slot, subIdx, pageIdx).romPath = ""
+                MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 0
+            Next pageIdx
+        Next subIdx
+    Next slot
+
+    Dim assignMsgTest As String
+    AssignMamuteRomFile(0, 0, 0, MAMUTE_CELL_BIOS, tempRomPath, assignMsgTest)
+    If MamuteMemGrid(0, 0, 0).cellType <> MAMUTE_CELL_BIOS Or MamuteMemGrid(0, 0, 0).romOffset <> 0 Then
+        Kill tempRomPath
+        report = "SMOKE MAMUTE FAIL: AssignMamuteRomFile(BIOS) nao marcou a pag.0 como BIOS offset 0"
+        Return 0
+    End If
+    If MamuteMemGrid(0, 0, 1).cellType <> MAMUTE_CELL_BASIC Or MamuteMemGrid(0, 0, 1).romOffset <> 16384 Then
+        Kill tempRomPath
+        report = "SMOKE MAMUTE FAIL: AssignMamuteRomFile(BIOS) nao preencheu a pag.1 seguinte como BASIC offset 16384"
+        Return 0
+    End If
+
+    Dim assignMsgTest2 As String
+    AssignMamuteRomFile(1, 0, 3, MAMUTE_CELL_BASIC, tempRomPath, assignMsgTest2)
+    If MamuteMemGrid(1, 0, 3).cellType <> MAMUTE_CELL_BASIC Or MamuteMemGrid(1, 0, 3).romOffset <> 16384 Then
+        Kill tempRomPath
+        report = "SMOKE MAMUTE FAIL: AssignMamuteRomFile(BASIC) nao marcou a pag.3 como BASIC offset 16384"
+        Return 0
+    End If
+    If MamuteMemGrid(1, 0, 2).cellType <> MAMUTE_CELL_BIOS Or MamuteMemGrid(1, 0, 2).romOffset <> 0 Then
+        Kill tempRomPath
+        report = "SMOKE MAMUTE FAIL: AssignMamuteRomFile(BASIC) nao preencheu a pag.2 anterior como BIOS offset 0 (inverso da BIOS)"
+        Return 0
+    End If
+
+    Dim assignMsgTest3 As String
+    AssignMamuteRomFile(3, 0, 1, MAMUTE_CELL_EXTBIOS, tempRomPath, assignMsgTest3)
+    If MamuteMemGrid(3, 0, 1).cellType <> MAMUTE_CELL_EXTBIOS Or MamuteMemGrid(3, 0, 1).romOffset <> 0 Then
+        Kill tempRomPath
+        report = "SMOKE MAMUTE FAIL: AssignMamuteRomFile(EXTBIOS) nao marcou a pag.1 como EXTBIOS offset 0"
+        Return 0
+    End If
+    If MamuteMemGrid(3, 0, 0).cellType <> MAMUTE_CELL_NONE Or MamuteMemGrid(3, 0, 2).cellType <> MAMUTE_CELL_NONE Then
+        Kill tempRomPath
+        report = "SMOKE MAMUTE FAIL: AssignMamuteRomFile(EXTBIOS) nao deveria particionar paginas vizinhas"
+        Return 0
+    End If
+
+    ' Tipo ROM tambem particiona (pag. atual continua ROM, a seguinte vira
+    ' BASIC), disparado a partir de qualquer arquivo maior que 16KB - nao so
+    ' os 32KB exatos.
+    Dim assignMsgTest4 As String
+    AssignMamuteRomFile(2, 0, 0, MAMUTE_CELL_ROM, tempRomPath, assignMsgTest4)
+    If MamuteMemGrid(2, 0, 0).cellType <> MAMUTE_CELL_ROM Or MamuteMemGrid(2, 0, 0).romOffset <> 0 Then
+        Kill tempRomPath
+        report = "SMOKE MAMUTE FAIL: AssignMamuteRomFile(ROM) nao manteve a pag.0 como ROM offset 0"
+        Return 0
+    End If
+    If MamuteMemGrid(2, 0, 1).cellType <> MAMUTE_CELL_BASIC Or MamuteMemGrid(2, 0, 1).romOffset <> 16384 Then
+        Kill tempRomPath
+        report = "SMOKE MAMUTE FAIL: AssignMamuteRomFile(ROM) nao preencheu a pag.1 seguinte como BASIC offset 16384"
+        Return 0
+    End If
+
+    Kill tempRomPath
+
+    ' Endereco de cada pagina de 16KB no espaco Z80 de 64KB.
+    If MamutePageAddrRange(0) <> "0000-3FFF" Or MamutePageAddrRange(1) <> "4000-7FFF" Or MamutePageAddrRange(2) <> "8000-BFFF" Or MamutePageAddrRange(3) <> "C000-FFFF" Then
+        report = "SMOKE MAMUTE FAIL: MamutePageAddrRange nao bateu com os enderecos Z80 esperados"
+        Return 0
+    End If
+
+    ' Round-trip do tamanho de VRAM.
+    MamuteVramKB = 64
+    SaveMamuteMemConfig()
+    MamuteVramKB = 999
+    LoadMamuteMemConfig()
+    If MamuteVramKB <> 64 Then
+        report = "SMOKE MAMUTE FAIL: VRAM nao voltou como 64KB apos reler"
+        Return 0
+    End If
+    If NextMamuteVramSize(16) <> 32 Or NextMamuteVramSize(32) <> 64 Or NextMamuteVramSize(64) <> 128 Or NextMamuteVramSize(128) <> 192 Or NextMamuteVramSize(192) <> 16 Then
+        report = "SMOKE MAMUTE FAIL: ciclo de tamanhos de VRAM (16/32/64/128/192) quebrado"
+        Return 0
+    End If
+
+    ' Testa SetMamuteDefaultPageMapping: Slot 0 tem BIOS/BASIC nas pag.0-1 (do
+    ' teste acima), Slot 2 sub 3 tem RAM nas pag.2-3 -> deve virar o PAGE
+    ' default (pag.0-1 = Slot 0, pag.2-3 = Slot 2.3).
+    MamuteMemSubOn(2) = -1
+    MamuteMemGrid(2, 3, 2).cellType = MAMUTE_CELL_RAM
+    MamuteMemGrid(2, 3, 3).cellType = MAMUTE_CELL_RAM
+
+    SetMamuteDefaultPageMapping()
+
+    If MamuteActiveSlot(0) <> 0 Or MamuteActiveSlot(1) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: PAGE default deveria ter pag.0/1 no Slot 0 (BIOS/BASIC)"
+        Return 0
+    End If
+    If MamuteActiveSlot(2) <> 2 Or MamuteActiveSub(2) <> 3 Then
+        report = "SMOKE MAMUTE FAIL: PAGE default deveria ter pag.2 no Slot 2.3 (RAM)"
+        Return 0
+    End If
+    If MamuteActiveSlot(3) <> 2 Or MamuteActiveSub(3) <> 3 Then
+        report = "SMOKE MAMUTE FAIL: PAGE default deveria ter pag.3 no Slot 2.3 (RAM)"
+        Return 0
+    End If
+
+    ' Testa o comando de terminal PAGE (ExecuteMamuteCommand) direto, sem
+    ' passar pelo teclado/console: "PAGE" sozinho joga as 4 paginas pro slot
+    ' com RAM; "PAGE X[,Y][,Z][,K]" muda so as paginas informadas, mantendo
+    ' as outras; "PAGE ?" imprime o dump completo; argumento fora de 0-3 vira
+    ' erro sem mudar nada.
+    For slot = 0 To 3
+        MamuteMemSubOn(slot) = 0
+        For subIdx = 0 To 3
+            For pageIdx = 0 To 3
+                MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_NONE
+                MamuteMemGrid(slot, subIdx, pageIdx).romPath = ""
+                MamuteMemGrid(slot, subIdx, pageIdx).romOffset = 0
+            Next pageIdx
+        Next subIdx
+    Next slot
+    MamuteMemGrid(1, 0, 0).cellType = MAMUTE_CELL_RAM
+    MamuteMemGrid(1, 0, 1).cellType = MAMUTE_CELL_RAM
+    MamuteMemGrid(1, 0, 2).cellType = MAMUTE_CELL_RAM
+    MamuteMemGrid(1, 0, 3).cellType = MAMUTE_CELL_RAM
+    SaveMamuteMemConfig()
+
+    Dim testDoc As Document
+    testDoc.lineCount = 1
+    testDoc.lines(1) = ""
+    Dim pp2 As Integer
+    For pp2 = 0 To 3
+        MamuteActiveSlot(pp2) = 0
+        MamuteActiveSub(pp2) = 0
+    Next pp2
+
+    ExecuteMamuteCommand(testDoc, "PAGE")
+    If MamuteActiveSlot(0) <> 1 Or MamuteActiveSlot(1) <> 1 Or MamuteActiveSlot(2) <> 1 Or MamuteActiveSlot(3) <> 1 Then
+        report = "SMOKE MAMUTE FAIL: PAGE (sem args) deveria mapear as 4 paginas pro Slot 1 (RAM)"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "PAGE 2")
+    If MamuteActiveSlot(0) <> 2 Then
+        report = "SMOKE MAMUTE FAIL: PAGE 2 deveria mudar so a pag.0 pro Slot 2"
+        Return 0
+    End If
+    If MamuteActiveSlot(1) <> 1 Or MamuteActiveSlot(2) <> 1 Or MamuteActiveSlot(3) <> 1 Then
+        report = "SMOKE MAMUTE FAIL: PAGE 2 nao deveria mexer nas pags.1-3"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "PAGE ,,2")
+    If MamuteActiveSlot(2) <> 2 Then
+        report = "SMOKE MAMUTE FAIL: PAGE ,,2 deveria mudar so a pag.2 pro Slot 2"
+        Return 0
+    End If
+    If MamuteActiveSlot(0) <> 2 Or MamuteActiveSlot(1) <> 1 Or MamuteActiveSlot(3) <> 1 Then
+        report = "SMOKE MAMUTE FAIL: PAGE ,,2 nao deveria mexer nas pags.0,1,3"
+        Return 0
+    End If
+
+    Dim linesBeforeBad As Integer = testDoc.lineCount
+    ExecuteMamuteCommand(testDoc, "PAGE 9")
+    If testDoc.lineCount <> linesBeforeBad + 1 Or InStr(testDoc.lines(testDoc.lineCount), "ARGUMENTO INVALIDO") = 0 Then
+        report = "SMOKE MAMUTE FAIL: PAGE 9 deveria reportar ?ARGUMENTO INVALIDO sem mudar nada"
+        Return 0
+    End If
+    If MamuteActiveSlot(0) <> 2 Then
+        report = "SMOKE MAMUTE FAIL: PAGE 9 (invalido) nao deveria ter mudado a pag.0"
+        Return 0
+    End If
+
+    Dim linesBeforeDump As Integer = testDoc.lineCount
+    ExecuteMamuteCommand(testDoc, "PAGE ?")
+    If testDoc.lineCount < linesBeforeDump + 5 Then
+        report = "SMOKE MAMUTE FAIL: PAGE ? deveria imprimir o dump completo (varias linhas)"
+        Return 0
+    End If
+
+    For slot = 0 To 3
+        For subIdx = 0 To 3
+            For pageIdx = 0 To 3
+                MamuteMemGrid(slot, subIdx, pageIdx).cellType = MAMUTE_CELL_NONE
+            Next pageIdx
+        Next subIdx
+    Next slot
+    SaveMamuteMemConfig()
+    Dim linesBeforeNoRam As Integer = testDoc.lineCount
+    ExecuteMamuteCommand(testDoc, "PAGE")
+    If testDoc.lineCount <> linesBeforeNoRam + 1 Or InStr(testDoc.lines(testDoc.lineCount), "SEM RAM") = 0 Then
+        report = "SMOKE MAMUTE FAIL: PAGE sem RAM configurada deveria reportar ?SEM RAM CONFIGURADA"
+        Return 0
+    End If
+
+    ' Testa o disassembler Z80 (MamuteDisasmLine) contra os proprios exemplos
+    ' verbatim do HELP (PUSH HL / CALL 5439H / LD B,H) mais alguns casos que
+    ' cobrem prefixos DD/CB/ED e desvio relativo.
+    MamuteActiveSlot(0) = 0 : MamuteActiveSub(0) = 0
+    MamuteMem(0, 0, 0, &H100) = &HE5              ' PUSH HL
+    MamuteMem(0, 0, 0, &H101) = &HCD               ' CALL 5439H
+    MamuteMem(0, 0, 0, &H102) = &H39
+    MamuteMem(0, 0, 0, &H103) = &H54
+    MamuteMem(0, 0, 0, &H104) = &H44               ' LD B,H
+    MamuteMem(0, 0, 0, &H105) = &HDD               ' LD IX,4000H
+    MamuteMem(0, 0, 0, &H106) = &H21
+    MamuteMem(0, 0, 0, &H107) = &H00
+    MamuteMem(0, 0, 0, &H108) = &H40
+    MamuteMem(0, 0, 0, &H109) = &HCB               ' RLC B
+    MamuteMem(0, 0, 0, &H10A) = &H00
+    MamuteMem(0, 0, 0, &H10B) = &HED               ' LDIR
+    MamuteMem(0, 0, 0, &H10C) = &HB0
+    MamuteMem(0, 0, 0, &H10D) = &H18               ' JR $+0 (desloc -2 -> volta pro proprio JR)
+    MamuteMem(0, 0, 0, &H10E) = &HFE
+    MamuteMem(0, 0, 0, &H10F) = &HDD               ' BIT 0,(IX+05H)
+    MamuteMem(0, 0, 0, &H110) = &HCB
+    MamuteMem(0, 0, 0, &H111) = &H05
+    MamuteMem(0, 0, 0, &H112) = &H46
+
+    Dim disasmLen As Integer
+    Dim disasmText As String
+
+    MamuteDisasmOne(&H100, disasmLen, disasmText)
+    If disasmLen <> 1 Or disasmText <> "PUSH HL" Then
+        report = "SMOKE MAMUTE FAIL: disassembler E5 deveria ser PUSH HL/1 byte, veio '" & disasmText & "'/" & Trim(Str(disasmLen))
+        Return 0
+    End If
+
+    MamuteDisasmOne(&H101, disasmLen, disasmText)
+    If disasmLen <> 3 Or disasmText <> "CALL 5439H" Then
+        report = "SMOKE MAMUTE FAIL: disassembler CD 39 54 deveria ser CALL 5439H/3 bytes, veio '" & disasmText & "'/" & Trim(Str(disasmLen))
+        Return 0
+    End If
+
+    MamuteDisasmOne(&H104, disasmLen, disasmText)
+    If disasmLen <> 1 Or disasmText <> "LD B,H" Then
+        report = "SMOKE MAMUTE FAIL: disassembler 44 deveria ser LD B,H/1 byte, veio '" & disasmText & "'/" & Trim(Str(disasmLen))
+        Return 0
+    End If
+
+    MamuteDisasmOne(&H105, disasmLen, disasmText)
+    If disasmLen <> 4 Or disasmText <> "LD IX,4000H" Then
+        report = "SMOKE MAMUTE FAIL: disassembler DD 21 00 40 deveria ser LD IX,4000H/4 bytes, veio '" & disasmText & "'/" & Trim(Str(disasmLen))
+        Return 0
+    End If
+
+    MamuteDisasmOne(&H109, disasmLen, disasmText)
+    If disasmLen <> 2 Or disasmText <> "RLC B" Then
+        report = "SMOKE MAMUTE FAIL: disassembler CB 00 deveria ser RLC B/2 bytes, veio '" & disasmText & "'/" & Trim(Str(disasmLen))
+        Return 0
+    End If
+
+    MamuteDisasmOne(&H10B, disasmLen, disasmText)
+    If disasmLen <> 2 Or disasmText <> "LDIR" Then
+        report = "SMOKE MAMUTE FAIL: disassembler ED B0 deveria ser LDIR/2 bytes, veio '" & disasmText & "'/" & Trim(Str(disasmLen))
+        Return 0
+    End If
+
+    MamuteDisasmOne(&H10D, disasmLen, disasmText)
+    If disasmLen <> 2 Or disasmText <> "JR 010DH" Then
+        report = "SMOKE MAMUTE FAIL: disassembler 18 FE deveria ser JR 010DH (salta pra si mesmo)/2 bytes, veio '" & disasmText & "'/" & Trim(Str(disasmLen))
+        Return 0
+    End If
+
+    MamuteDisasmOne(&H10F, disasmLen, disasmText)
+    If disasmLen <> 4 Or disasmText <> "BIT 0,(IX+05H)" Then
+        report = "SMOKE MAMUTE FAIL: disassembler DD CB 05 46 deveria ser BIT 0,(IX+05H)/4 bytes, veio '" & disasmText & "'/" & Trim(Str(disasmLen))
+        Return 0
+    End If
+
+    If MamuteDisasmLine(&H100) <> "0100  E5           PUSH HL" Then
+        report = "SMOKE MAMUTE FAIL: MamuteDisasmLine nao bateu com o formato de linha esperado, veio '" & MamuteDisasmLine(&H100) & "'"
+        Return 0
+    End If
+
+    ' Testa os comandos de terminal que so' precisam de memoria simulada (sem
+    ' dialogo de arquivo): F, T, MS, SH (bytes/curinga/texto), C+D, G, X.
+    activeDoc = 1
+    Mamute_ResetRegs()
+    MamuteMemGrid(0, 0, 0).cellType = MAMUTE_CELL_RAM
+    MamuteActiveSlot(0) = 0 : MamuteActiveSub(0) = 0
+
+    ExecuteMamuteCommand(testDoc, "F 0100,010F,AA")
+    If Mamute_ReadByte(&H100) <> &HAA Or Mamute_ReadByte(&H10F) <> &HAA Then
+        report = "SMOKE MAMUTE FAIL: F 0100,010F,AA nao preencheu o bloco com AA"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "T 0100,010F,0200")
+    If Mamute_ReadByte(&H200) <> &HAA Or Mamute_ReadByte(&H20F) <> &HAA Then
+        report = "SMOKE MAMUTE FAIL: T 0100,010F,0200 nao copiou o bloco pra 0200"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "MS 0300,,'AB")
+    If Mamute_ReadByte(&H300) <> Asc("A") Or Mamute_ReadByte(&H301) <> Asc("B") Then
+        report = "SMOKE MAMUTE FAIL: MS 0300,,'AB nao gravou 'AB' em 0300"
+        Return 0
+    End If
+
+    Dim linesBeforeSh As Integer = testDoc.lineCount
+    ExecuteMamuteCommand(testDoc, "SH 0300,41,42")
+    If testDoc.lineCount <> linesBeforeSh + 1 Or testDoc.lines(testDoc.lineCount) <> "ACHADO EM 0300H" Then
+        report = "SMOKE MAMUTE FAIL: SH 0300,41,42 deveria achar em 0300H, veio '" & testDoc.lines(testDoc.lineCount) & "'"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "SH 0300,,42")
+    If testDoc.lines(testDoc.lineCount) <> "ACHADO EM 0300H" Then
+        report = "SMOKE MAMUTE FAIL: SH 0300,,42 (byte curinga) deveria achar em 0300H, veio '" & testDoc.lines(testDoc.lineCount) & "'"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "SH 0300,'AB")
+    If testDoc.lines(testDoc.lineCount) <> "ACHADO EM 0300H DESLOC +00H" Then
+        report = "SMOKE MAMUTE FAIL: SH 0300,'AB (modo texto) deveria achar em 0300H deslocamento +00H, veio '" & testDoc.lines(testDoc.lineCount) & "'"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "C 1")
+    If MamuteDisplayMode <> 1 Or testDoc.lines(testDoc.lineCount) <> "MODO 1: HEXA+ASCII, 16 BYTES/LINHA" Then
+        report = "SMOKE MAMUTE FAIL: C 1 nao selecionou o modo 1 corretamente"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "D 0100,0107")
+    If Left(testDoc.lines(testDoc.lineCount), 30) <> "0100: AA AA AA AA AA AA AA AA " Then
+        report = "SMOKE MAMUTE FAIL: D 0100,0107 nao bateu com o dump esperado, veio '" & testDoc.lines(testDoc.lineCount) & "'"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "G 4000")
+    If testDoc.lines(testDoc.lineCount - 1) <> "G 4000H" Then
+        report = "SMOKE MAMUTE FAIL: G 4000 deveria confirmar 'G 4000H', veio '" & testDoc.lines(testDoc.lineCount - 1) & "'"
+        Return 0
+    End If
+    ExecuteMamuteCommand(testDoc, "G ZZZZ")
+    If testDoc.lines(testDoc.lineCount) <> "?ERRO DE SINTAXE" Then
+        report = "SMOKE MAMUTE FAIL: G ZZZZ (endereco invalido) deveria dar ?ERRO DE SINTAXE"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "X")
+    If testDoc.lines(testDoc.lineCount - 1) <> "AF=0000 BC=0000 DE=0000 HL=0000" Or testDoc.lines(testDoc.lineCount) <> "IX=0000 IY=0000 SP=0000" Then
+        report = "SMOKE MAMUTE FAIL: X (sem args) deveria despejar os 7 registradores zerados"
+        Return 0
+    End If
+
+    ExecuteMamuteCommand(testDoc, "X BC")
+    If MamuteXWalking(activeDoc) <> 1 Or MamuteXRegName(MamuteXWalking(activeDoc), MamuteXWalkIdx(activeDoc)) <> "BC" Then
+        report = "SMOKE MAMUTE FAIL: X BC deveria entrar no modo de caminhada no par BC"
+        Return 0
+    End If
+    Dim xWalkVal As String = "1234"
+    Mamute_ContinueXWalk(testDoc, xWalkVal)
+    If MamuteRegBC <> &H1234 Then
+        report = "SMOKE MAMUTE FAIL: X BC + '1234' deveria gravar BC=1234H, veio " & Hex(MamuteRegBC, 4)
+        Return 0
+    End If
+    If MamuteXWalking(activeDoc) <> 1 Or MamuteXRegName(MamuteXWalking(activeDoc), MamuteXWalkIdx(activeDoc)) <> "DE" Then
+        report = "SMOKE MAMUTE FAIL: apos editar BC, a caminhada deveria avancar pro proximo par (DE)"
+        Return 0
+    End If
+    Dim xWalkBlank As String = ""
+    Dim walkStep As Integer
+    For walkStep = 1 To 5
+        Mamute_ContinueXWalk(testDoc, xWalkBlank)
+    Next walkStep
+    If MamuteXWalking(activeDoc) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: a caminhada de X deveria terminar sozinha apos passar por todos os pares"
+        Return 0
+    End If
+
+    ' Testa que M/S/MS/T/F avisam quando o destino nao e RAM agora (bug real
+    ' relatado: escrita silenciosa numa pagina Vazia/ROM deixava parecer que
+    ' o comando nao fez nada, sem explicar por que).
+    MamuteMemGrid(1, 0, 0).cellType = MAMUTE_CELL_NONE
+    MamuteActiveSlot(1) = 1 : MamuteActiveSub(1) = 0
+    ExecuteMamuteCommand(testDoc, "M 4000 FF")
+    If InStr(testDoc.lines(testDoc.lineCount), "AVISO") = 0 Then
+        report = "SMOKE MAMUTE FAIL: M numa pagina nao-RAM deveria avisar que a escrita nao teve efeito"
+        Return 0
+    End If
+    If Mamute_ReadByte(&H4000) <> 0 Then
+        report = "SMOKE MAMUTE FAIL: M numa pagina nao-RAM nao deveria ter alterado o byte"
+        Return 0
+    End If
+
+    ' Testa a regressao real desta sessao: EnsureCursorVisible (chamada a
+    ' cada tecla em EditorHandleKey) nao pode "puxar" a rolagem do terminal
+    ' de volta pro topo depois de um comando encher a tela - o terminal so'
+    ' usa d.scrollY (via AppendMamuteLine), nunca d.cursorX/d.cursorY.
+    EditorCreateMamuteTerm()
+    Dim mamDocIdx As Integer = docCount
+    Dim runningDummy As Integer = 1
+    Dim menuOpenDummy As Integer = 0
+    Dim enterKey As String = Chr(13)
+    Dim scrollStep As Integer
+    For scrollStep = 1 To 40
+        mamuteInputBuf(mamDocIdx) = "PAGE ?"
+        EditorHandleKey(enterKey, runningDummy, menuOpenDummy)
+    Next scrollStep
+    Dim expectedScrollY As Integer = GetMaxScrollY(docs(mamDocIdx))
+    If expectedScrollY <= 0 Then
+        report = "SMOKE MAMUTE FAIL: teste de rolagem nao encheu a tela o suficiente pra ser um teste valido"
+        Return 0
+    End If
+    If docs(mamDocIdx).scrollY <> expectedScrollY Then
+        report = "SMOKE MAMUTE FAIL: apos Enter enchendo a tela, scrollY=" & Trim(Str(docs(mamDocIdx).scrollY)) & " deveria ser " & Trim(Str(expectedScrollY)) & " (EnsureCursorVisible prendendo a rolagem no topo)"
+        Return 0
+    End If
+
+    report = "SMOKE MAMUTE OK: round-trip do mapa de memoria (ROM 32KB no Slot 0, sub-slots + RAM no Slot 2.3), AssignMamuteRomFile (BIOS/BASIC/ROM/EXTBIOS), PAGE default, enderecos de pagina, VRAM (64KB + ciclo 16-192), comando PAGE (sem args/posicional/?/erro), disassembler Z80 (plain/DD/CB/ED/DD+CB/JR), comandos F/T/MS/SH/C/D/G/X, aviso de escrita nao-RAM e rolagem automatica do terminal"
     Return -1
 End Function
 

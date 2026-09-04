@@ -1,2 +1,2 @@
-Const MSXIDE_VERSION_STR As String = "0.1.3"
+Const MSXIDE_VERSION_STR As String = "0.1.22"
 Const MSXIDE_RELEASE_CODENAME As String = "MAMUTE.SYS"

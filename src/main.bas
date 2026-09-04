@@ -11,6 +11,7 @@ Dim argIndex As Integer
 Dim hasArgs As Integer = 0
 Dim runHelpSmoke As Integer = 0
 Dim runMamuteSmoke As Integer = 0
+Dim runMamuteDiag As Integer = 0
 Dim needsRedraw As Integer = 1
 Dim inputType As Integer
 Dim mouseX As Integer
@@ -25,6 +26,8 @@ If Len(argText) > 0 Then
         runHelpSmoke = -1
     ElseIf LCase(argText) = "--smoke-mamute" Then
         runMamuteSmoke = -1
+    ElseIf LCase(argText) = "--mamute-diag" Then
+        runMamuteDiag = -1
     End If
 End If
 
@@ -46,7 +49,7 @@ Else
 End If
 
 If hasArgs <> 0 Then
-    If runHelpSmoke = 0 And runMamuteSmoke = 0 Then
+    If runHelpSmoke = 0 And runMamuteSmoke = 0 And runMamuteDiag = 0 Then
         EditorOpenFromPath(argText)
         argIndex += 1
         While Len(Command(argIndex)) > 0
@@ -83,6 +86,16 @@ If runMamuteSmoke <> 0 Then
     Else
         End 1
     End If
+End If
+
+If runMamuteDiag <> 0 Then
+    Dim diagReport As String
+    EditorRunMamuteDiag(diagReport)
+    Print diagReport
+    EditorSaveAllToDb()
+    DbShutdown()
+    EditorShutdown()
+    End 0
 End If
 
 Do While running <> 0
