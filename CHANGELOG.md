@@ -2,6 +2,60 @@
 
 Todas as mudanças notáveis do msxIDE são registradas aqui. Formato livre, em português, por versão.
 
+## [0.3.0] — "MAMUTE.PRN" — 2026-09-06
+
+O mamute começa a incorporar o **SUPER-X**, o segundo monitor/debugger clássico de MSX que inspira a
+outra metade do Mamute Assembler, e ganha uma **impressora virtual de verdade** — nome da versão é um
+trocadilho com `PRN`, o nome de dispositivo reservado da impressora no MS-DOS clássico.
+
+### Adicionado
+
+- **Endereçamento estendido do SUPER-X**: qualquer endereço pode levar um sufixo
+  `#<slot>[-<subslot>]`/`#V`/`#4`/`#S`/`#5` pra mirar um slot/sub-slot físico específico ou a VRAM
+  plana (até 192KB, não restrita a 64KB), ignorando o mapeamento `PAGE` ativo — a base que todo comando
+  novo do SUPER-X usa daqui pra frente.
+- **`XCL`**: calculadora HEX/BIN/DEC/octal com precedência de operadores clássica e parênteses —
+  primeiro comando portado do SUPER-X (convenção adotada: todo comando SUPER-X leva o prefixo `X`, pra
+  não colidir com os comandos já existentes do MegaAssembler).
+- **`XD`**: despejo de memória com o endereçamento estendido completo — `XD <inicial>[,<final>][,SAVE]`.
+- **`XF`**: escolhe o formato de exibição do `XD` — `D` (hexa+ASCII clássico), `C` (matriz de pixels
+  16x16, porta do modo "Char" do SUPER-X), `A` (só ASCII), `I` (só o mnemônico) ou `M` (endereço+bytes+
+  mnemônico completo).
+- **`XA`**/**`XI`**: versões dedicadas do despejo ASCII e da listagem disassemblada como comandos
+  próprios (mesma sintaxe `<inicial>[,<final>][,SAVE]` do `XD`), independentes do formato atual de `XF`.
+- **Impressora virtual com PDF real**: `P`/`V`/`LP` (e, dentro do `EDIT`, `LSEARCH`/`A P`/`A H`) agora
+  geram um `.pdf` de verdade — montado à mão, sem biblioteca nenhuma — em vez de texto simples, e o PDF
+  já abre sozinho no visualizador padrão do Windows.
+  - **Prefixo `?`**: qualquer comando do Mamute que não dependa de mais interação (`PAGE`, `D`, `SH`,
+    `XD`, `XCL`, etc. — das duas famílias) aceita `?` na frente pra mandar o resultado direto pro PDF em
+    vez da tela.
+  - **`Configurar -> Impressora`**: papel **A4** (margem de 1cm nos 4 lados) ou **contínuo** (formulário
+    CPD picotado, 9.5x11 polegadas, sempre 66 linhas/formulário), fonte **Normal**/**Condensada**
+    (densidade real de impressora matricial, muda quantas colunas cabem por linha), zebrado
+    **Verde**/**Azul** linha a linha cobrindo o formulário inteiro, furos redondos nas margens e uma
+    linha picotada tracejada simulando a dobra entre formulários a cada 66 linhas.
+- Ajuda do Mamute Assembler (`docs/help/mamute.md`) reorganizada em duas famílias claras -
+  `## Comandos do MegaAssembler` e `## Comandos do SUPER-X` - com uma seção nova `## Impressora Virtual`
+  explicando o prefixo `?` e a configuração de papel.
+- Testes headless (`--smoke-mamute`) expandidos com dezenas de novas asserções pra cada peça acima,
+  incluindo checagem estrutural do PDF gerado (`%PDF-1.4`, `/MediaBox`, operadores de zebrado/furos) e
+  verificação A/B real (quebra deliberada + confirmação de que o teste pega) pros trechos mais
+  arriscados (endereçamento por sub-slot, layout do papel contínuo, formatos do `XF`).
+
+### Corrigido
+
+- **Edições em `docs/help/*.md` não apareciam na Ajuda depois da primeira vez que o tópico era aberto**:
+  `Ajuda -> Mamute`/Editor/Nestor Basic/SEE Tracker/MSXBAS2ROM carregavam o markdown uma vez e guardavam
+  pra sempre no banco local (`DbGetHelpDoc`), nunca relendo o arquivo — agora esses 5 documentos são
+  ressemeados do disco a cada abertura do msxIDE, igual os 3 documentos vendorizados do Basic Dignified
+  já faziam.
+
+### Créditos desta versão
+
+Ver a seção "Agradecimentos" em [README.md](README.md#agradecimentos).
+
+---
+
 ## [0.2.0] — "MAMUTE.COM" — 2026-09-04
 
 O mamute aprendeu a montar sozinho: o Mamute Assembler sai do "início" e vira um monitor Z80 completo,

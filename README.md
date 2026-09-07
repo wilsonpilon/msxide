@@ -2,7 +2,7 @@
 
 ![msxIDE](images/msxide.png)
 
-**v0.2.0 — "MAMUTE.COM"** — *o mamute aprendeu a montar sozinho.*
+**v0.3.0 — "MAMUTE.PRN"** — *o mamute aprendeu a imprimir e virou meio debugger SUPER-X.*
 
 Um ambiente de desenvolvimento em modo texto (TUI) para MSX BASIC e Z80 Assembly, escrito em
 FreeBASIC. Inspirado nas ferramentas clássicas de MS-DOS (EDIT, QuickBasic) e nos monitores/assemblers
@@ -37,8 +37,12 @@ interativos da era 8-bit do MSX.
   `NEW`/`DELETE`/`RENUM`/`CHANGE`/`SEARCH`/`LSEARCH`/`SAVE`/`LOAD`/`MERGE`) que monta o programa de
   verdade com um **assembler Z80 nativo** (compatível M80/Nestor80, todos os modos de endereçamento
   documentados e indocumentados) através do comando `A` (grava na RAM simulada, gera listagem/referência
-  cruzada/lista de símbolos, exporta binário `BSAVE`). Detalhes em
-  [SPEC.md](SPEC.md#2-módulo-mamute-assembler).
+  cruzada/lista de símbolos, exporta binário `BSAVE`). O Mamute também começou a incorporar o
+  **SUPER-X**, o segundo monitor clássico de MSX (endereçamento estendido por slot/sub-slot/VRAM,
+  `XCL`/`XD`/`XA`/`XI`/`XF`), e ganhou uma **impressora virtual** de verdade: `P`/`V`/`LP` e qualquer
+  comando prefixado com `?` geram um PDF real (papel A4 ou formulário contínuo picotado/zebrado,
+  configurável em `Configurar -> Impressora`), que já abre sozinho no visualizador padrão do Windows.
+  Detalhes em [SPEC.md](SPEC.md#2-módulo-mamute-assembler).
 
 ## Ferramentas usadas neste projeto
 

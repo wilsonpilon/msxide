@@ -4,10 +4,11 @@ Referência do monitor `MON>` do Mamute Assembler - o mesmo texto de ajuda escri
 o Mamute Assembler no paleobasic (a IDE PureBasic que serviu de inspiração/fonte deste projeto), adaptado
 apenas na formatação para o visualizador de ajuda do msxIDE. Como o msxIDE é uma TUI (não uma GUI com
 janelas/mouse/diálogos do Windows), alguns comandos aqui descritos com janela própria, grade de edição
-ao vivo, PDF de impressora ou teclado numérico remapeável foram implementados de forma **simplificada,
-mas funcional**, dentro do terminal `MON>` - a saída real de cada comando (mensagens `?ERRO DE SINTAXE`,
-`ACHADO EM`, `GRAVADO EM`, etc.) é o que efetivamente roda no msxIDE hoje; o texto abaixo permanece como
-a documentação original, sem cortes.
+ao vivo ou teclado numérico remapeável foram implementados de forma **simplificada, mas funcional**,
+dentro do terminal `MON>` - a saída real de cada comando (mensagens `?ERRO DE SINTAXE`, `ACHADO EM`,
+`GRAVADO EM`, etc.) é o que efetivamente roda no msxIDE hoje; o texto abaixo permanece como a
+documentação original, sem cortes. A **impressora virtual** (`## Impressora Virtual`, logo abaixo) já
+gera PDF de verdade, sem simplificação nenhuma.
 
 ## Introdução
 
@@ -20,11 +21,21 @@ Fundo preto, texto monoespaçado verde: visual deliberadamente diferente do rest
 terminal de verdade daquela época, não um diálogo moderno.
 
 **Não é o Editor Hexa nem os assemblers já existentes** (Basic Dignified, asMSX) - é uma ferramenta à
-parte, com seu próprio pequeno conjunto de comandos. Comandos disponíveis: **BA / QUIT**, **PAGE**,
-**DM**, **ZAP**, **SCR**, **SH**, **MS**, **LOAD**, **SAVE**, **M**, **S**, **C**, **D**, **P**, **V**,
-**T**, **F**, **G**, **X**, **R**, **EDIT**, **L**, **LP** (**G** e **R** ainda só validam a sintaxe e confirmam no
-log - a execução de programas e o carregamento de assemblados ficam pra uma fase futura). **Os
-endereços/setores digitados em qualquer comando são sempre em hexadecimal** - o padrão de entrada do
+parte, com seu próprio pequeno conjunto de comandos, dividido em **duas famílias** (ver as seções
+`## Comandos do MegaAssembler` e `## Comandos do SUPER-X` logo abaixo, cada comando com sua própria
+subseção):
+
+- **MegaAssembler** - o assembler de linha de comando original que inspirou este terminal `MON>`:
+  **BA / QUIT**, **PAGE**, **DM**, **ZAP**, **SCR**, **SH**, **MS**, **LOAD**, **SAVE**, **M**, **S**,
+  **C**, **D**, **P**, **V**, **T**, **F**, **G**, **X**, **R**, **L**, **LP**, **EDIT**, **CLS** (**G** e
+  **R** ainda só validam a sintaxe e confirmam no log - a execução de programas e o carregamento de
+  assemblados ficam pra uma fase futura).
+- **SUPER-X** - um segundo monitor/debugger clássico de MSX sendo incorporado aos poucos, comando por
+  comando, todos com o prefixo `X`: **XCL** (calculadora), **XD**/**XF** (despejo de memória com
+  endereçamento estendido + seletor de formato), **XA** (listagem ASCII), **XI** (listagem
+  disassemblada) - já implementados, o resto do roteiro está na seção `## Comandos do SUPER-X`.
+
+**Os endereços/setores digitados em qualquer comando são sempre em hexadecimal** - o padrão de entrada do
 Mamute Assembler inteiro.
 
 O Mamute Assembler simula o **sistema de slots do MSX de verdade**: 4 slots (0-3), cada um com 4 páginas
@@ -39,7 +50,62 @@ A mesma tela de configuração também define o **tamanho da VRAM simulada** (16
 usada pelo comando `V`) - endereço plano, sem banco/página, já que a VRAM de um MSX de verdade nunca
 fica mapeada no espaço de endereços do Z80 (é acessada pelas portas do VDP).
 
-## BA / QUIT
+`Configurar -> Impressora` define o **papel da impressora virtual** (A4 ou contínuo/zebrado) usado por
+`P`/`V`/`LP` e por qualquer comando prefixado com `?` - ver `## Impressora Virtual` logo abaixo.
+
+## Impressora Virtual
+
+O Mamute Assembler tem uma impressora virtual de verdade: qualquer listagem (dump de memória,
+disassembly, calculadora, etc.) pode virar um **arquivo PDF real** em vez de só aparecer no log da
+tela - um diálogo pede o nome do arquivo, o PDF é gerado na hora, e (se `Configurar -> Impressora ->
+Abrir PDF automatico` estiver ligado, o padrão) já abre sozinho no visualizador de PDF padrão do
+Windows.
+
+**Duas formas de imprimir:**
+
+- **Comandos dedicados** `P`, `V`, `LP` (e, dentro do `EDIT`, `LSEARCH`/`A P`/`A H`) - sempre perguntam o
+  nome do arquivo `.pdf` e gravam, nunca mostram nada na tela.
+- **Prefixo `?`** na frente de QUALQUER outro comando do Mamute que não dependa de mais interação depois
+  de rodar (das duas famílias, MegaAssembler e SUPER-X) - em vez de mostrar o resultado no log, pede o
+  nome do `.pdf` e imprime aquele resultado. Exemplo: `?D 4000,4010` imprime o mesmo despejo que `D
+  4000,4010` mostraria na tela. Comandos que suportam `?`: `PAGE`, `DM`, `ZAP`, `SCR`, `SH`, `MS`, `C`,
+  `D`, `T`, `F`, `G`, `R`, `L`, `X` (só sem argumento - com argumento entra no modo de edição de
+  registrador, que é interativo), `XCL`, `XD`, `XA` e `XI`. Comandos que **não** suportam (mostram `?IMPRESSAO
+  NAO APLICAVEL A ESTE COMANDO`): `BA`/`QUIT`, `CLS`, `LOAD`, `SAVE`, `M`/`S` sem argumento (abrem uma
+  grade viva), `EDIT`, `HELP`, `X` com argumento, e `P`/`V`/`LP` (já são comandos de impressão, prefixar
+  com `?` não faz sentido). Convenção herdada do manual original do SUPER-X (`?D0 100` = "mostra na tela
+  E na impressora"), mas estendida aqui pra qualquer comando não-interativo das duas famílias, não só os
+  portados do SUPER-X.
+
+**`Configurar -> Impressora`:**
+
+- **Papel** - `A4` (210x297mm, margem de 1cm nos 4 lados) ou `Continuo` (formulário CPD picotado,
+  9.5x11 polegadas de carro estreito, **sempre 66 linhas por formulário** - limite físico do papel, não
+  muda com a fonte escolhida).
+- **Fonte** - `Normal` (10 caracteres por polegada) ou `Condensada` (17 caracteres por polegada, quase o
+  dobro de colunas por linha) - mesma nomenclatura de densidade de uma impressora matricial de verdade.
+  No papel A4 a fonte também define o espaçamento entre linhas; no papel contínuo o espaçamento vertical
+  é sempre fixo (pra manter as 66 linhas/formulário), só a largura de cada caractere muda.
+- **Zebrado** - `Verde` ou `Azul`, a cor das faixas alternadas **linha a linha** (1 colorida, 1 em
+  branco) no papel contínuo, igual ao formulário original - não aparece no A4. A faixa cobre o
+  **formulário inteiro** (todas as 65 linhas de conteúdo), não só as linhas que têm texto de verdade -
+  igual o papel picotado real, que já vem impresso assim de fábrica.
+- **Abrir PDF automatico** - liga/desliga abrir o PDF gerado sozinho no visualizador padrão do Windows
+  (ligado por padrão).
+
+O papel contínuo também desenha os furos redondos clássicos nas duas margens laterais, espaçados a cada
+meio polegada (o passo real de papel picotado com tração lateral), e uma **linha picotada tracejada**
+simulando a dobra/rasgo entre formulários contíguos a cada 66 linhas (uma página do PDF já é um
+formulário inteiro, então a marca fica na borda inferior de cada página).
+
+## Comandos do MegaAssembler
+
+Os comandos abaixo vêm do **MegaAssembler** original, o montador de linha de comando de 8 bits que
+inspirou diretamente este terminal `MON>` - resolvem sempre pelo mapeamento `PAGE` ativo agora (nunca
+por um sufixo de slot/sub-slot/VRAM explícito, esse esquema é exclusivo dos comandos do `## Comandos do
+SUPER-X`, mais abaixo).
+
+### BA / QUIT
 
 Encerra a janela do Mamute Assembler - equivalente a fechar pelo X da janela. Sem argumentos, funciona
 em qualquer um dos dois nomes (não diferencia maiúsculas de minúsculas).
@@ -58,7 +124,7 @@ MON>QUIT
 
 Qualquer outra entrada não reconhecida ainda mostra `?COMANDO INVALIDO`.
 
-## PAGE
+### PAGE
 
 Mostra ou troca o **mapeamento ativo agora mesmo**: pra cada uma das 4 páginas que o Z80 enxerga (0-3),
 qual dos 4 slots físicos (`Configurar -> Mamute (Memória)`) está comutado ali - exatamente como o
@@ -105,7 +171,7 @@ muda só a página 2 pro slot 2, deixando as demais como estavam. Depois de apli
 mostrado na hora (igual `PAGE ?`), pra confirmar visualmente o que mudou. Argumento fora de 0-3 mostra
 `?ARGUMENTO INVALIDO`.
 
-## DM
+### DM
 
 **Despejo de Memória** - o primeiro comando que realmente lê a memória simulada. Mostra 128 bytes (16
 linhas de 8 bytes) a partir do endereço informado, em hexa e ASCII lado a lado.
@@ -137,7 +203,7 @@ Escrita **só tem efeito em células mapeadas como RAM agora** (`PAGE`/`Configur
 ROM, BIOS, BASIC e Vazio são somente-leitura, igual hardware real (não há o que escrever fisicamente
 ali).
 
-## ZAP
+### ZAP
 
 **Editor de Setores de disco** - muito parecido com o `DM`, mas em vez de mostrar a memória simulada do
 MSX, abre uma **imagem de disco (.dsk)** e mostra os bytes crus dela, setor a setor (512 bytes/setor).
@@ -164,7 +230,7 @@ do arquivo) em vez de `Endereco:`.
 **Nesta versão do msxIDE**, o `ZAP` é um despejo somente-leitura do setor escolhido - a edição/gravação
 de setor de volta no `.dsk` fica pra uma fase futura.
 
-## SCR
+### SCR
 
 **Display gráfico da memória** - mostra uma tela FIXA de 256x192 pixels (32x24 caracteres 8x8, a mesma
 resolução de um SCREEN 2/1 real do MSX) preenchida com a memória a partir de um endereço, cada caractere
@@ -199,7 +265,7 @@ MON>SCR 1BBF,1,1
 azulejo `dx`x`dy`, não a tela 256x192 completa ladrilhada - a navegação por setas, a moldura de edição
 2x2 caracteres e o modo de edição pixel a pixel do original ficam pra uma fase futura.
 
-## SH
+### SH
 
 **Busca de bytes ou texto na memória** - procura uma sequência de bytes exatos (com curingas opcionais)
 ou um texto (testando automaticamente todos os deslocamentos possíveis). Mostra o resultado direto no
@@ -251,7 +317,7 @@ MON>SH 3F41,'teste
 texto, com sinal `+`/`-`), ou `NAO ENCONTRADO` se a busca varrer os 65536 endereços (com volta ao
 início) sem achar nada.
 
-## MS
+### MS
 
 **Grava uma string na memória** - escreve o texto digitado, byte a byte, a partir de um endereço, com um
 deslocamento opcional. Confirma no log do `MON>`.
@@ -282,7 +348,7 @@ após ajustar o deslocamento) mostraria `nome` de volta.
 Escrita **só tem efeito em células mapeadas como RAM agora** (`PAGE`) - mesma regra do `DM`, ROM/BIOS/
 BASIC/Vazio são somente-leitura (recusa silenciosa, sem aviso separado).
 
-## LOAD
+### LOAD
 
 **Carrega um arquivo na memória simulada** - totalmente interativo: não se digita nome de arquivo no
 comando. Basta digitar `LOAD` sozinho:
@@ -320,7 +386,7 @@ pela CPU). Também ajusta a configuração física das páginas tocadas (RAM pro
 mas só em memória, nunca grava na configuração salva; fechar e reabrir a janela do Mamute Assembler volta
 pra configuração salva de antes, igual desligar e ligar um MSX de verdade tira o cartucho.
 
-## SAVE
+### SAVE
 
 **Grava um bloco de memória num arquivo** - o inverso do `LOAD`.
 
@@ -356,7 +422,7 @@ TAMANHO <tamanho>`.
 **Igual o `LOAD`**: lê DIRETO da memória física do slot escolhido, sem passar pelo `PAGE` - o slot lido
 é sempre exatamente o escolhido, não o que estiver mapeado ativo no momento.
 
-## M
+### M
 
 **Edição rápida de memória** - mesma grade de 128 bytes (16 linhas de 8, hexa+ASCII) do `DM` - a
 diferença é como um byte é editado.
@@ -377,7 +443,7 @@ célula, fica pra uma fase futura); `M [<endereco>]` sozinho mostra a mesma grad
 
 Escrita **só tem efeito em células mapeadas como RAM agora** (`PAGE`) - mesma regra do `DM`.
 
-## S
+### S
 
 **Igual ao `M`** (mesma grade, mesmo jeito de editar) - a ÚNICA diferença no manual original é QUAIS
 teclas do teclado representam cada dígito hexa (um teclado numérico reduzido configurável, por padrão o
@@ -397,7 +463,7 @@ MON>S [<endereco>]
 simplesmente um **alias completo de `M`** (mesmo formato de grade, mesmo `S <endereco> <byte>` pra
 gravar) - o remapeamento de teclado numérico do manual original não se aplica a um terminal de texto.
 
-## C
+### C
 
 **Escolhe o modo de exibição** que os comandos `D`, `P` e `V` (dump de memória formatado) vão usar.
 Sozinho não mostra nada além da confirmação - só guarda a escolha pra esses três comandos consultarem.
@@ -429,7 +495,7 @@ espaço digitado.*
 O modo escolhido dura só enquanto a janela do Mamute Assembler estiver aberta - fechar e reabrir volta
 pro modo `0`.
 
-## D
+### D
 
 **Despejo formatado de memória, direto no log do `MON>`** - mesma memória RAM/ROM que o `DM` enxerga
 (resolve pelo mapeamento `PAGE` ativo agora), formatado conforme o modo escolhido em `C` (padrão: modo
@@ -451,11 +517,10 @@ Exemplo:
 MON>D 4000,400F
 ```
 
-## P
+### P
 
-**Igual ao `D`**, mas ao invés de mandar o despejo pro log, gera uma listagem num arquivo. Simula "a
-impressora" do MegaAssembler original - um driver de verdade pra impressora Epson FX-80 (ponto-a-ponto,
-matriz de pontos) fica pra uma fase futura.
+**Igual ao `D`**, mas ao invés de mandar o despejo pro log, gera um **PDF de verdade** na impressora
+virtual (`## Impressora Virtual`, acima) - papel/fonte/zebrado conforme `Configurar -> Impressora`.
 
 **Sintaxe:**
 
@@ -466,10 +531,7 @@ MON>P <endinic>[,<endfim>]
 Mesmas regras de `<endinic>`/`<endfim>` do `D` (lê a mesma RAM/ROM mapeada agora). Cancelar a janela de
 salvar não gera arquivo nenhum - só mostra `CANCELADO`.
 
-**Nesta versão do msxIDE**, o `P` grava um arquivo de texto simples (`.txt`) em vez de um PDF - mesma
-listagem, formato mais simples.
-
-## V
+### V
 
 **Igual ao `P`**, mas lê da **VRAM simulada** em vez da RAM/ROM - endereço plano, sem `PAGE` nem banco
 algum (a VRAM de verdade de um MSX nunca fica mapeada no espaço de endereços do Z80; é acessada pelas
@@ -490,7 +552,7 @@ sem dar a volta.
 *Nota: ainda não existe nenhum comando que ESCREVA na VRAM simulada nesta versão - por enquanto ela
 começa sempre zerada.*
 
-## T
+### T
 
 **Transfere (copia) um bloco de memória** RAM/ROM (mesma memória mapeada agora pelo `PAGE`) de um
 intervalo de endereços pra outro.
@@ -518,7 +580,7 @@ cuidado de um `memmove` de verdade.
 (sem dar a volta pro `0000`) - qualquer um dos dois casos é `?ERRO DE SINTAXE`. Escrita silenciosa em
 células do destino que não sejam RAM (mesma regra do `DM`/`MS`).
 
-## F
+### F
 
 **Preenche um bloco de memória** RAM/ROM (mesma memória mapeada agora pelo `PAGE`) inteiro com um único
 byte repetido.
@@ -540,7 +602,7 @@ preenche o bloco de `8000` a `C000` (inclusive) com `FF` em todo byte.
 `<endfim>` não pode ser menor que `<endinic>`. Escrita silenciosa em células que não sejam RAM (mesma
 regra do `DM`/`MS`/`T`).
 
-## G
+### G
 
 **Ainda NAO executa nada** - por enquanto só reconhece e valida a sintaxe do comando, confirmando no log
 que o Mamute Assembler entendeu o pedido. A execução de verdade de programas na memória simulada (com
@@ -557,7 +619,7 @@ hexa de 4 dígitos, mesma sintaxe planejada pro comando de verdade quando existi
 em `<endinic>`, carregando os registradores com o que o `X` guardou, parando ao atingir
 `<brkpnt1>`/`<brkpnt2>`).
 
-## X
+### X
 
 **Mostra ou edita os registradores do Z80 simulado.** Sem argumento, mostra os 7 pares de registrador de
 uma vez. Com argumento, entra num modo de edição sequencial - aceita tanto um PAR de registrador (`AF`,
@@ -600,7 +662,7 @@ Os registradores duram só enquanto a janela do Mamute Assembler estiver aberta 
 todos de novo (mesmo espírito volátil do `PAGE`/`C`). Quando o comando `G` (execução de programas) for
 implementado de verdade, vai carregar o Z80 simulado com estes valores.
 
-## R
+### R
 
 **Ainda NAO faz nada além de confirmar no log** que o carregamento de um programa assemblado depende do
 assemblador Z80 embutido nesta ferramenta - que também fica pra uma fase futura. Nenhum argumento é
@@ -612,7 +674,7 @@ validado por enquanto.
 MON>R [<offset>]
 ```
 
-## L
+### L
 
 **Disassembla a memória RAM/ROM** (mesma memória mapeada agora pelo `PAGE`) direto no log do `MON>` - um
 disassembler Z80 de verdade, com o conjunto de instruções documentado inteiro mais as formas não
@@ -642,10 +704,10 @@ MON>L 4000,4010
 4004  44           LD B,H
 ```
 
-## LP
+### LP
 
-**Igual ao `L`**, mas ao invés de mandar a listagem pro log, gera um arquivo de listagem - mesma ideia do
-`P`/`V` (a impressora Epson FX-80 de verdade fica pra uma fase futura).
+**Igual ao `L`**, mas ao invés de mandar a listagem pro log, gera um **PDF de verdade** na impressora
+virtual (`## Impressora Virtual`, acima) - mesma ideia do `P`/`V`.
 
 **Sintaxe:**
 
@@ -657,10 +719,7 @@ Mesmas regras de `<endinic>`/`<endfim>` do `L` (inclusive continuar de onde o `L
 parou, se nenhum endereço for passado). Cancelar a janela de salvar não gera arquivo nenhum - só mostra
 `CANCELADO`.
 
-**Nesta versão do msxIDE**, o `LP` grava um arquivo de texto simples (`.txt`) em vez de um PDF - mesma
-listagem, formato mais simples.
-
-## EDIT
+### EDIT
 
 **Abre uma janela separada** com um editor de linhas pro **programa-fonte Z80**, no estilo do editor de
 BASIC do ZX-81/ZX Spectrum - a listagem é a própria área de cima do documento (sem log de comandos nem
@@ -713,8 +772,8 @@ NN Label: instrucao operando ;comentario
 - **`SEARCH '<string>'`** (entre aspas) - busca LITERAL, case-sensitive. **`SEARCH <string>`** (sem
   aspas) - busca LIVRE, case-insensitive. Bem-sucedida, a tela passa a mostrar SÓ as linhas encontradas
   (mesmas setas/`ENTER` de sempre navegam entre elas) - digite `LIST` pra voltar ao programa completo.
-- **`LSEARCH`** - igual ao `SEARCH`, mas em vez de filtrar a tela, grava a listagem das linhas
-  encontradas num arquivo `.txt` (pede o nome do arquivo).
+- **`LSEARCH`** - igual ao `SEARCH`, mas em vez de filtrar a tela, imprime a listagem das linhas
+  encontradas num PDF de verdade (impressora virtual, `## Impressora Virtual` - pede o nome do arquivo).
 - **`FIND`** - apelido de `SEARCH` (mesmo resultado).
 - **`QUIT`** - fecha a janela do `EDIT` e volta pro `MON>`, SEM apagar o programa da memória - abrir
   `EDIT` de novo continua exatamente de onde parou.
@@ -729,8 +788,7 @@ NN Label: instrucao operando ;comentario
     resolvido pelo mapeamento de `PAGE` ativo agora (mesma regra do `DM`/`M`: só grava de verdade se a
     célula mapeada for RAM).
   - **`N`** - a listagem NÃO mostra a coluna do número de linha (o resto é igual).
-  - **`P`** - grava a MESMA listagem num arquivo `.txt` (pede o nome do arquivo) - **nesta versão do
-    msxIDE**, em vez do PDF do manual original.
+  - **`P`** - imprime a MESMA listagem num PDF de verdade (impressora virtual, pede o nome do arquivo).
   - **`I`** - grava o código-objeto recém-montado direto em DISCO (pede o nome do arquivo), no formato
     real do `BSAVE`/`BLOAD` do MSX (cabeçalho `FE` + endereço inicial/final/execução) - funciona sozinho,
     não depende de `O` ter gravado nada na RAM antes.
@@ -739,23 +797,299 @@ NN Label: instrucao operando ;comentario
   - **`S`** - anexa ao final uma lista alfabética simples de símbolos (nome + valor, sem os endereços de
     uso).
   - **`D`** - igual a `S`, mas em ORDEM DE APARIÇÃO no fonte, não alfabética.
-  - **`H`** - manda só a(s) lista(s) de símbolos (`S`/`D`, pelo menos uma precisa estar ativa) pra um
-    arquivo `.txt` SEPARADO do de `P`.
+  - **`H`** - manda só a(s) lista(s) de símbolos (`S`/`D`, pelo menos uma precisa estar ativa) pra um PDF
+    SEPARADO do de `P`.
   - **`/<offset>`** - monta o programa para o endereço indicado pelo `ORG` MAIS `<offset>` (hexa) - útil
     pra testar o mesmo código-objeto em outro endereço sem editar o `ORG` do fonte.
 - **`MAP`** - mostra o endereço inicial e final da ÚLTIMA montagem bem-sucedida (`A` ou `A O` - os dois
   calculam o mesmo intervalo). Sem nenhuma montagem ainda, pede pra rodar `A` primeiro.
 
-**Diferenças desta versão em relação ao manual original**: as opções `P`/`H` gravam um arquivo de texto
-simples em vez de PDF (o msxIDE não tem gerador de PDF - mesma adaptação já usada pelo `L`/`LP`/
-`LSEARCH`). O eco cosmético "PASSO-1"/"PASSO-2" do assembler de 2 passagens não existe aqui (só fazia
+**Diferenças desta versão em relação ao manual original**: o eco cosmético "PASSO-1"/"PASSO-2" do assembler de 2 passagens não existe aqui (só fazia
 sentido numa janela gráfica animada). O motor Z80 cobre o vocabulário que o `EDIT` realmente aceita
 (mnemônicos Z80 + `ORG`/`DEFB`/`DEFW`/`DEFM`/`DEFS`/`EQU`/`END`) - macros, assembly condicional
 (`IF`/`IFDEF`/etc.) e segmentos relocáveis (`ASEG`/`CSEG`/`PUBLIC`/`EXTRN`) não fazem parte da gramática
 do `EDIT` e por isso não são suportados.
 
-## CLS
+### CLS
 
 **Limpa a tela** - apaga todo o conteúdo do log do `MON>` (rolagem, banner de abertura, histórico de
 comandos anteriores - tudo), deixando a janela em branco pronta pra continuar. Não afeta memória/PAGE/
 registradores - só o texto visível no log é apagado. Sem argumentos.
+
+## Comandos do SUPER-X
+
+O **SUPER-X** é um segundo monitor/debugger clássico de MSX (distinto do **MegaAssembler**, acima) sendo
+incorporado ao Mamute Assembler aos poucos, comando por comando, a partir do `XCL`.
+
+**Convenção de nomes**: todo comando portado do SUPER-X ganha o prefixo **`X`** na frente do nome
+original do manual (`CL` → `XCL`, `D` → `XD`, `M` → `XM`, etc.) - tanto pra evitar colisão com um comando
+de mesma letra já existente no MegaAssembler (`D`/`M` já significam outra coisa no Mamute) quanto por
+consistência entre TODOS os comandos SUPER-X portados, mesmo os que não colidiriam com nada.
+
+**Endereçamento estendido por slot/sub-slot/VRAM**: praticamente todo comando do SUPER-X (os futuros
+`XD`/`XM`/etc., no roteiro no final desta seção) aceita um sufixo opcional depois do endereço, no formato
+`<endereço>[#<slot>[-<subslot>]]`:
+
+- **Sem sufixo** - o endereço é resolvido pelo mapeamento `PAGE` ativo agora (igual todo comando herdado
+  do MegaAssembler).
+- **`#<slot>`** (`0`-`3`) - acessa aquele slot físico diretamente, sub-slot `0`, **ignorando** o `PAGE`
+  ativo - ex.: `C000#2` acessa o endereço `C000` no Slot 2, sub-slot 0, não importa o que `PAGE` tem
+  mapeado ali agora.
+- **`#<slot>-<subslot>`** (`0`-`3` cada) - igual acima, mas escolhendo também o sub-slot - ex.:
+  `C000#2-1` acessa `C000` no Slot 2, Sub-slot 1.
+- **`#S`**/**`#5`** - explicitamente "use o mapeamento `PAGE` ativo agora" (igual a omitir o sufixo -
+  existe só pra clareza, quando o resto da linha já usa `#` bastante).
+- **`#V`**/**`#4`** - endereço de **VRAM**, plano, sem slot/sub-slot/página nenhuma (a VRAM de um MSX
+  real nunca é mapeada no espaço de endereços do Z80). Único caso onde o endereço NÃO fica restrito a
+  64KB: vai de `0` a `2FFFF` (192KB), validado contra o tamanho de VRAM configurado agora (`Configurar ->
+  Mamute (Memória)`).
+
+Escrita em slot/sub-slot explícito segue a mesma regra do resto do Mamute: só tem efeito em células
+mapeadas como RAM - ROM/BIOS/BASIC/EXTBIOS/Vazio são somente-leitura, recusa silenciosa.
+
+### XCL
+
+**Calculadora** - primeiro comando portado do monitor **SUPER-X** (ver a introdução da seção `##
+Comandos do SUPER-X`, acima). No manual original do SUPER-X esse comando se chama só `CL` - aqui vira
+**`XCL`** porque **todo comando
+portado do SUPER-X para o Mamute Assembler leva o prefixo `X`** (convenção adotada de propósito, pra não
+colidir com nenhum comando do MegaAssembler e ficar consistente entre todos os comandos SUPER-X, mesmo os
+que não colidiriam com nada). Converte um número (ou avalia uma expressão matemática inteira) e mostra o
+resultado em quatro formatos de uma vez: **HEX**, **BIN** (16 bits), **DEC+** (decimal sem sinal,
+0-65535) e **DEC+-** (decimal com sinal, -32768 a 32767) - tudo sempre em **16 bits**, com wraparound
+(mesma convenção de endereço do resto do Mamute: um resultado "grande demais" só dá a volta, nunca dá
+erro por estourar).
+
+**Sintaxe:**
+
+```
+MON>XCL <expressão>
+```
+
+**Números** seguem a mesma convenção de sempre - **hexadecimal por padrão**, sem precisar de sufixo
+nenhum - mas o `XCL`, diferente do resto do Mamute, também aceita sufixos opcionais no final de cada
+número pra escolher outra base: **`D`/`d`** (decimal), **`B`/`b`** (binário), **`H`/`h`** (hexa,
+redundante com o padrão) e **`O`/`o`** (octal). O sufixo só vale se os dígitos antes dele forem válidos
+naquela base - `10D` vira decimal 10 (não hexa `10D`), porque `10` é decimal válido; pra hexa de verdade
+nesse caso específico, use o sufixo `H` explícito (`10DH`).
+
+**Além de um número isolado, aceita expressões matemáticas completas**, com a precedência clássica (do
+mais apertado pro mais frouxo: unários primeiro, depois `*`/`/`/`%`, depois `+`/`-`, depois `&`, depois
+`^`, depois `|`) e **parênteses** pra mudar a ordem:
+
+- **`+`** soma, **`-`** subtração (binária) ou troca de sinal (unária).
+- **`*`** multiplicação, **`/`** divisão inteira, **`%`** módulo (resto da divisão).
+- **`|`** OR bit a bit, **`&`** AND bit a bit, **`^`** XOR bit a bit.
+- **`!`** NOT bit a bit (unário - complemento de todos os 16 bits).
+- **`( )`** agrupam sub-expressões, mudando a ordem normal de avaliação.
+
+Divisão ou módulo por zero mostram `?DIVISAO POR ZERO`; qualquer outro erro (número inválido, parênteses
+sobrando, caractere desconhecido) mostra `?ERRO DE SINTAXE` (ou `?NUMERO INVALIDO: <token>` quando dá pra
+apontar exatamente qual pedaço falhou).
+
+Exemplos:
+
+```
+MON>XCL 4000
+HEX  : 4000H
+BIN  : 0100000000000000
+DEC+ : 16384
+DEC+-: 16384
+
+MON>XCL (100H+2ADH)*3-1
+HEX  : 0B06H
+BIN  : 0000101100000110
+DEC+ : 2822
+DEC+-: 2822
+```
+
+**Fora do escopo desta versão** (podem entrar em fases futuras): literais ASCII entre aspas (`'A'`,
+`"AB"`) e as variáveis de debugger `@0`-`@3`/`@B`/`@E`/`@S` do SUPER-X original numa expressão (`XCL
+@1+1`) - nenhuma delas ainda existe no Mamute Assembler do msxIDE.
+
+### XD
+
+**Despejo de memória** - porta do comando `D` do SUPER-X, com o **endereçamento estendido completo**
+(`#slot[-subslot]`/`#V`/`#4`/`#S`/`#5`, ver a introdução desta seção) - a grande diferença em relação ao
+`D` do MegaAssembler é justamente poder mirar um slot/sub-slot/VRAM explícito, ignorando o `PAGE` ativo.
+
+**Sintaxe:**
+
+```
+MON>XD <inicial>[,<final>][,SAVE]
+```
+
+`<inicial>` (obrigatório) - onde começa o despejo, aceita o sufixo `#...`. `<final>` (opcional, hexa
+simples, sem sufixo próprio - **só o `<inicial>` escolhe o alvo**, igual a sintaxe original do SUPER-X)
+- sem ele, despeja 128 bytes (mesmo tamanho de "1 tela" já usado pelo `M`/`DM`). **`SAVE`** (a palavra
+literal, no lugar ou depois de `<final>`) abre um diálogo pra gravar a mesma listagem num arquivo `.txt`
+separado - mecanismo independente do prefixo `?`/impressora virtual (`## Impressora Virtual`), mais
+simples, sem PDF nenhum.
+
+Exemplos:
+
+```
+MON>XD C000#2-1,C00F
+```
+
+despeja de `C000` a `C00F` no Slot 2, Sub-slot 1, direto, sem tocar no `PAGE` ativo;
+
+```
+MON>XD 0#V,FF,SAVE
+```
+
+despeja os primeiros 256 bytes da VRAM e ainda pergunta um arquivo `.txt` pra salvar a mesma listagem.
+
+O **formato** de cada linha do despejo é escolhido pelo comando `XF`, ver abaixo - o padrão é `D`
+(despejo clássico hexa+ASCII).
+
+### XF
+
+**Formato de exibição do `XD`** - invenção do msxIDE: o manual original do SUPER-X tem **5 comandos
+separados** (`D`/`A`/`H`/`I`/`M`, cada um sua própria janela), mas como os comandos aqui são mais simples
+que no paleobasic, existe só o `XD` mais um seletor de formato:
+
+**Sintaxe:**
+
+```
+MON>XF <formato>
+```
+
+`<formato>` é uma letra:
+
+- **`D`** (padrão) - despejo clássico: 8 bytes em hexa + 8 caracteres ASCII por linha.
+- **`C`** - porta do modo **Char** do SUPER-X original (lá é o comando `H`) - mostra 4 caracteres/sprites
+  consecutivos (32 bytes) de cada vez como uma grade de pixels **16 linhas x 16 colunas** (2 caracteres
+  de 8x8 lado a lado, os 2 primeiros em cima e os 2 seguintes embaixo) - `0` = bit aceso, `-` = apagado.
+  Cada linha termina com `<endereco> : <byteEsquerdo>:<byteDireito> <linhaDentroDoCaractere 0-7>`.
+- **`A`** - só os caracteres ASCII decodificados, sem nenhuma coluna hexa.
+- **`I`** - só o **mnemônico** de cada instrução (disassembly "limpo", sem endereço nem bytes crus).
+- **`M`** - endereço + bytes crus + mnemônico lado a lado, o formato completo (igual ao `L`/`LP`).
+
+*Nota: o modo "Multi" do SUPER-X original (também `M`) não é um formato de exibição - é um console
+interativo pra digitar/montar instruções e gravar direto na memória, incompatível com um comando de
+despejo não-interativo como o `XD`. O `XF M` daqui é outra coisa: o formato completo endereço+bytes+
+mnemônico, lado a lado.*
+
+O formato escolhido dura só enquanto a janela do Mamute Assembler estiver aberta (mesmo espírito volátil
+do `C`/modo de exibição do `D`/`P`/`V`) - fechar e reabrir volta pro `D`.
+
+### XA
+
+**Listagem ASCII** - porta do comando `A` do SUPER-X, como um comando próprio (não só um formato do
+`XD`/`XF`) - mesmo padrão de sintaxe do `XD`, mas sempre mostra só os caracteres ASCII decodificados,
+**independente do formato atual escolhido em `XF`** (equivalente a rodar `XD` com `XF A` ligado, só que
+sem precisar trocar o formato de volta depois).
+
+**Sintaxe:**
+
+```
+MON>XA <inicial>[,<final>][,SAVE]
+```
+
+Mesmas regras do `XD`: `<inicial>` aceita o sufixo `#slot[-subslot]`/`#V`/`#4`/`#S`/`#5` (só ele escolhe
+o alvo); sem `<final>`, despeja 128 bytes; `SAVE` abre o diálogo de salvar a listagem num `.txt`
+separado (mesmo mecanismo do `XD`, não passa pela impressora virtual/PDF).
+
+Exemplo:
+
+```
+MON>XA C000#2-1,C03F
+```
+
+mostra só o texto ASCII do bloco `C000`-`C03F` no Slot 2, Sub-slot 1.
+
+### XI
+
+**Listagem disassemblada** - porta do comando `I` do SUPER-X, como um comando próprio (não só um formato
+do `XD`/`XF`) - mesmo padrão de sintaxe do `XD`/`XA`, mostrando sempre a listagem completa **endereço +
+bytes crus + mnemônico**, igual ao `L`/`LP` (o manual original do SUPER-X descreve o `I` com exatamente
+esse formato). Diferente do `XF I` (que só mostra o mnemônico, sem endereço/bytes, como MODO do `XD`) -
+o comando `XI` em si sempre mostra a versão completa, igual ao `XF M`.
+
+**Sintaxe:**
+
+```
+MON>XI <inicial>[,<final>][,SAVE]
+```
+
+Mesmas regras do `XD`/`XA`: `<inicial>` aceita o sufixo `#slot[-subslot]`/`#V`/`#4`/`#S`/`#5`; sem
+`<final>`, despeja 128 bytes; `SAVE` abre o diálogo de salvar a listagem num `.txt` separado.
+
+Exemplo:
+
+```
+MON>XI C100#2-1,C110
+```
+
+disassembla o bloco `C100`-`C110` no Slot 2, Sub-slot 1.
+
+**Comandos já portados:**
+
+| Comando | Status |
+|---|---|
+| `XCL` | **Implementado** - calculadora HEX/BIN/DEC/octal, ver `### XCL` acima. |
+| `XD` / `XF` | **Implementado** - despejo de memória com endereçamento estendido + seletor de formato (`D`/`C`/`A`/`I`/`M`), ver `### XD`/`### XF` acima. |
+| `XA` | **Implementado** - listagem ASCII como comando próprio, ver `### XA` acima. |
+| `XI` | **Implementado** - listagem disassemblada como comando próprio, ver `### XI` acima. |
+
+**Roteiro dos próximos comandos** (nomes/sintaxe do manual original do SUPER-X - `X` na frente é a
+convenção de nome deste port, ver acima; sintaxe/comportamento exatos podem ajustar durante a
+implementação de cada um). O SUPER-X original tem `D`/`A`/`H`/`I`/`M` como **5 comandos separados**, cada
+um sua própria janela editável em tela cheia - o msxIDE já cobre a parte de EXIBIÇÃO de todos os 5 (sem
+edição/gravação ao vivo) através do `XD` + `XF` (formatos `D`/`A`/`C`/`H`→`I`/`M`, ver acima); as linhas
+`XA`/`XI`/`XH`/`XM` abaixo continuam na lista só pelo que ainda falta de CADA UM (edição ao vivo célula a
+célula, pilha de jump/call navegável, console de assembler interativo, etc.) - não são mais comandos
+100% pendentes.
+
+| Comando | Sintaxe (SUPER-X) | Função |
+|---|---|---|
+| `XD` | `<inic>[#slot][,<fim>[,<arq>]]` | **Exibição já portada** (`XD`+`XF`, acima) - falta só a edição ao vivo em grade |
+| `XA` | `<inic>[#slot][,<fim>[,<arq>]]` | **Implementado como comando próprio** (`### XA`, acima) - falta só a edição ao vivo de texto |
+| `XI` | `<inic>[#slot][,<fim>[,<arq>]]` | **Implementado como comando próprio** (`### XI`, acima) - falta a pilha de jump/call navegável (`←`/`→`) |
+| `XH` | `<inic>[#slot][,<fim>[,<arq>]]` | **Exibição já portada** (`XF C`) - falta a edição de bit/caractere (Space/Invert/Clear/Fill) |
+| `XM` | `<inic>[#slot]` | Entrada assembler interativa (monta e grava direto na memória) - console, não um formato de exibição, continua pendente |
+| `XBL` | `<linha>` | LIST de BASIC a partir da memória crua |
+| `XBT` | `<origem>[#slot],<fimorigem>,<destino>[#slot]` | Transferência de bloco |
+| `XCD` | `<diretório>` | Muda diretório (MSX-DOS2) |
+| `XRT` | `<origem>[#slot],<fimorigem>,<destino>[#slot]` | Realoca bloco de código de máquina e corrige ponteiros internos que apontem pra dentro do bloco movido |
+| `XFL` | `<inic>[#slot],<fim>,<valor>` | Preenche bloco com um byte |
+| `XCM` | `<inic>[#slot],<fim>,<inic2>[#slot][,S]` | Compara dois blocos (lista diferenças; `S` lista iguais) |
+| `XFD` | `<inic>[#slot],<fim>` | Busca dados - pede o padrão depois, lista TODAS as ocorrências |
+| `XCS` | - | Alterna o tipo de checksum (soma simples / soma + endereço) |
+| `XTS` | `<inic>[#slot],<fim>` | Calcula checksum do bloco |
+| `XGO` | `<endereço>[#slot]` | Executa programa (para em breakpoint) |
+| `XRG` | `[<reg>,<valor>]` / `XRG *` / `XRG +` | Mostra/edita registradores; `*` limpa tudo exceto pilha; `+` reseta a pilha |
+| `XTR` | `<endereço>` | Trace passo a passo, imprime registradores a cada instrução |
+| `XCK` | - | Info da máquina (slot ativo, RAM do sistema, localização de ROMs, mapeador, discos) |
+| `XSF` | `[<tecla>,<string>]` | Programa uma tecla de função |
+| `XBF` | - | Busca string dentro de uma listagem BASIC (`?` = curinga de 1 caractere) |
+| `XPP` | `[<página>,<segmento>]` | Seleciona segmento do mapeador de RAM numa página |
+| `XSD` | `<arq>,<inic>[#slot],<fim>[,B\|D\|X]` | "Super disassembler" - disassembly pra arquivo texto, ou exporta bytes crus como `DEFB`/`DATA`/inline X-BASIC |
+| `XFS` | `<drive>` | Lista arquivos do disco (equivalente a `DIR`) |
+| `XCI` | `<drive>` | Uso do disco (clusters usados/total) |
+| `XOF` | `[<offset>]` | Offset global - desloca o endereço `0` "lógico" pra todos os comandos, inclusive rotinas de disco |
+| `XCU` | `[<número>]` | Troca modo de CPU (MSX turboR: Z80/R800 ROM/DRAM) |
+| `XCO` | `[<fg>],[<bg>],[<borda>]` | Cor da tela |
+| `XKR` | `<endereço>[#slot]` | Mostra memória como texto usando fonte japonesa |
+| `XKT` | `<arquivo>` | Exibe arquivo de texto em japonês |
+| `XTP` | `<arquivo>` | Exibe arquivo de texto (paginado, `ENTER`/`ESPAÇO`/`ESC`) |
+| `XKL` | `[<drive>]` | (Re)carrega a fonte japonesa pra VRAM |
+| `XSV` | `<arq>,<inic>[#slot],<fim>,[<execução>[,<offset>]]` | Salva com cabeçalho BSAVE |
+| `XLD` | `<arq>[,<offset>[#slot]]` | Carrega com cabeçalho BLOAD |
+| `XS#` | `<arq>,<inic>[#slot],<fim>` | Salva bytes crus, sem cabeçalho |
+| `XL#` | `<arq>,<endereço>[#slot]` | Carrega bytes crus, sem cabeçalho |
+| `XS%` | `[<drive>:]<setorinic>,[<setorfim>],<endereço>[#slot]` | Grava memória direto em setor(es) de disco |
+| `XL%` | `[<drive>:]<setorinic>,[<setorfim>],<endereço>[#slot]` | Lê setor(es) de disco direto pra memória |
+| `XIM` | `<endereço>,<slot>,<tipo>` | Adiciona uma nota persistente a um endereço |
+| `XIC` | `<endereço>` | Consulta se existe nota pra um endereço |
+| `XIL` | `<drive>` | Carrega o arquivo de notas |
+| `XIS` | `<drive>` | Salva o arquivo de notas |
+| `XPI` | `<porta>` | Lê byte de uma porta de I/O |
+| `XPO` | `<porta>,<valor>` | Escreve byte numa porta de I/O |
+
+`CLS`, `GO`/`RG` (cobertos pelo `PAGE`+`X`+`G` já existentes), `BT` (≈ `T`), `FL` (≈ `F`) e `TK` (≈ o
+teclado numérico configurável do `S`) já têm equivalente direto no Mamute Assembler e não precisam de
+porta separada. As 7 variáveis de debugger do SUPER-X (`@0`-`@3`/`@B`/`@E`/`@S`, endereço com slot/VRAM
+já embutido) e os literais ASCII entre aspas do `XCL` (`'A'`/`"AB"`) também fazem parte do manual
+original, mas ainda não têm data pra entrar - ver a nota "Fora do escopo desta versão" no `### XCL` acima.

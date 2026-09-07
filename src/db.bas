@@ -246,6 +246,17 @@ Sub DbInit(ByRef dbPath As String)
     SeedHelpDoc("BASIC_DIGNIFIED", "basic-dignified\\documentation\\BASIC_DIGNIFIED.md")
     SeedHelpDoc("DIGNIFIED", "basic-dignified\\documentation\\DIGNIFIED.md")
     SeedHelpDoc("BATOKEN", "basic-dignified\\documentation\\BATOKEN.md")
+
+    ' docs/help/*.md sao mantidos dentro deste proprio repositorio (ao contrario
+    ' dos 3 acima, vendorizados do basic-dignified) - precisam do mesmo reseed
+    ' incondicional a cada abertura do banco, senao DbGetHelpDoc() (cache
+    ' permanente na 1a leitura, nunca reflete edicao seguinte no .md) trava a
+    ' tela de Ajuda numa versao antiga pra sempre depois da 1a vez que abrir.
+    SeedHelpDoc("EDITOR", "docs\\help\\editor.md")
+    SeedHelpDoc("NESTORBASIC", "docs\\help\\nestorbasic.md")
+    SeedHelpDoc("SEETRACKER", "docs\\help\\seetracker.md")
+    SeedHelpDoc("MSXBAS2ROM", "docs\\help\\msxbas2rom.md")
+    SeedHelpDoc("MAMUTE", "docs\\help\\mamute.md")
 End Sub
 
 Function DbGetHelpDoc(ByRef docName As String, ByRef fallbackPath As String = "") As String
