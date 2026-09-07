@@ -1,7 +1,7 @@
 {
   "Basic": "C:\\basic\\FreeBASIC\\",
-  "Backend": "win",
-  "LastSourceHash": "167C8900CDF18D8C04F603192181B5937446E8935F15940733B5D66508B963A2",
+  "LastSourceHash": "02068A50BD0B4ED36DEFFF84F582DFDF9A87DCA84303941127AD6CEDF3F2B8F0",
   "Compiler": "C:\\basic\\FreeBASIC\\fbc64.exe",
-  "Version": "0.2.1"
+  "Version": "0.3.0",
+  "Backend": "win"
 }

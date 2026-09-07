@@ -24,7 +24,7 @@ try {
 
     Write-Host "Copiando arquivos de execucao..." -ForegroundColor Cyan
     Copy-Item $msxideExe, $sqliteDll -Destination $distDir
-    foreach ($doc in @("LICENSE", "README.md", "MANUAL.md", "SPEC.md", "CHANGELOG.md")) {
+    foreach ($doc in @("LICENSE", "README.md", "MANUAL.md", "SPEC.md", "CHANGELOG.md", "RELEASE.md")) {
         $p = Join-Path $projectRoot $doc
         if (Test-Path $p) { Copy-Item $p -Destination $distDir }
     }
