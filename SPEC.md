@@ -50,7 +50,8 @@ de trabalho — é exatamente isso que `build-distribute.ps1` empacota em `distr
 | Caminho | Usado por |
 |---|---|
 | `ajuda\*.pbi` | Menu `Referência` (Red Book, Handbook, BIOS, manuais, openMSX) e o dicionário MSX BASIC (`Ajuda -> MSX BASIC Dictionary`) — lidos diretamente em runtime, ver seção 3. |
-| `docs\help\*.md` | `Ajuda -> Editor`, e os itens `Referência` que são markdown simples (Nestor Basic, SEE Tracker, MSXBAS2ROM). |
+| `docs\help\*.md` | `Ajuda -> Editor`/`Ajuda -> Markdown`, e os itens `Referência` que são markdown simples (Nestor Basic, SEE Tracker, MSXBAS2ROM). |
+| `roms\msx1.alf` | Fonte MSX1 padrão que semeia todo `Arquivo -> Novo Editor de Fontes` (`EditorCreateFontUntitled`, `editor.bas`) — dump BSAVE de 256 caracteres 8x8. Os demais `roms\*.ROM` (BIOS/BASIC/DISK) não são empacotados aqui — apontados manualmente pelo usuário em `Configurar -> Mamute`. |
 | `basic-dignified\documentation\*.md` | `Ajuda -> Basic Dignified/Dignified/BaToken`. |
 | `basic-dignified\support\*.ini`, `basic-dignified\msx\*.ini`, `basic-dignified\msx\msxbatoken\*.ini` | Valores padrão semeados no banco no primeiro uso (`SeedConfigFromIni`, `db.bas`) — opcional, se ausente o msxIDE usa os defaults embutidos no código. |
 | `basic-dignified\msx\openmsx_output.tcl` | Ponte de monitoramento de saída do openMSX (`Compilar + Executar`). |

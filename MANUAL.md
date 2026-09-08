@@ -122,8 +122,8 @@ powershell -ExecutionPolicy Bypass -File .\tests\smoke\run-help-smoke.ps1       
 
 ## 6. Visão geral dos menus
 
-- **Arquivo**: novo documento (Basic Dignified ou asMSX), abrir/salvar/fechar, e o sistema de projetos
-  (`.msxproj`).
+- **Arquivo**: novo documento (Basic Dignified, asMSX, Markdown ou Editor de Fontes MSX), abrir/salvar/
+  fechar, e o sistema de projetos (`.msxproj`).
 - **Configurar**: ajustes de Basic Dignified, MSX Basic (tokenizer), Emulador, e o novo configurador de
   memória do Mamute Assembler.
 - **Compilar**: MSX-Basic clássico, Basic Dignified, tokenizar AMX, compilar+executar no emulador, e o
@@ -166,7 +166,8 @@ src/            codigo-fonte FreeBASIC do msxIDE (ver apelidos dos modulos em SP
 asMSX/          assembler Z80 (binario + doc + fontes)
 basic-dignified/ suite Basic Dignified (compilador/tokenizer MSX BASIC)
 ajuda/          dados de referencia MSX (Red Book, manuais, BIOS, etc.) usados pelo menu Referencia
-docs/help/      paginas de ajuda em markdown simples (Nestor Basic, SEE Tracker, MSXBAS2ROM, Editor)
+docs/help/      paginas de ajuda em markdown simples (Nestor Basic, SEE Tracker, MSXBAS2ROM, Editor, Markdown)
+roms/           roms/dumps usados em runtime (msx1.alf = fonte MSX1 padrao do Editor de Fontes)
 newt-freebasic/ backend newt (so necessario para --Backend newt)
 tests/          regressao + smoke tests
 build.ps1       script de build/versionamento

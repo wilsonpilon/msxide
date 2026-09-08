@@ -2,7 +2,7 @@
 
 ![msxIDE](images/msxide.png)
 
-**v0.3.0 — "MAMUTE.PRN"** — *o mamute aprendeu a imprimir e virou meio debugger SUPER-X.*
+**v0.4.0 — "MAMUTE.FNT"** — *o mamute aprendeu a desenhar suas próprias letras, pixel a pixel.*
 
 Um ambiente de desenvolvimento em modo texto (TUI) para MSX BASIC e Z80 Assembly, escrito em
 FreeBASIC. Inspirado nas ferramentas clássicas de MS-DOS (EDIT, QuickBasic) e nos monitores/assemblers
@@ -16,6 +16,12 @@ interativos da era 8-bit do MSX.
 
 - **Editor de texto em TUI**, multi-documento, janelas MDI (arrastar/redimensionar/maximizar/fechar),
   barras de rolagem, roda do mouse.
+- **Editor de Markdown** (`.md`): três modos por `F7` — edição simples, dividido (preview ao vivo lado a
+  lado) e somente leitura — reaproveitando o mesmo motor que renderiza toda a Ajuda do msxIDE.
+- **Editor de Fontes MSX** (`.alf`/`.fnt`/`.chr`): mapa geral 16x16 e o caractere selecionado ampliado em
+  pixels sempre visíveis lado a lado, lê/grava o formato BSAVE real de fonte do MSX (semeado a partir de
+  `roms/msx1.alf`), e se integra ao sistema de projetos (vários alfabetos por projeto, listados e
+  selecionáveis direto no rodapé do editor).
 - **Compilação MSX BASIC / Basic Dignified**: gera `.amx`/`.bmx`, monta disco `.dsk` (boot MSX-DOS
   real) e lança o **openMSX** automaticamente.
 - **Z80 Assembly via asMSX**: novo documento `.asm` com um "Hello ASM World" pronto; compilar+executar

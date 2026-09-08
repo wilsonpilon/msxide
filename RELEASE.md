@@ -1,91 +1,83 @@
-# msxIDE v0.3.0 — "MAMUTE.PRN"
+# msxIDE v0.4.0 — "MAMUTE.FNT"
 
-*2026-09-06*
+*2026-09-08*
 
-O nome é um trocadilho: `PRN` é o nome de dispositivo reservado da impressora no MS-DOS clássico — e
-esta versão é justamente a que ensina o Mamute Assembler a imprimir de verdade, ao mesmo tempo em que
-começa a incorporar o **SUPER-X**, o segundo monitor/debugger clássico de MSX que inspira a outra metade
-do projeto (ao lado do MegaAssembler, já presente desde a v0.2.0).
+O nome é um trocadilho direto: `.FNT` é a extensão clássica de arquivo de fonte bitmap (Windows,
+impressoras antigas) — e esta versão é justamente a que ensina o mamute a desenhar suas próprias letras,
+pixel a pixel, com um editor visual de fontes de caracteres MSX de verdade.
 
 ## Tema da versão
 
-Duas frentes novas e complementares:
+Duas frentes novas, as duas sobre "ver o que se está editando ao vivo":
 
-1. **SUPER-X chega ao Mamute Assembler** — começando pelo alicerce (o endereçamento estendido por
-   slot/sub-slot/VRAM que praticamente todo comando futuro do SUPER-X vai usar) e cinco comandos reais:
-   `XCL` (calculadora), `XD` (despejo de memória), `XF` (formato de exibição do `XD`), `XA` (listagem
-   ASCII) e `XI` (listagem disassemblada).
-2. **Impressora virtual com PDF de verdade** — `P`/`V`/`LP` (e as opções de impressão do `EDIT`) e
-   qualquer comando não-interativo prefixado com `?` agora geram um `.pdf` real, com papel A4 ou
-   formulário contínuo (CPD picotado/zebrado) configurável.
+1. **Editor de Fontes MSX** — cria e edita fontes de caracteres 8x8 reais do MSX (o mesmo formato que o
+   hardware usa pra gerar caracteres na tela), com mapa geral e preview ampliado sempre visíveis lado a
+   lado, e integração direta com o sistema de projetos.
+2. **Editor de Markdown** — três modos de visualização (edição simples, dividido com preview ao vivo,
+   somente leitura), reaproveitando o mesmo motor de renderização que já desenha toda a Ajuda do
+   msxIDE.
 
 ## Novidades
 
-### SUPER-X
+### Editor de Fontes MSX
 
-- **Endereçamento estendido** `<endereço>[#<slot>[-<subslot>]]`/`#V`/`#4`/`#S`/`#5` — mira um slot/
-  sub-slot físico específico ou a VRAM plana (até 192KB), ignorando o mapeamento `PAGE` ativo no
-  momento. Essa é a peça que todo comando SUPER-X futuro reaproveita.
-- **`XCL <expressão>`** — calculadora HEX/BIN/DEC/octal: números em hexadecimal por padrão (sufixos
-  `D`/`B`/`H`/`O` pras outras bases), operadores `+ - * / % | & ^ !` com precedência clássica e
-  parênteses, tudo em 16 bits com wraparound.
-- **`XD <inicial>[,<final>][,SAVE]`** — despejo de memória com o endereçamento estendido completo (só o
-  `<inicial>` escolhe o alvo, igual a sintaxe original do SUPER-X); sem `<final>`, despeja 128 bytes;
-  `SAVE` grava a mesma listagem num `.txt` à parte.
-- **`XF <D|C|A|I|M>`** — escolhe o formato do `XD`: `D` (8 bytes hexa + 8 ASCII, clássico), `C` (matriz
-  de pixels 16x16, porta do modo "Char"/`XH` do SUPER-X original), `A` (só ASCII), `I` (só o
-  mnemônico) ou `M` (endereço + bytes + mnemônico completo).
-- **`XA`**/**`XI`** — versões dedicadas do despejo ASCII e da listagem disassemblada (endereço+bytes+
-  mnemônico, igual ao `L`/`LP`) como comandos próprios, com a mesma sintaxe do `XD`, independentes do
-  formato atual escolhido em `XF`.
+- **`Arquivo -> Novo Editor de Fontes`** (ou abrir um `.alf`/`.fnt`/`.chr` existente) abre um editor
+  visual: mapa geral 16x16 dos 256 caracteres à esquerda, caractere selecionado ampliado em pixels (8x8,
+  cada pixel desenhado como bloco cheio duplicado horizontalmente pra ficar quadrado no console) à
+  direita — os dois sempre visíveis ao mesmo tempo, sem precisar esconder um pra ver o outro. Navegar
+  pelo mapa já atualiza o desenho ampliado na hora; `ENTER`/`Espaço` entra no modo de edição de pixel
+  (setas movem o cursor, `Espaço`/`ENTER` alterna o pixel).
+- **Formato de arquivo real do MSX**: cabeçalho BSAVE de 7 bytes (`FE` + endereço inicial, final e de
+  execução, 2 bytes cada, little-endian) seguido de 2048 bytes de dados (256 caracteres × 8 bytes, 1 bit
+  por pixel) — o mesmo formato que `BSAVE`/`BLOAD` usam no MSX de verdade. Todo alfabeto novo nasce
+  semeado a partir de `roms/msx1.alf` (a fonte MSX1 padrão, incluída neste pacote) em vez de começar em
+  branco; salvar sempre grava no endereço padrão de alfabeto do MSX (`9200H`), pronto pra carregar de
+  volta na RAM com `BLOAD` de verdade — mesmo que o arquivo de origem (como o próprio `msx1.alf`, um
+  dump de ROM) tenha vindo de outro endereço.
+- **Integração com projetos**: com um `.msxproj` aberto, cada alfabeto novo já nasce dentro da pasta
+  `roms\` do próprio projeto, e é registrado no banco do projeto assim que é salvo (`F2`) — sem precisar
+  passar por "Salvar Projeto" — permitindo quantos alfabetos forem necessários no mesmo projeto. O
+  espaço sobrando abaixo do mapa de caracteres (a grade só precisa de 16 linhas; a maioria das janelas
+  tem bem mais altura que isso) mostra a lista de alfabetos já salvos no projeto ativo: `TAB` foca a
+  lista, `Cima`/`Baixo` escolhe, `ENTER` abre o escolhido numa aba nova.
+- **Base pronta pro editor de Sprites**: a arquitetura (um campo `pixelEditKind` reservado no
+  `Document`, toda a lógica de edição de pixel isolada em funções próprias) já foi pensada pra que um
+  futuro editor de Sprites reaproveite quase tudo — só o formato dos dados e a tabela de destino mudam.
 
-### Impressora Virtual
+### Editor de Markdown
 
-- **PDF real, montado do zero** (sem biblioteca nenhuma) — Courier (um dos 14 fontes base do PDF, não
-  precisa embutir nada), paginação automática, e abre sozinho no visualizador padrão do Windows depois
-  de gravar.
-- **Papel A4** (210x297mm, margem de 1cm nos 4 lados) ou **contínuo** (formulário CPD picotado, 9.5x11
-  polegadas de carro estreito, **sempre 66 linhas por formulário** — limite físico do papel, não muda
-  com a fonte): zebrado **Verde**/**Azul** linha a linha cobrindo o formulário inteiro (não só as linhas
-  com conteúdo), furos redondos nas duas margens a cada meio polegada, e uma linha picotada tracejada
-  simulando a dobra entre formulários a cada 66 linhas.
-- **Fonte Normal (10 cps) / Condensada (17 cps)** — densidade real de impressora matricial, muda quantas
-  colunas cabem por linha.
-- **Prefixo `?`** na frente de qualquer comando do Mamute que não dependa de mais interação (`PAGE`,
-  `DM`, `SH`, `D`, `XD`, `XCL`, etc. — das duas famílias, MegaAssembler e SUPER-X) manda a saída direto
-  pro PDF em vez da tela — convenção herdada do SUPER-X original, estendida aqui pra qualquer comando
-  não-interativo, não só os portados do SUPER-X.
-- **`Configurar -> Impressora`** — nova tela de configuração (Papel, Fonte, Zebrado, Abrir PDF
-  automático).
-- `P`/`V`/`LP` e as opções de impressão do `EDIT` (`LSEARCH`, `A P`, `A H`) migradas de `.txt` simples
-  pra essa mesma impressora virtual.
-
-### Documentação e organização
-
-- `docs/help/mamute.md` reorganizado em duas famílias claras — `## Comandos do MegaAssembler` e
-  `## Comandos do SUPER-X` — com uma seção nova `## Impressora Virtual`.
+- **`Arquivo -> Novo Arquivo MD`** (ou abrir qualquer `.md` existente) abre o arquivo no editor de texto
+  normal com um recurso a mais: `F7` alterna entre três modos — **edição simples** (só o texto cru),
+  **dividido** (metade esquerda editável, metade direita com o preview renderizado ao vivo, atualizado a
+  cada tecla) e **somente leitura** (a janela inteira mostra só o preview, útil pra revisar um documento
+  pronto).
+- Reaproveita o mesmo motor que já renderiza toda a Ajuda do msxIDE (cabeçalhos, **negrito**, `código`,
+  listas, tabelas com bordas de verdade) — extraído para uma função própria
+  (`BuildMarkdownBufferFromText`) sem alterar em nada o comportamento da Ajuda existente.
+  Arquivos `.md` entram no sistema de projetos junto com o código-fonte.
+- Novo tópico **`Ajuda -> Markdown`** com a referência rápida de formatação e o que já ganha destaque de
+  verdade no preview do msxIDE.
 
 ## Corrigido
 
-- **Bug real de cache**: `Ajuda -> Mamute`/Editor/Nestor Basic/SEE Tracker/MSXBAS2ROM carregavam o
-  markdown de `docs/help/*.md` uma única vez e guardavam pra sempre no banco local, nunca relendo o
-  arquivo do disco — qualquer edição feita depois da primeira abertura ficava invisível. Esses 5
-  documentos agora são ressemeados do disco toda vez que o msxIDE abre, igual os 3 documentos
-  vendorizados do Basic Dignified já faziam.
+- **`F7` não tinha mapeamento nenhum**: faltava tanto no backend nativo do Windows (`console_win.bas`)
+  quanto na tabela de fallback ANSI (`NormalizeKey`) — descoberto durante a implementação do atalho de
+  alternância de modo do editor de Markdown, que dependia exatamente dessa tecla.
 
 ## Bastidores
 
-- Todo o trabalho novo foi verificado com testes headless (`--smoke-mamute`/`--smoke-help`) expandidos
-  com dezenas de asserções, incluindo checagem estrutural real do PDF gerado (`%PDF-1.4`, `/MediaBox`,
-  operadores de zebrado/furos) e verificações A/B (quebra deliberada de um trecho + confirmação de que o
-  teste realmente detecta a regressão, depois restaurado) nos pontos mais arriscados — endereçamento por
-  sub-slot/VRAM, layout do papel contínuo, e cada um dos 5 formatos do `XF`.
-- Um PDF de teste real foi gerado e inspecionado visualmente (não só checado por string) pra confirmar
-  que o zebrado linha a linha, a cobertura até o fim do formulário e a linha picotada realmente
-  renderizam do jeito esperado.
+- Todo o trabalho novo foi verificado com testes headless (`--smoke-help`) expandidos: navegação/edição
+  de pixel no editor de Fontes, round-trip binário completo com cabeçalho BSAVE real, e um cenário de
+  ponta a ponta do fluxo de projeto (criar projeto, salvar dois alfabetos, navegar e abrir pela lista do
+  rodapé via teclas reais simuladas) — incluindo verificações A/B (quebra deliberada de um trecho +
+  confirmação de que o teste realmente pega a regressão, depois restaurado) na detecção do cabeçalho
+  BSAVE ao carregar e no endereço fixo usado ao gravar.
+- O pacote `distribute/roms/msx1.alf` foi adicionado à distribuição (`build-distribute.ps1`) — sem ele,
+  o Editor de Fontes cairia num alfabeto em branco em qualquer cópia instalada a partir deste pacote,
+  em vez de vir pré-semeado com a fonte MSX1 padrão. Os dumps de BIOS/ROM reais (`roms\*.ROM`) continuam
+  de fora do pacote distribuído — como sempre, são apontados manualmente pelo usuário em
+  `Configurar -> Mamute`.
 
 ## Créditos
 
-Ver a seção "Agradecimentos" em [README.md](README.md#agradecimentos) — em especial **Romi**, autor
-original do SUPER-X (1994), e **NYYRIKKI**/**JP Grobler** pela versão estendida/tradução que serviram de
-referência pro endereçamento estendido e pros comandos portados nesta versão.
+Ver a seção "Agradecimentos" em [README.md](README.md#agradecimentos).

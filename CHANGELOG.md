@@ -2,6 +2,57 @@
 
 Todas as mudanças notáveis do msxIDE são registradas aqui. Formato livre, em português, por versão.
 
+## [0.4.0] — "MAMUTE.FNT" — 2026-09-08
+
+O mamute aprende a desenhar suas próprias letras: dois editores visuais novos dentro do msxIDE — um
+para documentação em Markdown, outro para fontes de caracteres MSX (8x8 pixels) — e o sistema de
+projetos ganha registro automático de arquivos binários criados por eles.
+
+### Adicionado
+
+- **Editor de Markdown** (`Arquivo -> Novo Arquivo MD`, ou abrir qualquer `.md`): três modos alternados
+  por `F7` — edição simples, dividido (texto à esquerda, preview renderizado ao vivo à direita) e
+  somente leitura (preview em tela cheia). Reaproveita o mesmo motor de renderização que já desenha toda
+  a Ajuda (`BuildMarkdownBufferFromText`, extraído de `BuildMarkdownHelpBuffer` sem mudar o
+  comportamento da Ajuda existente). Arquivos `.md` entram no sistema de projetos (`.msxproj`) junto com
+  o código-fonte. Novo tópico de Ajuda `Ajuda -> Markdown` com a referência de formatação.
+- **Editor de Fontes MSX** (`Arquivo -> Novo Editor de Fontes`, ou abrir um `.alf`/`.fnt`/`.chr`): mapa
+  geral 16x16 dos 256 caracteres e o caractere selecionado ampliado em pixels (8x8, cada pixel = um
+  bloco cheio `█` duplicado horizontalmente pra ficar quadrado no console) sempre visíveis lado a lado —
+  navegar pelo mapa já atualiza o preview ampliado, sem precisar entrar no modo de edição pra ver o
+  desenho. Formato de arquivo real do MSX: cabeçalho BSAVE (`FE` + endereço inicial/final/execução, 2
+  bytes cada, little-endian) seguido de 2048 bytes (256 caracteres × 8 bytes). Todo alfabeto novo nasce
+  semeado a partir de `roms/msx1.alf` (a fonte MSX1 padrão, incluída no pacote); salvar grava sempre no
+  endereço padrão de alfabeto do MSX (`9200H`), pronto pra `BLOAD` de verdade.
+  - **Integração com projeto**: com um projeto aberto, cada alfabeto novo nasce dentro da pasta `roms\`
+    do próprio projeto e é registrado no banco do projeto assim que é salvo (`F2`) — sem precisar de
+    "Salvar Projeto" — permitindo vários alfabetos por projeto. O rodapé do editor lista os alfabetos já
+    salvos no projeto ativo (aparece automaticamente no espaço sobrando abaixo do mapa de caracteres);
+    `TAB` foca a lista, `Cima`/`Baixo` escolhe, `ENTER` abre o escolhido numa aba nova.
+  - Arquitetura pensada pra reuso: o campo `pixelEditKind` no `Document` já reserva espaço pro futuro
+    editor de Sprites, que deve compartilhar quase toda a base de edição de pixels deste editor de
+    fontes.
+- **Sistema de projetos**: `.alf` vira extensão rastreada (`IsTrackedExt`); `Salvar Projeto` também
+  varre uma subpasta `roms\` do projeto (mesmo tratamento especial que a subpasta `disk\` já tinha para
+  imagens de disquete).
+- Testes headless (`--smoke-help`) expandidos com o editor de Markdown, o editor de Fontes (navegação,
+  toggle de pixel, round-trip binário com cabeçalho BSAVE real) e um cenário completo de projeto
+  (criar projeto, salvar dois alfabetos, navegar/abrir pela lista do rodapé via teclas reais) —
+  incluindo verificações A/B (quebra deliberada + confirmação de que o teste detecta, depois restaurado)
+  nos trechos mais arriscados: detecção do cabeçalho BSAVE ao carregar, e o endereço fixo de gravação.
+
+### Corrigido
+
+- **`F7` não tinha mapeamento nenhum**: nem no backend nativo do Windows (`console_win.bas`, faltava
+  `Case VK_F7`) nem na tabela de fallback ANSI (`NormalizeKey`) — descoberto ao implementar o atalho de
+  alternância de modo do editor de Markdown, que dependia dessa tecla.
+
+### Créditos desta versão
+
+Ver a seção "Agradecimentos" em [README.md](README.md#agradecimentos).
+
+---
+
 ## [0.3.0] — "MAMUTE.PRN" — 2026-09-06
 
 O mamute começa a incorporar o **SUPER-X**, o segundo monitor/debugger clássico de MSX que inspira a

@@ -34,6 +34,16 @@ try {
     Copy-Item (Join-Path $projectRoot "basic-dignified") (Join-Path $distDir "basic-dignified") -Recurse
     Copy-Item (Join-Path $projectRoot "asMSX") (Join-Path $distDir "asMSX") -Recurse
 
+    # roms\msx1.alf e' a fonte MSX1 padrao que semeia todo "Novo Editor de
+    # Fontes" (ver src/editor.bas) - sem ela o editor de fontes cai num
+    # buffer em branco no pacote distribuido. So esse arquivo vai (os
+    # dumps de BIOS/ROM reais em roms\*.ROM nao sao distribuidos aqui -
+    # continuam sendo apontados manualmente pelo usuario em
+    # Configurar -> Mamute, como sempre foi).
+    $distRomsDir = Join-Path $distDir "roms"
+    New-Item -Path $distRomsDir -ItemType Directory | Out-Null
+    Copy-Item (Join-Path $projectRoot "roms\msx1.alf") $distRomsDir
+
     New-Item -Path (Join-Path $distDir "logs") -ItemType Directory | Out-Null
     New-Item -Path (Join-Path $distDir "disk") -ItemType Directory | Out-Null
 
