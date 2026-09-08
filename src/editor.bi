@@ -12,6 +12,10 @@ Type Document
     isHelp As Integer
     isMamuteTerm As Integer
     isMamuteEdit As Integer
+    isMarkdown As Integer
+    mdViewMode As Integer
+    mdPreviewScrollY As Integer
+    mdPreviewDirty As Integer
     helpTitle As String
     helpWrapWidth As Integer
     lineCount As Integer

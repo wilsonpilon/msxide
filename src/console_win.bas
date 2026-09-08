@@ -236,6 +236,8 @@ Private Function TranslateKeyEvent(ByRef rec As KEY_EVENT_RECORD, ByRef keyText 
             keyText = Chr(0) & Chr(63): Return -1
         Case VK_F6
             keyText = Chr(0) & Chr(64): Return -1
+        Case VK_F7
+            keyText = Chr(0) & Chr(65): Return -1
         Case VK_F10
             keyText = Chr(0) & Chr(68): Return -1
         Case VK_RETURN

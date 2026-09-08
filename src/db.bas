@@ -257,6 +257,7 @@ Sub DbInit(ByRef dbPath As String)
     SeedHelpDoc("SEETRACKER", "docs\\help\\seetracker.md")
     SeedHelpDoc("MSXBAS2ROM", "docs\\help\\msxbas2rom.md")
     SeedHelpDoc("MAMUTE", "docs\\help\\mamute.md")
+    SeedHelpDoc("MARKDOWN", "docs\\help\\markdown.md")
 End Sub
 
 Function DbGetHelpDoc(ByRef docName As String, ByRef fallbackPath As String = "") As String

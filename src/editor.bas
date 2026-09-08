@@ -10,6 +10,7 @@ Dim Shared docCount As Integer
 Dim Shared activeDoc As Integer
 Dim Shared untitledCounter As Integer = 1
 Dim Shared untitledAsmCounter As Integer = 0
+Dim Shared untitledMdCounter As Integer = 0
 Dim Shared forceFullRedraw As Integer = 1
 Dim Shared uiW As Integer = 100
 Dim Shared uiH As Integer = 35
@@ -60,6 +61,8 @@ Const MENU_CMD_CFG_MAMUTE_MEM = 40
 Const MENU_CMD_MAMUTE_OPEN = 41
 Const MENU_CMD_MAMUTE_HELP = 42
 Const MENU_CMD_CFG_PRINTER = 43
+Const MENU_CMD_NEW_MD = 44
+Const MENU_CMD_HELP_MARKDOWN = 45
 
 Const MENU_VIEW_NONE = 0
 Const MENU_VIEW_FILE = 1
@@ -107,6 +110,14 @@ Dim Shared helpBgTable As UByte = 7
 Dim Shared msxDictLineCommand(1 To MAX_DOCS, 1 To MAX_LINES) As String
 Dim Shared helpLineFg(1 To MAX_DOCS, 1 To MAX_LINES) As UByte
 Dim Shared helpLineBg(1 To MAX_DOCS, 1 To MAX_LINES) As UByte
+' Buffer renderizado do preview markdown ao vivo (modos Dividido/Somente
+' leitura do editor de .md) - mesmo padrao de helpLineFg/helpLineBg, mas
+' separado (o conteudo de origem aqui e' o buffer em memoria sendo editado
+' agora, nao um arquivo de ajuda fixo).
+Dim Shared mdPreviewLines(1 To MAX_DOCS, 1 To MAX_LINES) As String
+Dim Shared mdPreviewFg(1 To MAX_DOCS, 1 To MAX_LINES) As UByte
+Dim Shared mdPreviewBg(1 To MAX_DOCS, 1 To MAX_LINES) As UByte
+Dim Shared mdPreviewLineCount(1 To MAX_DOCS) As Integer
 Dim Shared msxDictHasReturnHelp As Integer = 0
 Dim Shared msxDictReturnHelpPath As String
 Dim Shared msxDictReturnHelpTitle As String
@@ -245,6 +256,8 @@ Type ConfigField
 End Type
 
 Declare Function GetClientTextWidth(ByRef d As Document) As Integer
+Declare Function GetClientTextHeight(ByRef d As Document) As Integer
+Declare Sub BuildMarkdownBufferFromText(ByRef sourceText As String, ByVal wrapWidth As Integer, outLines() As String, outColors() As UByte, outBgs() As UByte, ByRef outCount As Integer, indexTargets() As Integer, indexEntryLine() As Integer, ByRef indexCount As Integer)
 Declare Function GetMaxScrollY(ByRef d As Document) As Integer
 Declare Sub ClampScroll(ByRef d As Document)
 Declare Sub DrawMamuteInputLine(ByVal docIndex As Integer, ByVal rowY As Integer)
@@ -255,6 +268,7 @@ Declare Function PromptConfigExitAction(ByRef titleText As String) As Integer
 Declare Sub CompileActiveDocument(ByVal compileMode As Integer)
 Declare Sub ShowInfoDialog(ByRef titleText As String, ByRef msg1 As String, ByRef msg2 As String = "")
 Declare Sub EditorCreateAsmUntitled()
+Declare Sub EditorCreateMdUntitled()
 Declare Sub EditorCreateMamuteTerm()
 Declare Sub ShowMamuteMemoryConfig()
 Declare Sub HandleMamuteTermKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
@@ -602,6 +616,8 @@ Private Function NormalizeKey(ByRef keyText As String) As String
                 Return Chr(0) & Chr(63) ' F5
             Case Chr(27) & "[17~"
                 Return Chr(0) & Chr(64) ' F6
+            Case Chr(27) & "[18~"
+                Return Chr(0) & Chr(65) ' F7
             Case Chr(27) & "[19~"
                 Return Chr(0) & Chr(66) ' F8
                 Case Chr(27) & "[21~"
@@ -2284,10 +2300,89 @@ Private Sub DrawHelpLine(ByVal docIndex As Integer, ByVal lineIndex As Integer, 
     Next i
 End Sub
 
+' Desenha 1 linha do preview markdown renderizado (mdPreviewLines/Fg/Bg) -
+' usado tanto pela metade direita do modo Dividido quanto pela janela
+' inteira do modo Somente leitura do editor de .md. startX e' a PRIMEIRA
+' coluna de conteudo (ja sem a borda/divisoria).
+Private Sub DrawMdPreviewLine(ByVal docIndex As Integer, ByVal lineIndex As Integer, ByVal rowY As Integer, ByVal clientW As Integer, ByVal startX As Integer)
+    If clientW > MAX_SYNTAX_W Then clientW = MAX_SYNTAX_W
+    Dim lineRaw As String
+    Dim fg As UByte = 15
+    Dim bg As UByte = 0
+    If lineIndex >= 1 And lineIndex <= mdPreviewLineCount(docIndex) Then
+        lineRaw = mdPreviewLines(docIndex, lineIndex)
+        fg = mdPreviewFg(docIndex, lineIndex)
+        bg = mdPreviewBg(docIndex, lineIndex)
+    Else
+        lineRaw = ""
+    End If
+    Dim padded As String = Left(lineRaw & Space(clientW), clientW)
+    Dim i As Integer
+    For i = 1 To clientW
+        ConsoleSetCell(startX + i - 1, rowY, Asc(Mid(padded, i, 1)), fg, bg)
+    Next i
+End Sub
+
+' Reconstroi mdPreviewLines/Fg/Bg a partir do buffer de edicao atual (nao do
+' disco) quando o preview esta "sujo" (mdPreviewDirty) - chamado sob demanda
+' antes de desenhar, mesmo espirito de EnsureHelpRerender, so' que aqui o
+' gatilho e' conteudo mudando (edicao), nao so' redimensionamento.
+Private Sub EnsureMdPreviewFresh(ByVal docIndex As Integer)
+    Dim ByRef d As Document = docs(docIndex)
+    If d.isMarkdown = 0 Then Exit Sub
+    If d.mdViewMode = 0 Then Exit Sub
+    If d.mdPreviewDirty = 0 And mdPreviewLineCount(docIndex) > 0 Then Exit Sub
+
+    Dim previewW As Integer = GetClientTextWidth(d)
+    If previewW < 10 Then previewW = 10
+
+    Dim sourceText As String = ""
+    Dim i As Integer
+    For i = 1 To d.lineCount
+        sourceText &= d.lines(i)
+        If i < d.lineCount Then sourceText &= Chr(10)
+    Next i
+
+    Dim renderLines() As String
+    Dim renderColors() As UByte
+    Dim renderBgs() As UByte
+    Dim renderCount As Integer
+    Dim idxTargets() As Integer
+    Dim idxEntryLine() As Integer
+    Dim idxCount As Integer
+
+    BuildMarkdownBufferFromText(sourceText, previewW, renderLines(), renderColors(), renderBgs(), renderCount, idxTargets(), idxEntryLine(), idxCount)
+
+    mdPreviewLineCount(docIndex) = 0
+    For i = 1 To renderCount
+        If mdPreviewLineCount(docIndex) >= MAX_LINES Then Exit For
+        mdPreviewLineCount(docIndex) += 1
+        mdPreviewLines(docIndex, mdPreviewLineCount(docIndex)) = renderLines(i)
+        mdPreviewFg(docIndex, mdPreviewLineCount(docIndex)) = renderColors(i)
+        mdPreviewBg(docIndex, mdPreviewLineCount(docIndex)) = renderBgs(i)
+    Next i
+
+    Dim maxScroll As Integer = mdPreviewLineCount(docIndex) - GetClientTextHeight(d)
+    If maxScroll < 0 Then maxScroll = 0
+    If d.mdPreviewScrollY > maxScroll Then d.mdPreviewScrollY = maxScroll
+    If d.mdPreviewScrollY < 0 Then d.mdPreviewScrollY = 0
+
+    d.mdPreviewDirty = 0
+End Sub
+
 Private Function GetClientTextWidth(ByRef d As Document) As Integer
     Dim w As Integer = d.winW - 3
+    If d.isMarkdown <> 0 And d.mdViewMode = 1 Then
+        w = (w - 1) \ 2
+    End If
     If w < 1 Then w = 1
     Return w
+End Function
+
+' Coluna (absoluta na tela) da divisoria vertical entre edicao/preview no
+' modo Dividido - e' onde a metade direita (preview) comeca a desenhar.
+Private Function GetMdSplitDividerX(ByRef d As Document) As Integer
+    Return d.winX + GetClientTextWidth(d) + 1
 End Function
 
 Private Function GetClientTextHeight(ByRef d As Document) As Integer
@@ -2717,6 +2812,10 @@ Private Sub InitBlankDocument(ByRef d As Document, ByRef docTitle As String)
     d.isHelp = 0
     d.isMamuteTerm = 0
     d.isMamuteEdit = 0
+    d.isMarkdown = 0
+    d.mdViewMode = 0
+    d.mdPreviewScrollY = 0
+    d.mdPreviewDirty = -1
     d.helpTitle = ""
     d.helpWrapWidth = 0
     d.lineCount = 1
@@ -2880,17 +2979,18 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
         ConsoleWriteText(2, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
         ConsoleWriteText(2, 3, Chr(186) & " N Novo Basic Dignified    F4   " & Chr(186), 0, 7)
         ConsoleWriteText(2, 4, Chr(186) & " Z Novo asMSX                   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 5, Chr(186) & " O Abrir...                F3   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 6, Chr(186) & " S Salvar                  F2   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 7, Chr(186) & " A Salvar Como                  " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 8, Chr(186) & " F Fechar                  F5   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 9, Chr(186) & " X Exit                         " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 10, Chr(186) & "                                " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 11, Chr(186) & " P Novo Projeto                 " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 12, Chr(186) & " J Abrir Projeto...             " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 13, Chr(186) & " K Salvar Projeto               " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 14, Chr(186) & " W Fechar Projeto               " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 15, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(2, 5, Chr(186) & " M Novo Arquivo MD              " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 6, Chr(186) & " O Abrir...                F3   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 7, Chr(186) & " S Salvar                  F2   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 8, Chr(186) & " A Salvar Como                  " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 9, Chr(186) & " F Fechar                  F5   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 10, Chr(186) & " X Exit                         " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 11, Chr(186) & "                                " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 12, Chr(186) & " P Novo Projeto                 " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 13, Chr(186) & " J Abrir Projeto...             " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 14, Chr(186) & " K Salvar Projeto               " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 15, Chr(186) & " W Fechar Projeto               " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 16, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_CONFIG Then
         ConsoleWriteText(11, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
         ConsoleWriteText(11, 3, Chr(186) & " B Basic Dignified               " & Chr(186), 0, 7)
@@ -2916,8 +3016,9 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
         ConsoleWriteText(53, 7, Chr(186) & " M MSX BASIC Dictionary             " & Chr(186), 0, 7)
         ConsoleWriteText(53, 8, Chr(186) & " E Editor                           " & Chr(186), 0, 7)
         ConsoleWriteText(53, 9, Chr(186) & " N Mamute Assembler                 " & Chr(186), 0, 7)
-        ConsoleWriteText(53, 10, Chr(186) & IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    ") & Chr(186), 0, 7)
-        ConsoleWriteText(53, 11, Chr(200) & String(34, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(53, 10, Chr(186) & " K Markdown                         " & Chr(186), 0, 7)
+        ConsoleWriteText(53, 11, Chr(186) & IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    ") & Chr(186), 0, 7)
+        ConsoleWriteText(53, 12, Chr(200) & String(34, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_REFERENCE Then
         ConsoleWriteText(33, 2, Chr(201) & String(40, Chr(205)) & Chr(187), 15, 1)
         ConsoleWriteText(33, 3, Chr(186) & Left(" R The MSX Red Book" & Space(40), 40) & Chr(186), 0, 7)
@@ -2952,7 +3053,17 @@ Private Sub DrawStatusBar()
     ConsoleGetMouseHud(mouseHudAvailable, mouseHudEnabled, mouseHudX, mouseHudY)
 
     Dim statusLine As String
-        statusLine = "F10 Menu F8 Compilar F1 Ajuda Shift+F1 Dict F6 Janela F4 Novo F3 Abrir F2 Salvar F5 Fechar Ctrl+L Log | Esc Sair | "
+        statusLine = "F10 Menu F8 Compilar F1 Ajuda Shift+F1 Dict F6 Janela "
+        If d.isMarkdown <> 0 Then
+            Dim mdModeLabel As String
+            Select Case d.mdViewMode
+                Case 1 : mdModeLabel = "Dividido"
+                Case 2 : mdModeLabel = "Leitura"
+                Case Else : mdModeLabel = "Edicao"
+            End Select
+            statusLine &= "F7 MD:" & mdModeLabel & " "
+        End If
+        statusLine &= "F4 Novo F3 Abrir F2 Salvar F5 Fechar Ctrl+L Log | Esc Sair | "
     statusLine &= "Ln " & Trim(Str(d.cursorY)) & ", Col " & Trim(Str(d.cursorX))
     statusLine &= " | C:" & Trim(Str(frameCharCalls))
     statusLine &= " A:" & Trim(Str(frameAttrCalls))
@@ -3000,6 +3111,7 @@ Private Sub DrawDocumentClient(ByVal docIndex As Integer)
     End If
 
     If d.isHelp <> 0 And docIndex = activeDoc Then EnsureHelpRerender(d)
+    If d.isMarkdown <> 0 And docIndex = activeDoc Then EnsureMdPreviewFresh(docIndex)
     Dim row As Integer
     Dim lineIndex As Integer
     Dim clientH As Integer
@@ -3010,8 +3122,15 @@ Private Sub DrawDocumentClient(ByVal docIndex As Integer)
         lineIndex = d.scrollY + row + 1
         If d.isHelp <> 0 Then
             DrawHelpLine(docIndex, lineIndex, d.winY + 1 + row)
+        ElseIf d.isMarkdown <> 0 And d.mdViewMode = 2 Then
+            DrawMdPreviewLine(docIndex, d.mdPreviewScrollY + row + 1, d.winY + 1 + row, GetClientTextWidth(d), d.winX + 1)
         Else
             DrawSyntaxLine(docIndex, lineIndex, d.winY + 1 + row)
+            If d.isMarkdown <> 0 And d.mdViewMode = 1 Then
+                Dim dividerX As Integer = GetMdSplitDividerX(d)
+                ConsoleSetCell(dividerX, d.winY + 1 + row, Asc(Chr(179)), 15, 1)
+                DrawMdPreviewLine(docIndex, d.mdPreviewScrollY + row + 1, d.winY + 1 + row, GetClientTextWidth(d), dividerX + 1)
+            End If
         End If
     Next row
 
@@ -3034,6 +3153,16 @@ Private Sub DrawDocumentLine(ByVal docIndex As Integer, ByVal lineNumber As Inte
     End If
 
     If d.isHelp <> 0 And docIndex = activeDoc Then EnsureHelpRerender(d)
+
+    ' Modo Dividido/Somente leitura: uma linha editada pode rewrappear
+    ' varias linhas do preview (contagem de linha nao bate 1:1 com a
+    ' edicao) - mais simples e seguro redesenhar o cliente inteiro do que
+    ' tentar atualizar so' a linha tocada.
+    If d.isMarkdown <> 0 And d.mdViewMode <> 0 Then
+        DrawDocumentClient(docIndex)
+        Exit Sub
+    End If
+
     Dim clientH As Integer = GetClientTextHeight(d)
     Dim row As Integer = lineNumber - d.scrollY
 
@@ -3098,6 +3227,10 @@ Private Sub MoveDown(ByRef d As Document)
 End Sub
 
 Private Sub InsertCharAtCursor(ByRef d As Document, ByRef ch As String)
+    If d.isMarkdown <> 0 Then
+        If d.mdViewMode = 2 Then Exit Sub
+        d.mdPreviewDirty = -1
+    End If
     Dim lineText As String = d.lines(d.cursorY)
     lineText = Left(lineText, d.cursorX - 1) & ch & Mid(lineText, d.cursorX)
     d.lines(d.cursorY) = lineText
@@ -3105,6 +3238,10 @@ Private Sub InsertCharAtCursor(ByRef d As Document, ByRef ch As String)
 End Sub
 
 Private Sub InsertNewLine(ByRef d As Document)
+    If d.isMarkdown <> 0 Then
+        If d.mdViewMode = 2 Then Exit Sub
+        d.mdPreviewDirty = -1
+    End If
     If d.lineCount >= MAX_LINES Then Exit Sub
 
     Dim lineText As String = d.lines(d.cursorY)
@@ -3125,6 +3262,10 @@ Private Sub InsertNewLine(ByRef d As Document)
 End Sub
 
 Private Sub BackspaceAtCursor(ByRef d As Document)
+    If d.isMarkdown <> 0 Then
+        If d.mdViewMode = 2 Then Exit Sub
+        d.mdPreviewDirty = -1
+    End If
     If d.cursorX > 1 Then
         Dim lineText As String = d.lines(d.cursorY)
         lineText = Left(lineText, d.cursorX - 2) & Mid(lineText, d.cursorX)
@@ -3150,6 +3291,10 @@ Private Sub BackspaceAtCursor(ByRef d As Document)
 End Sub
 
 Private Sub DeleteAtCursor(ByRef d As Document)
+    If d.isMarkdown <> 0 Then
+        If d.mdViewMode = 2 Then Exit Sub
+        d.mdPreviewDirty = -1
+    End If
     Dim lineText As String = d.lines(d.cursorY)
     Dim lineLen As Integer = Len(lineText)
 
@@ -3815,48 +3960,23 @@ Private Function BuildTableVisualRowAligned(ByRef rawLine As String, colWidths()
     Return outLine
 End Function
 
-Private Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As Integer, outLines() As String, outColors() As UByte, outBgs() As UByte, ByRef outCount As Integer, indexTargets() As Integer, indexEntryLine() As Integer, ByRef indexCount As Integer)
+' Nucleo de parsing Markdown->TUI, extraido de BuildMarkdownHelpBuffer (que
+' virou um wrapper fino, ver abaixo) pra poder ser chamado tambem com o
+' texto de um buffer em memoria (preview ao vivo do editor de .md) em vez de
+' sempre precisar ler de disco/cache "dbhelp:". Nenhuma linha da logica de
+' parse em si mudou nesta extracao.
+Private Sub BuildMarkdownBufferFromText(ByRef sourceText As String, ByVal wrapWidth As Integer, outLines() As String, outColors() As UByte, outBgs() As UByte, ByRef outCount As Integer, indexTargets() As Integer, indexEntryLine() As Integer, ByRef indexCount As Integer)
     Dim srcLines() As String
     Dim srcCount As Integer = 0
     Dim headingTitles() As String
     Dim headingLevels() As Integer
     Dim headingSourceLine() As Integer
     Dim headingCount As Integer = 0
-    Dim ff As Integer = FreeFile
     Dim lineText As String
-    Dim errCode As Integer
     Dim i As Integer
-    Dim sourceText As String = ""
 
     outCount = 0
     indexCount = 0
-
-    If Left(LCase(filePath), 7) = "dbhelp:" Then
-        Dim sepPos As Integer = InStr(filePath, "|")
-        Dim docKey As String
-        Dim fallbackPath As String = ""
-
-        If sepPos > 0 Then
-            docKey = Mid(filePath, 8, sepPos - 8)
-            fallbackPath = Mid(filePath, sepPos + 1)
-        Else
-            docKey = Mid(filePath, 8)
-        End If
-        sourceText = DbGetHelpDoc(docKey, fallbackPath)
-    Else
-        errCode = Open(filePath For Input As #ff)
-        If errCode <> 0 Then
-            AddHelpLine(outLines(), outColors(), outBgs(), outCount, "Nao foi possivel abrir: " & filePath, 12, helpBgText)
-            Exit Sub
-        End If
-
-        While Not Eof(ff)
-            Line Input #ff, lineText
-            sourceText &= lineText
-            If Not Eof(ff) Then sourceText &= Chr(10)
-        Wend
-        Close #ff
-    End If
 
     sourceText = StripCR(sourceText)
     sourceText = ConsoleUtf8ToActiveCp(sourceText)
@@ -4097,6 +4217,51 @@ Private Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As
         Dim plainLine As String = ExpandTabsForHelp(lineText)
         AddWrappedHelpLine(outLines(), outColors(), outBgs(), outCount, plainLine, helpFgText, helpBgText, wrapWidth)
     Next i
+End Sub
+
+' Wrapper fino: resolve sourceText a partir de um caminho de arquivo real ou
+' do cache "dbhelp:KEY|caminho-de-fallback" (mesma convencao de sempre - ver
+' DbGetHelpDoc/SeedHelpDoc em src/db.bas) e delega todo o parse pra
+' BuildMarkdownBufferFromText. Usado pela Ajuda (documentos fixos) e pelo
+' modo "Somente leitura" do editor de .md (le direto do caminho real do
+' arquivo do usuario, sem indirecao "dbhelp:").
+Private Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As Integer, outLines() As String, outColors() As UByte, outBgs() As UByte, ByRef outCount As Integer, indexTargets() As Integer, indexEntryLine() As Integer, ByRef indexCount As Integer)
+    Dim ff As Integer = FreeFile
+    Dim lineText As String
+    Dim errCode As Integer
+    Dim sourceText As String = ""
+
+    outCount = 0
+    indexCount = 0
+
+    If Left(LCase(filePath), 7) = "dbhelp:" Then
+        Dim sepPos As Integer = InStr(filePath, "|")
+        Dim docKey As String
+        Dim fallbackPath As String = ""
+
+        If sepPos > 0 Then
+            docKey = Mid(filePath, 8, sepPos - 8)
+            fallbackPath = Mid(filePath, sepPos + 1)
+        Else
+            docKey = Mid(filePath, 8)
+        End If
+        sourceText = DbGetHelpDoc(docKey, fallbackPath)
+    Else
+        errCode = Open(filePath For Input As #ff)
+        If errCode <> 0 Then
+            AddHelpLine(outLines(), outColors(), outBgs(), outCount, "Nao foi possivel abrir: " & filePath, 12, helpBgText)
+            Exit Sub
+        End If
+
+        While Not Eof(ff)
+            Line Input #ff, lineText
+            sourceText &= lineText
+            If Not Eof(ff) Then sourceText &= Chr(10)
+        Wend
+        Close #ff
+    End If
+
+    BuildMarkdownBufferFromText(sourceText, wrapWidth, outLines(), outColors(), outBgs(), outCount, indexTargets(), indexEntryLine(), indexCount)
 End Sub
 
 Private Sub DrawStyledHelpLine(ByVal x As Integer, ByVal y As Integer, ByRef lineText As String, ByVal baseFg As UByte, ByVal bg As UByte, ByVal maxWidth As Integer)
@@ -5302,6 +5467,11 @@ Sub CompileActiveDocument(ByVal compileMode As Integer)
 
     If d.isHelp <> 0 Then
         CompileDlgFinish("Ajuda nao pode ser compilada.", "", 0)
+        Exit Sub
+    End If
+
+    If d.isMarkdown <> 0 Then
+        CompileDlgFinish("Arquivo Markdown nao pode ser compilado.", "", 0)
         Exit Sub
     End If
 
@@ -7394,6 +7564,8 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                     Return MENU_CMD_HELP_EDITOR
                 Case "N"
                     Return MENU_CMD_MAMUTE_HELP
+                Case "K"
+                    Return MENU_CMD_HELP_MARKDOWN
                 Case "C"
                     Return MENU_CMD_HELP_THEME
             End Select
@@ -7445,6 +7617,8 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                 Return MENU_CMD_NEW
             Case "Z"
                 Return MENU_CMD_NEW_ASMSX
+            Case "M"
+                Return MENU_CMD_NEW_MD
             Case "O"
                 Return MENU_CMD_OPEN
             Case "S"
@@ -7551,6 +7725,8 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             EditorCreateUntitled()
         Case MENU_CMD_NEW_ASMSX
             EditorCreateAsmUntitled()
+        Case MENU_CMD_NEW_MD
+            EditorCreateMdUntitled()
         Case MENU_CMD_OPEN
             OpenDocumentDialog()
         Case MENU_CMD_SAVE
@@ -7632,6 +7808,8 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             OpenHelpDocument("Mamute Assembler", "dbhelp:MAMUTE|docs\help\mamute.md")
         Case MENU_CMD_CFG_PRINTER
             ShowConfigForm("Impressora", "printer")
+        Case MENU_CMD_HELP_MARKDOWN
+            OpenHelpDocument("Markdown", "dbhelp:MARKDOWN|docs\help\markdown.md")
     End Select
 
     menuOpen = 0
@@ -7775,6 +7953,10 @@ Sub EditorOpenFromPath(ByRef path As String)
 
     InitBlankDocument(docs(docCount), path)
     ClearMsxDictLineMap(docCount)
+    If GetExtLower(path) = ".md" Then
+        docs(docCount).isMarkdown = -1
+        mdPreviewLineCount(docCount) = 0
+    End If
     If Dir(path) <> "" Then
         LoadFromDisk(docs(docCount), path)
     End If
@@ -7860,6 +8042,24 @@ Private Sub EditorCreateAsmUntitled()
         Dim ByRef d As Document = docs(activeDoc)
         d.lineCount = 0
         AppendDocTextLines(d, BuildAsmHelloWorldTemplate(baseName))
+        d.cursorX = 1
+        d.cursorY = 1
+        d.scrollX = 0
+        d.scrollY = 0
+    End If
+End Sub
+
+Private Sub EditorCreateMdUntitled()
+    Dim baseName As String = "md" & Right("00" & Trim(Str(untitledMdCounter)), 2)
+    Dim docName As String = baseName & ".md"
+    untitledMdCounter += 1
+
+    EditorOpenFromPath(docName)
+
+    If activeDoc >= 1 And activeDoc <= docCount Then
+        Dim ByRef d As Document = docs(activeDoc)
+        d.lineCount = 0
+        AppendDocTextLines(d, "# " & baseName & Chr(10) & Chr(10))
         d.cursorX = 1
         d.cursorY = 1
         d.scrollX = 0
@@ -14529,6 +14729,22 @@ Sub EditorHandleKey(ByRef keyText As String, ByRef running As Integer, ByRef men
         Exit Sub
     End If
 
+    ' F7: alterna o modo de visualizacao de um documento .md (Edicao simples
+    ' -> Dividido -> Somente leitura -> Edicao simples...). Sem efeito em
+    ' qualquer outro tipo de documento.
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 65 Then
+        If activeDoc >= 1 And activeDoc <= docCount Then
+            Dim ByRef mdDoc As Document = docs(activeDoc)
+            If mdDoc.isMarkdown <> 0 Then
+                mdDoc.mdViewMode = (mdDoc.mdViewMode + 1) Mod 3
+                mdDoc.mdPreviewDirty = -1
+                forceFullRedraw = 1
+                renderMode = RENDER_FULL
+            End If
+        End If
+        Exit Sub
+    End If
+
     ' Ctrl+L opens compile debug log directly, without going through menus.
     If keyText = Chr(12) Then
         OpenCompileLogDocument()
@@ -14632,12 +14848,28 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
         Dim ByRef dw As Document = docs(activeDoc)
         Dim wheelStep As Integer = 3
 
-        If mouseAction = MSX_MOUSE_WHEEL_UP Then
-            dw.scrollY -= wheelStep
+        Dim wheelHitsPreview As Integer = 0
+        If dw.isMarkdown <> 0 And dw.mdViewMode = 2 Then wheelHitsPreview = -1
+        If dw.isMarkdown <> 0 And dw.mdViewMode = 1 And mouseX > GetMdSplitDividerX(dw) Then wheelHitsPreview = -1
+
+        If wheelHitsPreview <> 0 Then
+            If mouseAction = MSX_MOUSE_WHEEL_UP Then
+                dw.mdPreviewScrollY -= wheelStep
+            Else
+                dw.mdPreviewScrollY += wheelStep
+            End If
+            Dim previewMaxScroll As Integer = mdPreviewLineCount(activeDoc) - GetClientTextHeight(dw)
+            If previewMaxScroll < 0 Then previewMaxScroll = 0
+            If dw.mdPreviewScrollY < 0 Then dw.mdPreviewScrollY = 0
+            If dw.mdPreviewScrollY > previewMaxScroll Then dw.mdPreviewScrollY = previewMaxScroll
         Else
-            dw.scrollY += wheelStep
+            If mouseAction = MSX_MOUSE_WHEEL_UP Then
+                dw.scrollY -= wheelStep
+            Else
+                dw.scrollY += wheelStep
+            End If
+            ClampScroll(dw)
         End If
-        ClampScroll(dw)
 
         forceFullRedraw = 1
         renderMode = RENDER_FULL
@@ -14744,22 +14976,24 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                     Case 4
                         menuCmd = MENU_CMD_NEW_ASMSX
                     Case 5
-                        menuCmd = MENU_CMD_OPEN
+                        menuCmd = MENU_CMD_NEW_MD
                     Case 6
-                        menuCmd = MENU_CMD_SAVE
+                        menuCmd = MENU_CMD_OPEN
                     Case 7
-                        menuCmd = MENU_CMD_SAVE_AS
+                        menuCmd = MENU_CMD_SAVE
                     Case 8
-                        menuCmd = MENU_CMD_CLOSE
+                        menuCmd = MENU_CMD_SAVE_AS
                     Case 9
+                        menuCmd = MENU_CMD_CLOSE
+                    Case 10
                         menuCmd = MENU_CMD_EXIT
-                    Case 11
-                        menuCmd = MENU_CMD_PROJECT_NEW
                     Case 12
-                        menuCmd = MENU_CMD_PROJECT_OPEN
+                        menuCmd = MENU_CMD_PROJECT_NEW
                     Case 13
-                        menuCmd = MENU_CMD_PROJECT_SAVE
+                        menuCmd = MENU_CMD_PROJECT_OPEN
                     Case 14
+                        menuCmd = MENU_CMD_PROJECT_SAVE
+                    Case 15
                         menuCmd = MENU_CMD_PROJECT_CLOSE
                 End Select
             End If
@@ -14811,6 +15045,8 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                     Case 9
                         menuCmd = MENU_CMD_MAMUTE_HELP
                     Case 10
+                        menuCmd = MENU_CMD_HELP_MARKDOWN
+                    Case 11
                         menuCmd = MENU_CMD_HELP_THEME
                 End Select
             End If
@@ -15452,7 +15688,118 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
-    report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword & ", refdict biosdoc (" & Trim(Str(biosdocLineCount)) & " linhas), redbook (" & Trim(Str(rbTopicCount)) & " topicos/" & Trim(Str(rbGroupHeaders)) & " grupos, Ver tambem OK), msxmanuals (" & Trim(Str(mmTopicCount)) & " topicos, sem duplicata), openmsx (" & Trim(Str(omTopicCount)) & " topicos), nestorbasic/seetracker/msxbas2rom/editor/mamute OK, th2handbook (" & Trim(Str(thTopicCount)) & "), bioscalls (" & Trim(Str(bcTopicCount)) & "), hardware (" & Trim(Str(hwTopicCount)) & ")"
+    OpenHelpDocument("Markdown", "dbhelp:MARKDOWN|docs\help\markdown.md")
+    If docs(activeDoc).lineCount < 20 Then
+        report = "SMOKE HELP FAIL: docs\help\markdown.md nao carregou (" & Trim(Str(docs(activeDoc).lineCount)) & " linhas)"
+        Return 0
+    End If
+
+    ' Editor de .md: deteccao de tipo de documento, ciclo de modos (F7) e
+    ' preview ao vivo (BuildMarkdownBufferFromText / EnsureMdPreviewFresh).
+    ' Roda por ultimo (depois da checagem de acentuacao acima) porque muda
+    ' activeDoc varias vezes - o resto do teste ja terminou de olhar pro
+    ' documento do Mamute a essa altura.
+    Dim mdRenderLines() As String
+    Dim mdRenderColors() As UByte
+    Dim mdRenderBgs() As UByte
+    Dim mdRenderCount As Integer
+    Dim mdIdxTargets() As Integer
+    Dim mdIdxEntryLine() As Integer
+    Dim mdIdxCount As Integer
+    Dim mdSourceText As String = "# Titulo" & Chr(10) & Chr(10) & "- item 1" & Chr(10) & "texto normal"
+
+    BuildMarkdownBufferFromText(mdSourceText, 40, mdRenderLines(), mdRenderColors(), mdRenderBgs(), mdRenderCount, mdIdxTargets(), mdIdxEntryLine(), mdIdxCount)
+    If mdRenderCount < 3 Then
+        report = "SMOKE HELP FAIL: BuildMarkdownBufferFromText deveria gerar pelo menos 3 linhas (titulo/lista/texto), veio " & Trim(Str(mdRenderCount))
+        Return 0
+    End If
+    ' BuildMarkdownHelpBuffer sempre prefixa um bloco INDICE quando ha' pelo
+    ' menos 1 cabecalho na fonte (mesmo comportamento de sempre da Ajuda) -
+    ' entao o titulo renderizado nao fica necessariamente na linha 1, so'
+    ' procura em qualquer lugar do buffer em vez de fixar indice.
+    Dim mdFoundTitleLine As Integer = 0
+    Dim mdFoundTitleColor As UByte = 0
+    Dim mdFoundListLine As Integer = 0
+    Dim mdLi As Integer
+    For mdLi = 1 To mdRenderCount
+        If mdRenderLines(mdLi) = "Titulo" Then
+            mdFoundTitleLine = -1
+            mdFoundTitleColor = mdRenderColors(mdLi)
+        End If
+        If mdRenderLines(mdLi) = "* item 1" Then mdFoundListLine = -1
+    Next mdLi
+    If mdFoundTitleLine = 0 Then
+        report = "SMOKE HELP FAIL: BuildMarkdownBufferFromText deveria renderizar '# Titulo' como 'Titulo' em alguma linha"
+        Return 0
+    End If
+    If mdFoundTitleColor <> helpFgH1 Then
+        report = "SMOKE HELP FAIL: BuildMarkdownBufferFromText deveria colorir o cabecalho H1 com helpFgH1 (" & Trim(Str(helpFgH1)) & "), veio " & Trim(Str(mdFoundTitleColor))
+        Return 0
+    End If
+    If mdFoundListLine = 0 Then
+        report = "SMOKE HELP FAIL: BuildMarkdownBufferFromText deveria renderizar '- item 1' como '* item 1' em alguma linha"
+        Return 0
+    End If
+
+    EditorOpenFromPath("smoke_test_markdown.md")
+    Dim mdDocIdx As Integer = activeDoc
+    If docs(mdDocIdx).isMarkdown = 0 Then
+        report = "SMOKE HELP FAIL: abrir um .md deveria marcar isMarkdown<>0"
+        Return 0
+    End If
+    If docs(mdDocIdx).mdViewMode <> 0 Then
+        report = "SMOKE HELP FAIL: .md recem-aberto deveria comecar no modo 0 (Edicao simples)"
+        Return 0
+    End If
+
+    docs(mdDocIdx).lineCount = 0
+    AppendDocTextLines(docs(mdDocIdx), "# Cabecalho" & Chr(10) & "linha de texto")
+    docs(mdDocIdx).mdPreviewDirty = -1
+
+    Dim mdRunningDummy As Integer = 1
+    Dim mdMenuOpenDummy As Integer = 0
+    Dim mdF7Key As String = Chr(0) & Chr(65)
+
+    EditorHandleKey(mdF7Key, mdRunningDummy, mdMenuOpenDummy)
+    If docs(mdDocIdx).mdViewMode <> 1 Then
+        report = "SMOKE HELP FAIL: F7 no .md deveria ir de modo 0 pra modo 1 (Dividido), veio " & Trim(Str(docs(mdDocIdx).mdViewMode))
+        Return 0
+    End If
+
+    EnsureMdPreviewFresh(mdDocIdx)
+    If mdPreviewLineCount(mdDocIdx) < 1 Then
+        report = "SMOKE HELP FAIL: EnsureMdPreviewFresh deveria preencher mdPreviewLineCount depois do F7 pro modo Dividido"
+        Return 0
+    End If
+    Dim mdFoundPreviewTitle As Integer = 0
+    Dim mdPi As Integer
+    For mdPi = 1 To mdPreviewLineCount(mdDocIdx)
+        If mdPreviewLines(mdDocIdx, mdPi) = "Cabecalho" Then mdFoundPreviewTitle = -1
+    Next mdPi
+    If mdFoundPreviewTitle = 0 Then
+        report = "SMOKE HELP FAIL: preview do .md deveria mostrar 'Cabecalho' (de '# Cabecalho') em alguma linha do preview"
+        Return 0
+    End If
+
+    EditorHandleKey(mdF7Key, mdRunningDummy, mdMenuOpenDummy)
+    If docs(mdDocIdx).mdViewMode <> 2 Then
+        report = "SMOKE HELP FAIL: F7 de novo deveria ir pro modo 2 (Somente leitura), veio " & Trim(Str(docs(mdDocIdx).mdViewMode))
+        Return 0
+    End If
+    Dim mdLineCountBeforeReadOnly As Integer = docs(mdDocIdx).lineCount
+    InsertCharAtCursor(docs(mdDocIdx), "Z")
+    If docs(mdDocIdx).lineCount <> mdLineCountBeforeReadOnly Or InStr(docs(mdDocIdx).lines(docs(mdDocIdx).cursorY), "Z") <> 0 Then
+        report = "SMOKE HELP FAIL: digitar no modo Somente leitura nao deveria alterar o texto"
+        Return 0
+    End If
+
+    EditorHandleKey(mdF7Key, mdRunningDummy, mdMenuOpenDummy)
+    If docs(mdDocIdx).mdViewMode <> 0 Then
+        report = "SMOKE HELP FAIL: F7 pela 3a vez deveria voltar pro modo 0 (Edicao simples), veio " & Trim(Str(docs(mdDocIdx).mdViewMode))
+        Return 0
+    End If
+
+    report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword & ", refdict biosdoc (" & Trim(Str(biosdocLineCount)) & " linhas), redbook (" & Trim(Str(rbTopicCount)) & " topicos/" & Trim(Str(rbGroupHeaders)) & " grupos, Ver tambem OK), msxmanuals (" & Trim(Str(mmTopicCount)) & " topicos, sem duplicata), openmsx (" & Trim(Str(omTopicCount)) & " topicos), nestorbasic/seetracker/msxbas2rom/editor/mamute/markdown OK, th2handbook (" & Trim(Str(thTopicCount)) & "), bioscalls (" & Trim(Str(bcTopicCount)) & "), hardware (" & Trim(Str(hwTopicCount)) & ")"
     Return -1
 End Function
 

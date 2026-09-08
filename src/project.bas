@@ -65,7 +65,7 @@ Private Function WriteBinaryFileP(ByRef filePath As String, ByRef content As Str
 End Function
 
 Private Function IsTrackedExt(ByRef ext As String) As Integer
-    Dim list As String = "|.dmx|.bad|.amx|.asc|.bmx|.bas|.asm|.inc|.bin|.dsk|"
+    Dim list As String = "|.dmx|.bad|.amx|.asc|.bmx|.bas|.asm|.inc|.bin|.dsk|.md|"
     Return IIf(InStr(list, "|" & ext & "|") > 0, -1, 0)
 End Function
 
