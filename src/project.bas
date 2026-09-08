@@ -65,7 +65,7 @@ Private Function WriteBinaryFileP(ByRef filePath As String, ByRef content As Str
 End Function
 
 Private Function IsTrackedExt(ByRef ext As String) As Integer
-    Dim list As String = "|.dmx|.bad|.amx|.asc|.bmx|.bas|.asm|.inc|.bin|.dsk|.md|"
+    Dim list As String = "|.dmx|.bad|.amx|.asc|.bmx|.bas|.asm|.inc|.bin|.dsk|.md|.alf|"
     Return IIf(InStr(list, "|" & ext & "|") > 0, -1, 0)
 End Function
 
@@ -105,6 +105,44 @@ End Function
 Function ProjectActivePath() As String
     Return gProjectPath
 End Function
+
+Function ProjectActiveDir() As String
+    Return gProjectDir
+End Function
+
+' Grava (ou atualiza) o conteudo de um arquivo do projeto direto no banco,
+' sem depender de "Salvar Projeto" (scan do disco) - usado pelo editor de
+' fontes pra registrar cada .alf assim que e' salvo em disco, ja deixando
+' o projeto com o registro atualizado na hora.
+Sub ProjectRegisterFile(ByRef relPath As String, ByRef content As String)
+    If DbProjectIsActive() = 0 Then Exit Sub
+    DbProjectSetFile(relPath, content)
+End Sub
+
+' Lista (caminhos relativos ao projeto) todo arquivo ja registrado no banco
+' do projeto ativo cuja extensao bata com extLower (ex.: ".alf") - usado
+' pelo editor de fontes pra montar a lista de "alfabetos no projeto".
+Sub ProjectListFilesWithExt(ByRef extLower As String, paths() As String, ByRef count As Integer)
+    count = 0
+    If DbProjectIsActive() = 0 Then Exit Sub
+
+    Dim allPaths() As String
+    Dim allCount As Integer
+    DbProjectListFiles(allPaths(), allCount)
+
+    Dim i As Integer
+    For i = 1 To allCount
+        If GetExtLowerP(allPaths(i)) = extLower Then
+            count += 1
+            If count = 1 Then
+                ReDim paths(1 To 1)
+            Else
+                ReDim Preserve paths(1 To count)
+            End If
+            paths(count) = allPaths(i)
+        End If
+    Next i
+End Sub
 
 Sub ProjectClose()
     DbProjectClose()
@@ -208,6 +246,11 @@ Function ProjectSave(ByRef errMsg As String, ByRef savedCount As Integer) As Int
     Dim diskSubdirNoSep As String = gProjectDir & "disk"
     If DirExistsP(diskSubdirNoSep) <> 0 Then
         ScanDirInto(diskSubdirNoSep & Chr(92), "disk" & Chr(92), paths(), count)
+    End If
+
+    Dim romsSubdirNoSep As String = gProjectDir & "roms"
+    If DirExistsP(romsSubdirNoSep) <> 0 Then
+        ScanDirInto(romsSubdirNoSep & Chr(92), "roms" & Chr(92), paths(), count)
     End If
 
     Dim i As Integer

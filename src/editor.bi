@@ -16,6 +16,17 @@ Type Document
     mdViewMode As Integer
     mdPreviewScrollY As Integer
     mdPreviewDirty As Integer
+    isPixelEditor As Integer
+    pixelEditKind As Integer
+    pixelEditSelectedChar As Integer
+    pixelEditZoomed As Integer
+    pixelEditCursorRow As Integer
+    pixelEditCursorCol As Integer
+    pixelEditOverviewTop As Integer
+    pixelEditBaseAddr As Integer
+    pixelEditListFocus As Integer
+    pixelEditListSelected As Integer
+    pixelEditListScrollTop As Integer
     helpTitle As String
     helpWrapWidth As Integer
     lineCount As Integer

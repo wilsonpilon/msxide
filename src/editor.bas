@@ -4,6 +4,7 @@
 #Include Once "compiler.bi"
 #Include Once "project.bi"
 #Include Once "version.bi"
+#Include Once "dir.bi"
 
 Dim Shared docs(1 To MAX_DOCS) As Document
 Dim Shared docCount As Integer
@@ -11,6 +12,7 @@ Dim Shared activeDoc As Integer
 Dim Shared untitledCounter As Integer = 1
 Dim Shared untitledAsmCounter As Integer = 0
 Dim Shared untitledMdCounter As Integer = 0
+Dim Shared untitledFontCounter As Integer = 0
 Dim Shared forceFullRedraw As Integer = 1
 Dim Shared uiW As Integer = 100
 Dim Shared uiH As Integer = 35
@@ -63,6 +65,7 @@ Const MENU_CMD_MAMUTE_HELP = 42
 Const MENU_CMD_CFG_PRINTER = 43
 Const MENU_CMD_NEW_MD = 44
 Const MENU_CMD_HELP_MARKDOWN = 45
+Const MENU_CMD_NEW_FONT = 46
 
 Const MENU_VIEW_NONE = 0
 Const MENU_VIEW_FILE = 1
@@ -269,6 +272,14 @@ Declare Sub CompileActiveDocument(ByVal compileMode As Integer)
 Declare Sub ShowInfoDialog(ByRef titleText As String, ByRef msg1 As String, ByRef msg2 As String = "")
 Declare Sub EditorCreateAsmUntitled()
 Declare Sub EditorCreateMdUntitled()
+Declare Sub EditorCreateFontUntitled()
+Declare Sub InitPixelEditorState(ByRef d As Document)
+Declare Sub InitBlankPixelBuffer(ByRef d As Document, ByVal charCount As Integer)
+Declare Sub LoadPixelEditorFromDisk(ByRef d As Document, ByRef path As String)
+Declare Sub DrawPixelEditor(ByVal docIndex As Integer)
+Declare Sub HandlePixelEditorKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+Declare Function PathDirOf(ByRef filePath As String) As String
+Declare Function ToAbsolutePath(ByRef path As String) As String
 Declare Sub EditorCreateMamuteTerm()
 Declare Sub ShowMamuteMemoryConfig()
 Declare Sub HandleMamuteTermKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
@@ -2816,6 +2827,17 @@ Private Sub InitBlankDocument(ByRef d As Document, ByRef docTitle As String)
     d.mdViewMode = 0
     d.mdPreviewScrollY = 0
     d.mdPreviewDirty = -1
+    d.isPixelEditor = 0
+    d.pixelEditKind = 0
+    d.pixelEditSelectedChar = 0
+    d.pixelEditZoomed = 0
+    d.pixelEditCursorRow = 0
+    d.pixelEditCursorCol = 0
+    d.pixelEditOverviewTop = 0
+    d.pixelEditBaseAddr = &H800
+    d.pixelEditListFocus = 0
+    d.pixelEditListSelected = 0
+    d.pixelEditListScrollTop = 0
     d.helpTitle = ""
     d.helpWrapWidth = 0
     d.lineCount = 1
@@ -2980,17 +3002,18 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
         ConsoleWriteText(2, 3, Chr(186) & " N Novo Basic Dignified    F4   " & Chr(186), 0, 7)
         ConsoleWriteText(2, 4, Chr(186) & " Z Novo asMSX                   " & Chr(186), 0, 7)
         ConsoleWriteText(2, 5, Chr(186) & " M Novo Arquivo MD              " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 6, Chr(186) & " O Abrir...                F3   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 7, Chr(186) & " S Salvar                  F2   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 8, Chr(186) & " A Salvar Como                  " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 9, Chr(186) & " F Fechar                  F5   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 10, Chr(186) & " X Exit                         " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 11, Chr(186) & "                                " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 12, Chr(186) & " P Novo Projeto                 " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 13, Chr(186) & " J Abrir Projeto...             " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 14, Chr(186) & " K Salvar Projeto               " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 15, Chr(186) & " W Fechar Projeto               " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 16, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(2, 6, Chr(186) & " G Novo Editor de Fontes        " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 7, Chr(186) & " O Abrir...                F3   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 8, Chr(186) & " S Salvar                  F2   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 9, Chr(186) & " A Salvar Como                  " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 10, Chr(186) & " F Fechar                  F5   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 11, Chr(186) & " X Exit                         " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 12, Chr(186) & "                                " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 13, Chr(186) & " P Novo Projeto                 " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 14, Chr(186) & " J Abrir Projeto...             " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 15, Chr(186) & " K Salvar Projeto               " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 16, Chr(186) & " W Fechar Projeto               " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 17, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_CONFIG Then
         ConsoleWriteText(11, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
         ConsoleWriteText(11, 3, Chr(186) & " B Basic Dignified               " & Chr(186), 0, 7)
@@ -3110,6 +3133,11 @@ Private Sub DrawDocumentClient(ByVal docIndex As Integer)
         Exit Sub
     End If
 
+    If d.isPixelEditor <> 0 Then
+        DrawPixelEditor(docIndex)
+        Exit Sub
+    End If
+
     If d.isHelp <> 0 And docIndex = activeDoc Then EnsureHelpRerender(d)
     If d.isMarkdown <> 0 And docIndex = activeDoc Then EnsureMdPreviewFresh(docIndex)
     Dim row As Integer
@@ -3149,6 +3177,11 @@ Private Sub DrawDocumentLine(ByVal docIndex As Integer, ByVal lineNumber As Inte
 
     If d.isMamuteEdit <> 0 Then
         DrawMamuteEditView(docIndex)
+        Exit Sub
+    End If
+
+    If d.isPixelEditor <> 0 Then
+        DrawPixelEditor(docIndex)
         Exit Sub
     End If
 
@@ -3317,6 +3350,69 @@ End Sub
 
 Private Sub SaveDocumentToDisk(ByRef d As Document)
     If d.isHelp <> 0 Then Exit Sub
+
+    ' Editor de fontes/sprites: cada "linha" e' 8 bytes CRUS (nao texto), o
+    ' arquivo em disco e' binario cru - Print#/texto corromperia bytes de
+    ' controle. Grava tudo concatenado de uma vez, igual o resto dos
+    ' escritores binarios do msxIDE (Mamute_PdfSaveListing, etc.).
+    If d.isPixelEditor <> 0 Then
+        ' Cria a pasta de destino se ainda nao existir (ex.: roms\ dentro
+        ' de um projeto recem-criado, que ainda nao tem essa subpasta) -
+        ' Open For Binary nao cria diretorio sozinho.
+        Dim pixelDir As String = PathDirOf(d.filePath)
+        If Len(pixelDir) > 0 Then
+            Dim pixelDirNoSep As String = pixelDir
+            If Right(pixelDirNoSep, 1) = Chr(92) Or Right(pixelDirNoSep, 1) = "/" Then pixelDirNoSep = Left(pixelDirNoSep, Len(pixelDirNoSep) - 1)
+            If Len(pixelDirNoSep) > 0 And Dir(pixelDirNoSep, fbDirectory) = "" Then MkDir pixelDirNoSep
+        End If
+
+        Dim ffPixel As Integer = FreeFile
+        If Open(d.filePath For Binary Access Write As #ffPixel) <> 0 Then Exit Sub
+        Dim rawBytes As String = ""
+        Dim pi As Integer
+        For pi = 1 To d.lineCount
+            rawBytes &= d.lines(pi)
+        Next pi
+
+        ' Cabecalho BSAVE do MSX (7 bytes): FE, inicio (2 bytes LE), fim (2
+        ' bytes LE), execucao (2 bytes LE) - mesmo formato usado por
+        ' roms\msx1.alf e pelo proprio SAVE/LOAD do Mamute. Gravar sempre
+        ' usa o endereco padrao de alfabeto MSX 9200H (pedido explicito do
+        ' usuario: "para salvar basta colocar o header FE 00 92 FF 99 00
+        ' 92") - NAO o endereco de onde o arquivo foi originalmente lido
+        ' (d.pixelEditBaseAddr so' importa pra LoadPixelEditorFromDisk
+        ' reconhecer o cabecalho de arquivos de terceiros; msx1.alf em si
+        ' fica em 0800H por ser um dump da ROM, mas todo alfabeto EDITADO e
+        ' salvo por aqui vira um arquivo pronto pra BLOAD em 9200H).
+        Dim startAddr As Integer = &H9200
+        Dim endAddr As Integer = startAddr + Len(rawBytes) - 1
+        If Len(rawBytes) = 0 Then endAddr = startAddr
+        Dim header As String = Chr(&HFE)
+        header &= Chr(startAddr And 255) & Chr((startAddr \ 256) And 255)
+        header &= Chr(endAddr And 255) & Chr((endAddr \ 256) And 255)
+        header &= Chr(startAddr And 255) & Chr((startAddr \ 256) And 255)
+
+        Put #ffPixel, 1, header
+        If Len(rawBytes) > 0 Then Put #ffPixel, 8, rawBytes
+        Close #ffPixel
+
+        ' Se o arquivo salvo mora dentro da pasta do projeto ativo, ja
+        ' registra o conteudo no banco do projeto na hora (nao precisa
+        ' esperar "Salvar Projeto") - pedido explicito do usuario: "ao
+        ' salvar um arquivo alf em roms/ salve tambem como um registro
+        ' dentro do projeto". Fora da pasta do projeto (ou sem projeto
+        ' aberto), nao ha' o que registrar - salva so' em disco, como
+        ' sempre.
+        If ProjectIsActive() <> 0 Then
+            Dim projDirS As String = ProjectActiveDir()
+            If Len(projDirS) > 0 And LCase(Left(ToAbsolutePath(d.filePath), Len(projDirS))) = LCase(projDirS) Then
+                Dim relPathS As String = Mid(ToAbsolutePath(d.filePath), Len(projDirS) + 1)
+                ProjectRegisterFile(relPathS, header & rawBytes)
+            End If
+        End If
+
+        Exit Sub
+    End If
 
     If Left(LCase(d.filePath), 4) = "cfg:" Then
         Dim cfgGroup As String = Mid(d.filePath, 5)
@@ -7619,6 +7715,8 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                 Return MENU_CMD_NEW_ASMSX
             Case "M"
                 Return MENU_CMD_NEW_MD
+            Case "G"
+                Return MENU_CMD_NEW_FONT
             Case "O"
                 Return MENU_CMD_OPEN
             Case "S"
@@ -7727,6 +7825,8 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             EditorCreateAsmUntitled()
         Case MENU_CMD_NEW_MD
             EditorCreateMdUntitled()
+        Case MENU_CMD_NEW_FONT
+            EditorCreateFontUntitled()
         Case MENU_CMD_OPEN
             OpenDocumentDialog()
         Case MENU_CMD_SAVE
@@ -7833,6 +7933,11 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
 
     If d.isMamuteEdit <> 0 Then
         HandleMamuteEditKey(d, keyText, renderHint)
+        Exit Sub
+    End If
+
+    If d.isPixelEditor <> 0 Then
+        HandlePixelEditorKey(d, keyText, renderHint)
         Exit Sub
     End If
 
@@ -7953,11 +8058,18 @@ Sub EditorOpenFromPath(ByRef path As String)
 
     InitBlankDocument(docs(docCount), path)
     ClearMsxDictLineMap(docCount)
-    If GetExtLower(path) = ".md" Then
+    Dim openExtLower As String = GetExtLower(path)
+    If openExtLower = ".md" Then
         docs(docCount).isMarkdown = -1
         mdPreviewLineCount(docCount) = 0
-    End If
-    If Dir(path) <> "" Then
+    ElseIf openExtLower = ".fnt" Or openExtLower = ".chr" Or openExtLower = ".alf" Then
+        InitPixelEditorState(docs(docCount))
+        If Dir(path) <> "" Then
+            LoadPixelEditorFromDisk(docs(docCount), path)
+        Else
+            InitBlankPixelBuffer(docs(docCount), 256)
+        End If
+    ElseIf Dir(path) <> "" Then
         LoadFromDisk(docs(docCount), path)
     End If
 
@@ -8064,6 +8176,447 @@ Private Sub EditorCreateMdUntitled()
         d.cursorY = 1
         d.scrollX = 0
         d.scrollY = 0
+    End If
+End Sub
+
+' ===========================================================================
+' Editor/visualizador de Fontes (e, no futuro, Sprites) - mostra e edita
+' caracteres bitmap 8x8 (1 bit = 1 pixel, o mesmo formato da Pattern
+' Generator Table de um MSX real) direto na tela TUI, usando bloco cheio
+' (Chr(219), 2 colunas de texto por pixel pra ficar quadrado - uma celula de
+' console normal e' mais alta que larga) em vez de so' "0"/"-".
+'
+' Cada "caractere" fica guardado como 1 elemento de d.lines() - uma STRING
+' de 8 bytes crus (nao texto legivel, cada Chr() e' o valor bruto de 1 linha
+' de pixels), reaproveitando a infraestrutura de linhas ja existente do
+' Document em vez de precisar de um array novo. d.lineCount = quantidade de
+' caracteres no arquivo. Arquivo em disco = binario cru, 8 bytes/caractere
+' (mesmo formato de um .FNT/dump de ROM de fonte de verdade) - por isso o
+' Save/Load deste tipo de documento NUNCA passa pelo caminho de texto normal
+' (Print#/Line Input corromperiam bytes de controle como Chr(10)/Chr(13)/
+' Chr(26)).
+'
+' pixelEditKind reserva o campo pra quando o editor de Sprites for
+' implementado (0=Fonte, 1=Sprite - sprites MSX sao o MESMO formato de bits,
+' só' a tabela de destino/tamanho de quadro mudam - o nucleo de
+' desenho/edicao de pixel abaixo ja fica generico o bastante pra servir os
+' dois, sem precisar duplicar nada quando chegar a vez do Sprite).
+' ===========================================================================
+
+Private Sub InitBlankPixelBuffer(ByRef d As Document, ByVal charCount As Integer)
+    d.lineCount = 0
+    Dim blankChar As String = String(8, Chr(0))
+    Dim ci As Integer
+    For ci = 1 To charCount
+        If d.lineCount >= MAX_LINES Then Exit For
+        d.lineCount += 1
+        d.lines(d.lineCount) = blankChar
+    Next ci
+End Sub
+
+' Detecta e pula o cabecalho real do BSAVE do MSX (FE + inicio/fim/execucao,
+' 2 bytes cada, little-endian - mesmo formato ja usado pelo SAVE/LOAD do
+' Mamute) quando presente (arquivos ".alf"/dumps extraidos de ROM de fonte
+' de verdade costumam vir assim) - senao, trata o arquivo inteiro como dados
+' crus (compativel com o formato mais simples que este editor gravava
+' antes). d.pixelEditBaseAddr guarda o endereco de inicio pra poder
+' regravar o mesmo cabecalho depois (ver SaveDocumentToDisk).
+Private Sub LoadPixelEditorFromDisk(ByRef d As Document, ByRef path As String)
+    Dim ff As Integer = FreeFile
+    d.lineCount = 0
+    If Open(path For Binary Access Read As #ff) <> 0 Then Exit Sub
+
+    Dim fileLen As LongInt = Lof(ff)
+    Dim rawBytes As String = ""
+    If fileLen > 0 Then
+        rawBytes = Space(fileLen)
+        Get #ff, 1, rawBytes
+    End If
+    Close #ff
+
+    Dim dataStart As Integer = 1
+    d.pixelEditBaseAddr = &H800
+    If Len(rawBytes) >= 7 And Asc(Mid(rawBytes, 1, 1)) = &HFE Then
+        Dim startLo As Integer = Asc(Mid(rawBytes, 2, 1))
+        Dim startHi As Integer = Asc(Mid(rawBytes, 3, 1))
+        d.pixelEditBaseAddr = startLo + startHi * 256
+        dataStart = 8
+    End If
+
+    Dim charCount As Integer = (Len(rawBytes) - dataStart + 1) \ 8
+    Dim ci As Integer
+    For ci = 0 To charCount - 1
+        If d.lineCount >= MAX_LINES Then Exit For
+        d.lineCount += 1
+        d.lines(d.lineCount) = Mid(rawBytes, dataStart + ci * 8, 8)
+    Next ci
+End Sub
+
+Private Sub InitPixelEditorState(ByRef d As Document)
+    d.isPixelEditor = -1
+    d.pixelEditKind = 0
+    d.pixelEditSelectedChar = 0
+    d.pixelEditZoomed = 0
+    d.pixelEditCursorRow = 0
+    d.pixelEditCursorCol = 0
+    d.pixelEditOverviewTop = 0
+    d.pixelEditBaseAddr = &H800
+    d.pixelEditListFocus = 0
+    d.pixelEditListSelected = 0
+    d.pixelEditListScrollTop = 0
+End Sub
+
+' Fonte padrao (MSX1, 256 caracteres) usada pra semear todo "Novo Editor de
+' Fontes" - pedido explicito do usuario, pra nunca comecar de um caractere
+' totalmente em branco. "Depois colocaremos opcao de abrir outras fontes" -
+' por enquanto e' fixo; trocar exige editar so' esta constante.
+Const MSX_DEFAULT_FONT_PATH = "roms" & Chr(92) & "msx1.alf"
+
+' EditorOpenFromPath ja sabe rotear ".fnt"/".chr"/".alf" pro editor de pixel
+' (ver acima) e ja inicializa em branco quando o arquivo nao existe ainda -
+' "Novo" e' inventar um nome ainda nao usado (igual EditorCreateMdUntitled/
+' EditorCreateAsmUntitled) mas semeado com a fonte MSX1 padrao em vez de
+' ficar em branco - o arquivo NOVO e' o que recebe as edicoes,
+' MSX_DEFAULT_FONT_PATH nunca e' sobrescrito por isso. Com um projeto
+' aberto, o alfabeto novo nasce dentro da pasta roms\ do PROPRIO projeto
+' (pra "salvar como registro do projeto" ja funcionar sem digitar caminho -
+' ver SaveDocumentToDisk); sem projeto aberto, cai na roms\ compartilhada
+' do msxIDE (mesmo comportamento de antes). "Abrir..."/"Salvar Como"
+' genericos continuam aceitando qualquer caminho digitado - isso so' define
+' o destino padrao pro botao "Novo".
+Private Sub EditorCreateFontUntitled()
+    Dim romsDir As String = "roms" & Chr(92)
+    If ProjectIsActive() <> 0 Then romsDir = ProjectActiveDir() & "roms" & Chr(92)
+    Dim baseName As String = romsDir & "font" & Right("00" & Trim(Str(untitledFontCounter)), 2)
+    untitledFontCounter += 1
+    EditorOpenFromPath(baseName & ".alf")
+
+    If activeDoc >= 1 And activeDoc <= docCount Then
+        Dim ByRef d As Document = docs(activeDoc)
+        If d.isPixelEditor <> 0 And Dir(MSX_DEFAULT_FONT_PATH) <> "" Then
+            LoadPixelEditorFromDisk(d, MSX_DEFAULT_FONT_PATH)
+        End If
+        If d.lineCount = 0 Then InitBlankPixelBuffer(d, 256)
+    End If
+End Sub
+
+' Grade geral: indices em hexa, 16 colunas (convencao classica de mapa de
+' caracteres 16x16), o selecionado em destaque - setas navegam, ENTER/Espaco
+' entra no modo de edicao de pixel (pixelEditZoomed) sem esconder esta
+' grade (fica lado a lado com o preview ampliado, ver DrawPixelEditor).
+Private Sub DrawPixelEditorOverview(ByVal docIndex As Integer, ByVal clientW As Integer, ByVal clientH As Integer)
+    Dim ByRef d As Document = docs(docIndex)
+    Dim colsPerRow As Integer = 16
+    Dim totalChars As Integer = d.lineCount
+    Dim selRow As Integer = d.pixelEditSelectedChar \ colsPerRow
+    Dim selCol As Integer = d.pixelEditSelectedChar Mod colsPerRow
+
+    Dim visibleRows As Integer = clientH
+    If visibleRows < 1 Then visibleRows = 1
+
+    Dim topRow As Integer = d.pixelEditOverviewTop
+    If selRow < topRow Then topRow = selRow
+    If selRow > topRow + visibleRows - 1 Then topRow = selRow - visibleRows + 1
+    If topRow < 0 Then topRow = 0
+    d.pixelEditOverviewTop = topRow
+
+    Dim row As Integer
+    For row = 0 To visibleRows - 1
+        Dim charRow As Integer = topRow + row
+        Dim rowY As Integer = d.winY + 1 + row
+        Dim lineText As String = Hex(charRow * colsPerRow, 2) & ": "
+        Dim col As Integer
+        For col = 0 To colsPerRow - 1
+            Dim idx As Integer = charRow * colsPerRow + col
+            If idx < totalChars Then
+                lineText &= Hex(idx, 2) & " "
+            Else
+                lineText &= "   "
+            End If
+        Next col
+
+        Dim padded As String = Left(lineText & Space(clientW), clientW)
+        Dim i As Integer
+        For i = 1 To clientW
+            Dim cellFg As UByte = 15
+            Dim cellBg As UByte = 0
+            If charRow = selRow Then
+                Dim cellStart As Integer = 5 + selCol * 3
+                If i = cellStart Or i = cellStart + 1 Then
+                    cellFg = 0 : cellBg = 7
+                End If
+            End If
+            ConsoleSetCell(d.winX + i, rowY, Asc(Mid(padded, i, 1)), cellFg, cellBg)
+        Next i
+    Next row
+End Sub
+
+' Caractere ampliado: grade 8x8, 1 pixel = 2 colunas de texto (bloco cheio
+' Chr(219) aceso, espaco apagado) - cursor destacado so' quando pixelEditZoomed
+' esta ligado (navegando a grade geral, mostra o desenho sem cursor de
+' pixel). startX e' a primeira coluna de conteudo (ja depois da divisoria).
+Private Sub DrawPixelEditorZoom(ByVal docIndex As Integer, ByVal clientW As Integer, ByVal clientH As Integer, ByVal startX As Integer)
+    Dim ByRef d As Document = docs(docIndex)
+    Dim bits As String = ""
+    If d.pixelEditSelectedChar >= 0 And d.pixelEditSelectedChar + 1 <= d.lineCount Then
+        bits = d.lines(d.pixelEditSelectedChar + 1)
+    End If
+    If Len(bits) < 8 Then bits &= String(8 - Len(bits), Chr(0))
+
+    Dim row As Integer
+    For row = 0 To 7
+        If row >= clientH Then Continue For
+        Dim rowY As Integer = d.winY + 1 + row
+        Dim byteVal As Integer = Asc(Mid(bits, row + 1, 1))
+        Dim lineText As String = ""
+        Dim col As Integer
+        For col = 0 To 7
+            If (byteVal And (128 Shr col)) <> 0 Then
+                lineText &= Chr(219) & Chr(219)
+            Else
+                lineText &= "  "
+            End If
+        Next col
+
+        Dim padded As String = Left(lineText & Space(clientW), clientW)
+        Dim i As Integer
+        For i = 1 To clientW
+            Dim cellFg As UByte = 15
+            Dim cellBg As UByte = 0
+            If d.pixelEditZoomed <> 0 And row = d.pixelEditCursorRow Then
+                Dim cellStart As Integer = d.pixelEditCursorCol * 2 + 1
+                If i = cellStart Or i = cellStart + 1 Then cellBg = 4
+            End If
+            ConsoleSetCell(startX + i - 1, rowY, Asc(Mid(padded, i, 1)), cellFg, cellBg)
+        Next i
+    Next row
+End Sub
+
+' Mostra a grade geral e o caractere ampliado LADO A LADO o tempo todo (tem
+' espaco de sobra na janela pra isso - pedido explicito do usuario: nao
+' precisa esconder o mapa de caracteres pra editar, e navegar pela grade ja
+' vai mostrando o desenho do caractere selecionado no preview, mesmo antes
+' de entrar no modo de edicao de pixel).
+Sub DrawPixelEditor(ByVal docIndex As Integer)
+    Dim ByRef d As Document = docs(docIndex)
+    Dim fullW As Integer = d.winW - 3
+    If fullW < 1 Then fullW = 1
+    Dim clientH As Integer = GetClientTextHeight(d)
+    Dim availRows As Integer = clientH - 1 ' reserva 1 linha pro status no rodape
+    If availRows < 1 Then availRows = 1
+
+    ' A grade geral so' precisa da altura pra caber todos os caracteres (16
+    ' por linha) - normalmente bem menos que a altura toda da janela. O
+    ' espaco sobrando embaixo (pedido explicito do usuario: "tem bastante
+    ' espaco... mostra os alfabetos que ja estao no projeto") vira a lista
+    ' de alfabetos do projeto ativo, logo abaixo da grade.
+    Dim colsPerRow As Integer = 16
+    Dim gridRowsNeeded As Integer = (d.lineCount + colsPerRow - 1) \ colsPerRow
+    If gridRowsNeeded < 8 Then gridRowsNeeded = 8 ' pelo menos a altura do preview ampliado
+    Dim gridH As Integer = gridRowsNeeded
+    If gridH > availRows Then gridH = availRows
+
+    Dim overviewW As Integer = 52 ' "XX: " (4) + 16 * "XX " (3) = 52 colunas
+    Dim zoomW As Integer = fullW - overviewW - 1
+    If zoomW < 16 Then
+        ' Janela estreita demais pra dividir - so' a grade geral, sem
+        ' preview lado a lado (continua mostrando o mapa de caracteres
+        ' inteiro, so nao cabe o desenho ampliado ao lado desta vez).
+        overviewW = fullW
+        zoomW = 0
+    End If
+
+    DrawPixelEditorOverview(docIndex, overviewW, gridH)
+
+    If zoomW > 0 Then
+        Dim dividerX As Integer = d.winX + overviewW + 1
+        Dim row As Integer
+        For row = 0 To gridH - 1
+            ConsoleSetCell(dividerX, d.winY + 1 + row, Asc(Chr(179)), 15, 1)
+        Next row
+        DrawPixelEditorZoom(docIndex, zoomW, gridH, dividerX + 1)
+    End If
+
+    Dim listPaths() As String
+    Dim listCount As Integer
+    ProjectListFilesWithExt(".alf", listPaths(), listCount)
+
+    Dim listRowsAvail As Integer = availRows - gridH
+    Dim listShown As Integer = 0
+    If listCount > 0 And listRowsAvail >= 2 Then
+        listShown = listRowsAvail
+        Dim visibleListRows As Integer = listShown - 1 ' menos a linha de cabecalho
+
+        If d.pixelEditListSelected < 0 Then d.pixelEditListSelected = 0
+        If d.pixelEditListSelected > listCount - 1 Then d.pixelEditListSelected = listCount - 1
+
+        Dim topIdx As Integer = d.pixelEditListScrollTop
+        If d.pixelEditListFocus <> 0 Then
+            If d.pixelEditListSelected < topIdx Then topIdx = d.pixelEditListSelected
+            If d.pixelEditListSelected > topIdx + visibleListRows - 1 Then topIdx = d.pixelEditListSelected - visibleListRows + 1
+        End If
+        If topIdx > listCount - visibleListRows Then topIdx = listCount - visibleListRows
+        If topIdx < 0 Then topIdx = 0
+        d.pixelEditListScrollTop = topIdx
+
+        Dim projDirL As String = ProjectActiveDir()
+        Dim curRel As String = ""
+        If Len(projDirL) > 0 And LCase(Left(ToAbsolutePath(d.filePath), Len(projDirL))) = LCase(projDirL) Then
+            curRel = Mid(ToAbsolutePath(d.filePath), Len(projDirL) + 1)
+        End If
+
+        Dim headerY As Integer = d.winY + 1 + gridH
+        Dim headerText As String = "Alfabetos no projeto - TAB foca a lista, ENTER abre:"
+        Dim headerPadded As String = Left(headerText & Space(fullW), fullW)
+        Dim hi As Integer
+        For hi = 1 To fullW
+            ConsoleSetCell(d.winX + hi, headerY, Asc(Mid(headerPadded, hi, 1)), 11, 0)
+        Next hi
+
+        Dim li As Integer
+        For li = 0 To visibleListRows - 1
+            Dim itemIdx As Integer = topIdx + li
+            Dim rowY As Integer = headerY + 1 + li
+            Dim itemText As String = ""
+            Dim itemFg As UByte = 15
+            Dim itemBg As UByte = 0
+            If itemIdx < listCount Then
+                Dim markCur As String = "  "
+                If LCase(listPaths(itemIdx + 1)) = LCase(curRel) Then markCur = "* "
+                itemText = markCur & listPaths(itemIdx + 1)
+                If d.pixelEditListFocus <> 0 And itemIdx = d.pixelEditListSelected Then
+                    itemFg = 0 : itemBg = 7
+                End If
+            End If
+            Dim itemPadded As String = Left(itemText & Space(fullW), fullW)
+            Dim ii As Integer
+            For ii = 1 To fullW
+                ConsoleSetCell(d.winX + ii, rowY, Asc(Mid(itemPadded, ii, 1)), itemFg, itemBg)
+            Next ii
+        Next li
+    End If
+
+    Dim statusRow As Integer = d.winY + 1 + gridH + listShown
+    Dim statusText As String
+    If d.pixelEditListFocus <> 0 Then
+        statusText = "Lista de alfabetos do projeto - Cima/Baixo escolhe  ENTER abre  TAB/ESC volta pra grade"
+    ElseIf d.pixelEditZoomed = 0 Then
+        statusText = "Caractere " & Hex(d.pixelEditSelectedChar, 2) & "H/" & Hex(d.lineCount - 1, 2) & "H - Setas/PgUp/PgDn navega  ENTER/Espaco edita pixel  F2 salva"
+        If listCount > 0 Then statusText &= "  TAB lista alfabetos"
+        statusText &= "  ESC fecha"
+    Else
+        statusText = "Caractere " & Hex(d.pixelEditSelectedChar, 2) & "H - Setas move o pixel  Espaco/ENTER alterna  PgUp/PgDn troca de caractere  F2 salva  ESC volta a navegar"
+    End If
+    Dim sPadded As String = Left(statusText & Space(fullW), fullW)
+    Dim si As Integer
+    For si = 1 To fullW
+        ConsoleSetCell(d.winX + si, statusRow, Asc(Mid(sPadded, si, 1)), 10, 0)
+    Next si
+
+    DrawScrollBars(docIndex)
+End Sub
+
+Private Sub HandlePixelEditorKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
+    renderHint = RENDER_CLIENT
+    Dim colsPerRow As Integer = 16
+
+    ' Lista de alfabetos do projeto (rodape) - TAB entra/sai do foco da
+    ' lista, setas Cima/Baixo escolhem, ENTER abre o escolhido (como
+    ' "Abrir..." generico, numa aba nova). So' faz sentido com projeto
+    ' aberto e pelo menos um .alf ja registrado.
+    Dim listPaths() As String
+    Dim listCount As Integer
+    ProjectListFilesWithExt(".alf", listPaths(), listCount)
+
+    If keyText = Chr(9) And listCount > 0 Then
+        d.pixelEditListFocus = IIf(d.pixelEditListFocus = 0, -1, 0)
+        Exit Sub
+    End If
+
+    If d.pixelEditListFocus <> 0 Then
+        If keyText = Chr(27) Or keyText = Chr(9) Then
+            d.pixelEditListFocus = 0
+            Exit Sub
+        End If
+        If keyText = Chr(13) Then
+            If d.pixelEditListSelected >= 0 And d.pixelEditListSelected < listCount Then
+                Dim chosenFull As String = ProjectActiveDir() & listPaths(d.pixelEditListSelected + 1)
+                d.pixelEditListFocus = 0
+                renderHint = RENDER_FULL
+                EditorOpenFromPath(chosenFull)
+            End If
+            Exit Sub
+        End If
+        If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+            Select Case Asc(Right(keyText, 1))
+                Case 72 ' Up
+                    If d.pixelEditListSelected > 0 Then d.pixelEditListSelected -= 1
+                Case 80 ' Down
+                    If d.pixelEditListSelected < listCount - 1 Then d.pixelEditListSelected += 1
+            End Select
+        End If
+        Exit Sub
+    End If
+
+    If d.pixelEditZoomed = 0 Then
+        If keyText = Chr(27) Then
+            CloseDocument(activeDoc)
+            Exit Sub
+        End If
+        If keyText = Chr(13) Or keyText = " " Then
+            d.pixelEditZoomed = -1
+            d.pixelEditCursorRow = 0
+            d.pixelEditCursorCol = 0
+            Exit Sub
+        End If
+        If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+            Select Case Asc(Right(keyText, 1))
+                Case 72 ' Up
+                    If d.pixelEditSelectedChar >= colsPerRow Then d.pixelEditSelectedChar -= colsPerRow
+                Case 80 ' Down
+                    If d.pixelEditSelectedChar + colsPerRow < d.lineCount Then d.pixelEditSelectedChar += colsPerRow
+                Case 75 ' Left
+                    If d.pixelEditSelectedChar > 0 Then d.pixelEditSelectedChar -= 1
+                Case 77 ' Right
+                    If d.pixelEditSelectedChar < d.lineCount - 1 Then d.pixelEditSelectedChar += 1
+                Case 73 ' PgUp
+                    d.pixelEditSelectedChar -= colsPerRow * 8
+                    If d.pixelEditSelectedChar < 0 Then d.pixelEditSelectedChar = 0
+                Case 81 ' PgDn
+                    d.pixelEditSelectedChar += colsPerRow * 8
+                    If d.pixelEditSelectedChar > d.lineCount - 1 Then d.pixelEditSelectedChar = d.lineCount - 1
+            End Select
+        End If
+        Exit Sub
+    End If
+
+    ' Editor ampliado (pixelEditZoomed <> 0)
+    If keyText = Chr(27) Then
+        d.pixelEditZoomed = 0
+        Exit Sub
+    End If
+
+    If keyText = Chr(13) Or keyText = " " Then
+        Dim curBits As String = d.lines(d.pixelEditSelectedChar + 1)
+        Dim curByte As Integer = Asc(Mid(curBits, d.pixelEditCursorRow + 1, 1))
+        Dim bitMask As Integer = 128 Shr d.pixelEditCursorCol
+        curByte = curByte Xor bitMask
+        curBits = Left(curBits, d.pixelEditCursorRow) & Chr(curByte And 255) & Mid(curBits, d.pixelEditCursorRow + 2)
+        d.lines(d.pixelEditSelectedChar + 1) = curBits
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+        Select Case Asc(Right(keyText, 1))
+            Case 72 : If d.pixelEditCursorRow > 0 Then d.pixelEditCursorRow -= 1
+            Case 80 : If d.pixelEditCursorRow < 7 Then d.pixelEditCursorRow += 1
+            Case 75 : If d.pixelEditCursorCol > 0 Then d.pixelEditCursorCol -= 1
+            Case 77 : If d.pixelEditCursorCol < 7 Then d.pixelEditCursorCol += 1
+            Case 73 ' PgUp -> caractere anterior, mantendo o zoom
+                If d.pixelEditSelectedChar > 0 Then d.pixelEditSelectedChar -= 1
+            Case 81 ' PgDn -> proximo caractere, mantendo o zoom
+                If d.pixelEditSelectedChar < d.lineCount - 1 Then d.pixelEditSelectedChar += 1
+        End Select
     End If
 End Sub
 
@@ -14978,22 +15531,24 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                     Case 5
                         menuCmd = MENU_CMD_NEW_MD
                     Case 6
-                        menuCmd = MENU_CMD_OPEN
+                        menuCmd = MENU_CMD_NEW_FONT
                     Case 7
-                        menuCmd = MENU_CMD_SAVE
+                        menuCmd = MENU_CMD_OPEN
                     Case 8
-                        menuCmd = MENU_CMD_SAVE_AS
+                        menuCmd = MENU_CMD_SAVE
                     Case 9
-                        menuCmd = MENU_CMD_CLOSE
+                        menuCmd = MENU_CMD_SAVE_AS
                     Case 10
+                        menuCmd = MENU_CMD_CLOSE
+                    Case 11
                         menuCmd = MENU_CMD_EXIT
-                    Case 12
-                        menuCmd = MENU_CMD_PROJECT_NEW
                     Case 13
-                        menuCmd = MENU_CMD_PROJECT_OPEN
+                        menuCmd = MENU_CMD_PROJECT_NEW
                     Case 14
-                        menuCmd = MENU_CMD_PROJECT_SAVE
+                        menuCmd = MENU_CMD_PROJECT_OPEN
                     Case 15
+                        menuCmd = MENU_CMD_PROJECT_SAVE
+                    Case 16
                         menuCmd = MENU_CMD_PROJECT_CLOSE
                 End Select
             End If
@@ -15798,6 +16353,279 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
         report = "SMOKE HELP FAIL: F7 pela 3a vez deveria voltar pro modo 0 (Edicao simples), veio " & Trim(Str(docs(mdDocIdx).mdViewMode))
         Return 0
     End If
+
+    ' Editor/visualizador de Fontes (pixel 8x8, base pro futuro editor de
+    ' Sprites): deteccao de tipo por extensao, navegacao na visao geral,
+    ' toggle de pixel no editor ampliado, e round-trip binario em disco.
+    EditorCreateFontUntitled()
+    Dim fontDocIdx As Integer = activeDoc
+    If docs(fontDocIdx).isPixelEditor = 0 Then
+        report = "SMOKE HELP FAIL: EditorCreateFontUntitled deveria marcar isPixelEditor<>0"
+        Return 0
+    End If
+    If docs(fontDocIdx).lineCount <> 256 Then
+        report = "SMOKE HELP FAIL: editor de fontes novo deveria comecar com 256 caracteres (semeado de " & MSX_DEFAULT_FONT_PATH & "), veio " & Trim(Str(docs(fontDocIdx).lineCount))
+        Return 0
+    End If
+    If docs(fontDocIdx).pixelEditZoomed <> 0 Then
+        report = "SMOKE HELP FAIL: editor de fontes novo deveria comecar na visao geral (pixelEditZoomed=0)"
+        Return 0
+    End If
+    If docs(fontDocIdx).pixelEditBaseAddr <> &H800 Then
+        report = "SMOKE HELP FAIL: endereco base do editor de fontes novo deveria vir de " & MSX_DEFAULT_FONT_PATH & " (0800H), veio " & Hex(docs(fontDocIdx).pixelEditBaseAddr, 4) & "H"
+        Return 0
+    End If
+
+    ' "Novo Editor de Fontes" deveria propor um destino dentro de roms\ com
+    ' extensao .alf por padrao (pedido do usuario: "abrir ou salvar outros
+    ' alfabetos por hora no roms/").
+    If Left(docs(fontDocIdx).filePath, 5) <> "roms" & Chr(92) Or Right(docs(fontDocIdx).filePath, 4) <> ".alf" Then
+        report = "SMOKE HELP FAIL: editor de fontes novo deveria propor um caminho roms\...alf por padrao, veio " & docs(fontDocIdx).filePath
+        Return 0
+    End If
+
+    ' Confirma que o buffer novo veio REALMENTE semeado de msx1.alf (nao em
+    ' branco) - varre os 256 caracteres procurando algum byte nao-zero.
+    Dim fontHasNonZero As Integer = 0
+    Dim fzi As Integer
+    For fzi = 1 To 256
+        If docs(fontDocIdx).lines(fzi) <> String(8, Chr(0)) Then
+            fontHasNonZero = -1
+            Exit For
+        End If
+    Next fzi
+    If fontHasNonZero = 0 Then
+        report = "SMOKE HELP FAIL: editor de fontes novo deveria vir semeado com o desenho de " & MSX_DEFAULT_FONT_PATH & ", veio tudo em branco"
+        Return 0
+    End If
+
+    Dim fontRunningDummy As Integer = 1
+    Dim fontMenuOpenDummy As Integer = 0
+    Dim fontRightKey As String = Chr(0) & Chr(77)
+    Dim fontDownKey As String = Chr(0) & Chr(80)
+    Dim fontEnterKey As String = Chr(13)
+    Dim fontSpaceKey As String = " "
+    Dim fontEscKey As String = Chr(27)
+
+    EditorHandleKey(fontRightKey, fontRunningDummy, fontMenuOpenDummy)
+    EditorHandleKey(fontDownKey, fontRunningDummy, fontMenuOpenDummy)
+    If docs(fontDocIdx).pixelEditSelectedChar <> 17 Then
+        report = "SMOKE HELP FAIL: Direita+Baixo na visao geral (16 colunas/linha) deveria selecionar o caractere 17 (1+16), veio " & Trim(Str(docs(fontDocIdx).pixelEditSelectedChar))
+        Return 0
+    End If
+
+    EditorHandleKey(fontEnterKey, fontRunningDummy, fontMenuOpenDummy)
+    If docs(fontDocIdx).pixelEditZoomed = 0 Then
+        report = "SMOKE HELP FAIL: ENTER na visao geral deveria entrar no editor ampliado (pixelEditZoomed<>0)"
+        Return 0
+    End If
+
+    ' Toggle de pixel testado por XOR contra o valor semeado (nao mais
+    ' contra zero) - o desenho inicial vem de msx1.alf agora, entao o byte
+    ' de partida ja pode ter bits ligados.
+    Dim fontByte0Seed As Integer = Asc(Left(docs(fontDocIdx).lines(18), 1))
+    EditorHandleKey(fontSpaceKey, fontRunningDummy, fontMenuOpenDummy)
+    Dim fontByte0 As Integer = Asc(Left(docs(fontDocIdx).lines(18), 1))
+    If fontByte0 <> (fontByte0Seed Xor 128) Then
+        report = "SMOKE HELP FAIL: Espaco no pixel (0,0) do editor ampliado deveria alternar o bit 80H no 1o byte do caractere 17 (semente " & Hex(fontByte0Seed, 2) & "H), veio " & Hex(fontByte0, 2) & "H"
+        Return 0
+    End If
+
+    EditorHandleKey(fontRightKey, fontRunningDummy, fontMenuOpenDummy)
+    EditorHandleKey(fontSpaceKey, fontRunningDummy, fontMenuOpenDummy)
+    Dim fontByte0b As Integer = Asc(Left(docs(fontDocIdx).lines(18), 1))
+    If fontByte0b <> (fontByte0 Xor 64) Then
+        report = "SMOKE HELP FAIL: Direita+Espaco deveria tambem alternar o bit 40H, veio " & Hex(fontByte0b, 2) & "H esperado " & Hex(fontByte0 Xor 64, 2) & "H"
+        Return 0
+    End If
+
+    EditorHandleKey(fontEscKey, fontRunningDummy, fontMenuOpenDummy)
+    If docs(fontDocIdx).pixelEditZoomed <> 0 Then
+        report = "SMOKE HELP FAIL: ESC no editor ampliado deveria voltar pra visao geral, sem fechar o documento"
+        Return 0
+    End If
+
+    Dim fontTestPath As String = Environ("TEMP") & Chr(92) & "msxide_smoke_font.alf"
+    docs(fontDocIdx).filePath = fontTestPath
+    SaveDocumentToDisk(docs(fontDocIdx))
+
+    ' O arquivo salvo deve ser um BSAVE valido de verdade, sempre no
+    ' endereco padrao de alfabeto MSX (inicio=execucao=9200H, fim=9200H+
+    ' 2048-1=99FFH) - fixo, independente de onde o alfabeto de origem
+    ' (msx1.alf, 0800H) foi lido.
+    Dim fontRawFF As Integer = FreeFile
+    Open fontTestPath For Binary Access Read As #fontRawFF
+    Dim fontRawHeader As String = Space(7)
+    Get #fontRawFF, 1, fontRawHeader
+    Close #fontRawFF
+    If Asc(Left(fontRawHeader, 1)) <> &HFE Then
+        report = "SMOKE HELP FAIL: arquivo .alf salvo deveria comecar com o byte magico FEH do BSAVE, veio " & Hex(Asc(Left(fontRawHeader, 1)), 2) & "H"
+        Return 0
+    End If
+    Dim fontSavedStart As Integer = Asc(Mid(fontRawHeader, 2, 1)) + Asc(Mid(fontRawHeader, 3, 1)) * 256
+    Dim fontSavedEnd As Integer = Asc(Mid(fontRawHeader, 4, 1)) + Asc(Mid(fontRawHeader, 5, 1)) * 256
+    If fontSavedStart <> &H9200 Or fontSavedEnd <> &H9200 + 2048 - 1 Then
+        report = "SMOKE HELP FAIL: cabecalho BSAVE salvo deveria ser inicio=9200H fim=99FFH, veio inicio=" & Hex(fontSavedStart, 4) & "H fim=" & Hex(fontSavedEnd, 4) & "H"
+        Return 0
+    End If
+
+    Dim fontLoadDoc As Document
+    LoadPixelEditorFromDisk(fontLoadDoc, fontTestPath)
+    If fontLoadDoc.lineCount <> 256 Then
+        report = "SMOKE HELP FAIL: round-trip do editor de fontes deveria reler 256 caracteres, veio " & Trim(Str(fontLoadDoc.lineCount))
+        Return 0
+    End If
+    If fontLoadDoc.pixelEditBaseAddr <> &H9200 Then
+        report = "SMOKE HELP FAIL: round-trip deveria reconhecer o cabecalho BSAVE e recuperar o endereco base 9200H, veio " & Hex(fontLoadDoc.pixelEditBaseAddr, 4) & "H"
+        Return 0
+    End If
+    If Asc(Left(fontLoadDoc.lines(18), 1)) <> fontByte0b Then
+        report = "SMOKE HELP FAIL: round-trip do editor de fontes deveria manter o byte editado no caractere 17, esperado " & Hex(fontByte0b, 2) & "H veio " & Hex(Asc(Left(fontLoadDoc.lines(18), 1)), 2) & "H"
+        Return 0
+    End If
+
+    ' Deteccao por extensao: abrir o mesmo .alf pelo caminho generico
+    ' (EditorOpenFromPath, o mesmo usado pelo dialogo "Abrir...") deveria
+    ' reconhecer sozinho e cair no editor de pixel, sem precisar de item de
+    ' menu dedicado - mesma coisa que "abrir outros alfabetos" pedido pelo
+    ' usuario.
+    EditorOpenFromPath(fontTestPath)
+    If docs(activeDoc).isPixelEditor = 0 Then
+        report = "SMOKE HELP FAIL: abrir um .alf pelo caminho generico deveria marcar isPixelEditor<>0 (deteccao por extensao)"
+        Return 0
+    End If
+    If docs(activeDoc).lineCount <> 256 Or Asc(Left(docs(activeDoc).lines(18), 1)) <> fontByte0b Then
+        report = "SMOKE HELP FAIL: abrir um .alf existente pelo caminho generico deveria carregar o conteudo binario de verdade (byte editado no caractere 17)"
+        Return 0
+    End If
+
+
+    If Dir(fontTestPath) <> "" Then Kill fontTestPath
+
+    ' Integracao com projeto: salvar um .alf dentro de roms\ do projeto
+    ' ativo deveria registrar ele no banco do projeto na hora (sem
+    ' precisar de "Salvar Projeto"), permitir mais de um alfabeto por
+    ' projeto, e a lista de alfabetos do projeto (rodape do editor de
+    ' fontes) deveria deixar trocar entre eles via TAB/setas/ENTER.
+    ' O resto deste teste gigante ja acumulou varios documentos abertos -
+    ' fecha o excesso pra garantir espaco (MAX_DOCS) pro cenario de abrir
+    ' uma aba nova mais adiante.
+    While docCount > 1
+        CloseDocument(docCount)
+    Wend
+
+    Dim projTestDir As String = Environ("TEMP") & Chr(92) & "msxide_smoke_proj" & Chr(92)
+    Dim projTestPath As String = projTestDir & "smoke.msxproj"
+    Dim projRomsDir As String = projTestDir & "roms" & Chr(92)
+    Dim projCleanEntry As String
+
+    ' Limpa qualquer resto de uma execucao anterior deste smoke test - o
+    ' banco do projeto e' um arquivo em disco (sqlite) que sobrevive entre
+    ' execucoes, entao sem isso a contagem de alfabetos abaixo acumularia
+    ' registros de rodadas passadas.
+    If Dir(projTestPath) <> "" Then Kill projTestPath
+    projCleanEntry = Dir(projRomsDir & "*.alf")
+    While Len(projCleanEntry) > 0
+        Kill projRomsDir & projCleanEntry
+        projCleanEntry = Dir()
+    Wend
+
+    If Dir(projTestDir, fbDirectory) = "" Then MkDir projTestDir
+
+    Dim projErrMsg As String = ""
+    If ProjectNew(projTestPath, projErrMsg) = 0 Then
+        report = "SMOKE HELP FAIL: nao consegui criar projeto de teste (" & projErrMsg & ")"
+        Return 0
+    End If
+
+    EditorCreateFontUntitled()
+    Dim projFontDoc1 As Integer = activeDoc
+    If Left(LCase(docs(projFontDoc1).filePath), Len(LCase(projTestDir))) <> LCase(projTestDir) Then
+        report = "SMOKE HELP FAIL: com projeto aberto, 'Novo Editor de Fontes' deveria propor um caminho dentro da pasta do projeto, veio " & docs(projFontDoc1).filePath
+        ProjectClose()
+        Return 0
+    End If
+    SaveDocumentToDisk(docs(projFontDoc1))
+
+    Dim projListPaths1() As String
+    Dim projListCount1 As Integer
+    ProjectListFilesWithExt(".alf", projListPaths1(), projListCount1)
+    If projListCount1 <> 1 Then
+        Dim projDbgList As String = ""
+        Dim projDbgI As Integer
+        For projDbgI = 1 To projListCount1
+            projDbgList &= "[" & projListPaths1(projDbgI) & "]"
+        Next projDbgI
+        report = "SMOKE HELP FAIL: salvar o alfabeto deveria registrar 1 arquivo .alf no projeto na hora, veio " & Trim(Str(projListCount1)) & " " & projDbgList
+        ProjectClose()
+        Return 0
+    End If
+
+    ' Segundo alfabeto no mesmo projeto - "permitir criar mais de um
+    ' alfabeto por projeto".
+    EditorCreateFontUntitled()
+    Dim projFontDoc2 As Integer = activeDoc
+    SaveDocumentToDisk(docs(projFontDoc2))
+
+    Dim projListPaths2() As String
+    Dim projListCount2 As Integer
+    ProjectListFilesWithExt(".alf", projListPaths2(), projListCount2)
+    If projListCount2 <> 2 Then
+        report = "SMOKE HELP FAIL: um segundo alfabeto salvo no mesmo projeto deveria somar 2 arquivos .alf registrados, veio " & Trim(Str(projListCount2))
+        ProjectClose()
+        Return 0
+    End If
+    If LCase(projListPaths2(1)) = LCase(projListPaths2(2)) Then
+        report = "SMOKE HELP FAIL: os dois alfabetos deveriam ter nomes diferentes no projeto"
+        ProjectClose()
+        Return 0
+    End If
+
+    ' Lista no rodape do editor: TAB entra no foco da lista, Baixo troca a
+    ' selecao, ENTER abre o alfabeto escolhido (mesma rota do "Abrir..."
+    ' generico, numa aba nova).
+    activeDoc = projFontDoc1
+    Dim projTabKey As String = Chr(9)
+    Dim projDownKey As String = Chr(0) & Chr(80)
+    Dim projEnterKey As String = Chr(13)
+    Dim projRunningDummy As Integer = 1
+    Dim projMenuOpenDummy As Integer = 0
+
+    EditorHandleKey(projTabKey, projRunningDummy, projMenuOpenDummy)
+    If docs(activeDoc).pixelEditListFocus = 0 Then
+        report = "SMOKE HELP FAIL: TAB no editor de fontes com alfabetos no projeto deveria focar a lista do rodape"
+        ProjectClose()
+        Return 0
+    End If
+
+    EditorHandleKey(projDownKey, projRunningDummy, projMenuOpenDummy)
+    If docs(activeDoc).pixelEditListSelected <> 1 Then
+        report = "SMOKE HELP FAIL: Baixo na lista de alfabetos do projeto deveria selecionar o 2o item (indice 1), veio " & Trim(Str(docs(activeDoc).pixelEditListSelected))
+        ProjectClose()
+        Return 0
+    End If
+
+    Dim docCountBeforeOpen As Integer = docCount
+    EditorHandleKey(projEnterKey, projRunningDummy, projMenuOpenDummy)
+    If docCount <> docCountBeforeOpen + 1 Then
+        report = "SMOKE HELP FAIL: ENTER na lista de alfabetos do projeto deveria abrir o escolhido numa aba nova, docCount nao aumentou"
+        ProjectClose()
+        Return 0
+    End If
+    If docs(activeDoc).isPixelEditor = 0 Then
+        report = "SMOKE HELP FAIL: abrir um alfabeto pela lista do projeto deveria cair no editor de pixel"
+        ProjectClose()
+        Return 0
+    End If
+
+    ProjectClose()
+
+    If Dir(projTestPath) <> "" Then Kill projTestPath
+    projCleanEntry = Dir(projRomsDir & "*.alf")
+    While Len(projCleanEntry) > 0
+        Kill projRomsDir & projCleanEntry
+        projCleanEntry = Dir()
+    Wend
 
     report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword & ", refdict biosdoc (" & Trim(Str(biosdocLineCount)) & " linhas), redbook (" & Trim(Str(rbTopicCount)) & " topicos/" & Trim(Str(rbGroupHeaders)) & " grupos, Ver tambem OK), msxmanuals (" & Trim(Str(mmTopicCount)) & " topicos, sem duplicata), openmsx (" & Trim(Str(omTopicCount)) & " topicos), nestorbasic/seetracker/msxbas2rom/editor/mamute/markdown OK, th2handbook (" & Trim(Str(thTopicCount)) & "), bioscalls (" & Trim(Str(bcTopicCount)) & "), hardware (" & Trim(Str(hwTopicCount)) & ")"
     Return -1
