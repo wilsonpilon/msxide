@@ -27,6 +27,9 @@ Type Document
     pixelEditListFocus As Integer
     pixelEditListSelected As Integer
     pixelEditListScrollTop As Integer
+    spriteSize As Integer
+    spriteColorMode As Integer
+    spriteColors(1 To MAX_LINES) As String
     helpTitle As String
     helpWrapWidth As Integer
     lineCount As Integer

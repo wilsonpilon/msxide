@@ -13,6 +13,7 @@ Dim Shared untitledCounter As Integer = 1
 Dim Shared untitledAsmCounter As Integer = 0
 Dim Shared untitledMdCounter As Integer = 0
 Dim Shared untitledFontCounter As Integer = 0
+Dim Shared untitledSpriteCounter As Integer = 0
 Dim Shared forceFullRedraw As Integer = 1
 Dim Shared uiW As Integer = 100
 Dim Shared uiH As Integer = 35
@@ -66,6 +67,7 @@ Const MENU_CMD_CFG_PRINTER = 43
 Const MENU_CMD_NEW_MD = 44
 Const MENU_CMD_HELP_MARKDOWN = 45
 Const MENU_CMD_NEW_FONT = 46
+Const MENU_CMD_NEW_SPRITE = 47
 
 Const MENU_VIEW_NONE = 0
 Const MENU_VIEW_FILE = 1
@@ -280,6 +282,17 @@ Declare Sub DrawPixelEditor(ByVal docIndex As Integer)
 Declare Sub HandlePixelEditorKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
 Declare Function PathDirOf(ByRef filePath As String) As String
 Declare Function ToAbsolutePath(ByRef path As String) As String
+Declare Sub EditorCreateSpriteBankUntitled()
+Declare Sub EditorCreateSpriteBankWithOptions(ByVal spriteSize As Integer, ByVal colorMode As Integer)
+Declare Sub InitBlankSpriteBuffer(ByRef d As Document, ByVal spriteCount As Integer)
+Declare Sub LoadSpriteBankFromDisk(ByRef d As Document, ByRef path As String)
+Declare Function PromptSpriteBankOptions(ByRef outSize As Integer, ByRef outColorMode As Integer) As Integer
+Declare Function PromptMsxColorPicker(ByVal currentColor As Integer) As Integer
+Declare Sub InitSpriteEditorState(ByRef d As Document, ByVal spriteSize As Integer, ByVal colorMode As Integer)
+Declare Function SpritePixelGet(ByRef bits As String, ByVal gridSize As Integer, ByVal row As Integer, ByVal col As Integer) As Integer
+Declare Sub SpritePixelToggle(ByRef bits As String, ByVal gridSize As Integer, ByVal row As Integer, ByVal col As Integer)
+Declare Function MsxColorToConsole(ByVal msxColor As Integer) As UByte
+Declare Function MsxColorName(ByVal msxColor As Integer) As String
 Declare Sub EditorCreateMamuteTerm()
 Declare Sub ShowMamuteMemoryConfig()
 Declare Sub HandleMamuteTermKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
@@ -2838,6 +2851,8 @@ Private Sub InitBlankDocument(ByRef d As Document, ByRef docTitle As String)
     d.pixelEditListFocus = 0
     d.pixelEditListSelected = 0
     d.pixelEditListScrollTop = 0
+    d.spriteSize = 8
+    d.spriteColorMode = 0
     d.helpTitle = ""
     d.helpWrapWidth = 0
     d.lineCount = 1
@@ -3003,17 +3018,18 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
         ConsoleWriteText(2, 4, Chr(186) & " Z Novo asMSX                   " & Chr(186), 0, 7)
         ConsoleWriteText(2, 5, Chr(186) & " M Novo Arquivo MD              " & Chr(186), 0, 7)
         ConsoleWriteText(2, 6, Chr(186) & " G Novo Editor de Fontes        " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 7, Chr(186) & " O Abrir...                F3   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 8, Chr(186) & " S Salvar                  F2   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 9, Chr(186) & " A Salvar Como                  " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 10, Chr(186) & " F Fechar                  F5   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 11, Chr(186) & " X Exit                         " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 12, Chr(186) & "                                " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 13, Chr(186) & " P Novo Projeto                 " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 14, Chr(186) & " J Abrir Projeto...             " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 15, Chr(186) & " K Salvar Projeto               " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 16, Chr(186) & " W Fechar Projeto               " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 17, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(2, 7, Chr(186) & " Y Novo Banco de Sprites        " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 8, Chr(186) & " O Abrir...                F3   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 9, Chr(186) & " S Salvar                  F2   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 10, Chr(186) & " A Salvar Como                  " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 11, Chr(186) & " F Fechar                  F5   " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 12, Chr(186) & " X Exit                         " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 13, Chr(186) & "                                " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 14, Chr(186) & " P Novo Projeto                 " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 15, Chr(186) & " J Abrir Projeto...             " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 16, Chr(186) & " K Salvar Projeto               " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 17, Chr(186) & " W Fechar Projeto               " & Chr(186), 0, 7)
+        ConsoleWriteText(2, 18, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_CONFIG Then
         ConsoleWriteText(11, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
         ConsoleWriteText(11, 3, Chr(186) & " B Basic Dignified               " & Chr(186), 0, 7)
@@ -3366,48 +3382,82 @@ Private Sub SaveDocumentToDisk(ByRef d As Document)
             If Len(pixelDirNoSep) > 0 And Dir(pixelDirNoSep, fbDirectory) = "" Then MkDir pixelDirNoSep
         End If
 
+        Dim fileContent As String = ""
+
+        If d.pixelEditKind = 1 Then
+            ' Banco de sprites: cabecalho proprio do msxIDE (ver
+            ' LoadSpriteBankFromDisk) + bloco de padroes + bloco de cores.
+            Dim patternBytes As Integer = IIf(d.spriteSize = 16, 32, 8)
+            Dim colorBytes As Integer = IIf(d.spriteColorMode = 1, d.spriteSize, 1)
+            Dim patBlock As String = ""
+            Dim colBlock As String = ""
+            Dim pi As Integer
+            For pi = 1 To d.lineCount
+                Dim pat As String = d.lines(pi)
+                If Len(pat) < patternBytes Then pat &= String(patternBytes - Len(pat), Chr(0))
+                patBlock &= Left(pat, patternBytes)
+
+                Dim colr As String = d.spriteColors(pi)
+                If Len(colr) < colorBytes Then colr &= String(colorBytes - Len(colr), Chr(15))
+                colBlock &= Left(colr, colorBytes)
+            Next pi
+
+            Dim spHeader As String = Chr(&H53) & Chr(1) & Chr(d.spriteSize) & Chr(d.spriteColorMode)
+            spHeader &= Chr(d.lineCount And 255) & Chr((d.lineCount \ 256) And 255)
+            spHeader &= Chr(0) & Chr(0)
+
+            fileContent = spHeader & patBlock & colBlock
+        Else
+            ' Editor de fontes: cada "linha" e' 8 bytes CRUS (nao texto), o
+            ' arquivo em disco e' binario cru - Print#/texto corromperia
+            ' bytes de controle. Grava tudo concatenado de uma vez, igual
+            ' o resto dos escritores binarios do msxIDE
+            ' (Mamute_PdfSaveListing, etc.).
+            Dim rawBytes As String = ""
+            Dim fi As Integer
+            For fi = 1 To d.lineCount
+                rawBytes &= d.lines(fi)
+            Next fi
+
+            ' Cabecalho BSAVE do MSX (7 bytes): FE, inicio (2 bytes LE),
+            ' fim (2 bytes LE), execucao (2 bytes LE) - mesmo formato
+            ' usado por roms\msx1.alf e pelo proprio SAVE/LOAD do Mamute.
+            ' Gravar sempre usa o endereco padrao de alfabeto MSX 9200H
+            ' (pedido explicito do usuario: "para salvar basta colocar o
+            ' header FE 00 92 FF 99 00 92") - NAO o endereco de onde o
+            ' arquivo foi originalmente lido (d.pixelEditBaseAddr so'
+            ' importa pra LoadPixelEditorFromDisk reconhecer o cabecalho
+            ' de arquivos de terceiros; msx1.alf em si fica em 0800H por
+            ' ser um dump da ROM, mas todo alfabeto EDITADO e salvo por
+            ' aqui vira um arquivo pronto pra BLOAD em 9200H).
+            Dim startAddr As Integer = &H9200
+            Dim endAddr As Integer = startAddr + Len(rawBytes) - 1
+            If Len(rawBytes) = 0 Then endAddr = startAddr
+            Dim fontHeader As String = Chr(&HFE)
+            fontHeader &= Chr(startAddr And 255) & Chr((startAddr \ 256) And 255)
+            fontHeader &= Chr(endAddr And 255) & Chr((endAddr \ 256) And 255)
+            fontHeader &= Chr(startAddr And 255) & Chr((startAddr \ 256) And 255)
+
+            fileContent = fontHeader & rawBytes
+        End If
+
         Dim ffPixel As Integer = FreeFile
         If Open(d.filePath For Binary Access Write As #ffPixel) <> 0 Then Exit Sub
-        Dim rawBytes As String = ""
-        Dim pi As Integer
-        For pi = 1 To d.lineCount
-            rawBytes &= d.lines(pi)
-        Next pi
-
-        ' Cabecalho BSAVE do MSX (7 bytes): FE, inicio (2 bytes LE), fim (2
-        ' bytes LE), execucao (2 bytes LE) - mesmo formato usado por
-        ' roms\msx1.alf e pelo proprio SAVE/LOAD do Mamute. Gravar sempre
-        ' usa o endereco padrao de alfabeto MSX 9200H (pedido explicito do
-        ' usuario: "para salvar basta colocar o header FE 00 92 FF 99 00
-        ' 92") - NAO o endereco de onde o arquivo foi originalmente lido
-        ' (d.pixelEditBaseAddr so' importa pra LoadPixelEditorFromDisk
-        ' reconhecer o cabecalho de arquivos de terceiros; msx1.alf em si
-        ' fica em 0800H por ser um dump da ROM, mas todo alfabeto EDITADO e
-        ' salvo por aqui vira um arquivo pronto pra BLOAD em 9200H).
-        Dim startAddr As Integer = &H9200
-        Dim endAddr As Integer = startAddr + Len(rawBytes) - 1
-        If Len(rawBytes) = 0 Then endAddr = startAddr
-        Dim header As String = Chr(&HFE)
-        header &= Chr(startAddr And 255) & Chr((startAddr \ 256) And 255)
-        header &= Chr(endAddr And 255) & Chr((endAddr \ 256) And 255)
-        header &= Chr(startAddr And 255) & Chr((startAddr \ 256) And 255)
-
-        Put #ffPixel, 1, header
-        If Len(rawBytes) > 0 Then Put #ffPixel, 8, rawBytes
+        If Len(fileContent) > 0 Then Put #ffPixel, 1, fileContent
         Close #ffPixel
 
         ' Se o arquivo salvo mora dentro da pasta do projeto ativo, ja
         ' registra o conteudo no banco do projeto na hora (nao precisa
         ' esperar "Salvar Projeto") - pedido explicito do usuario: "ao
         ' salvar um arquivo alf em roms/ salve tambem como um registro
-        ' dentro do projeto". Fora da pasta do projeto (ou sem projeto
-        ' aberto), nao ha' o que registrar - salva so' em disco, como
-        ' sempre.
+        ' dentro do projeto" (o mesmo vale pra bancos de sprite). Fora da
+        ' pasta do projeto (ou sem projeto aberto), nao ha' o que
+        ' registrar - salva so' em disco, como sempre.
         If ProjectIsActive() <> 0 Then
             Dim projDirS As String = ProjectActiveDir()
             If Len(projDirS) > 0 And LCase(Left(ToAbsolutePath(d.filePath), Len(projDirS))) = LCase(projDirS) Then
                 Dim relPathS As String = Mid(ToAbsolutePath(d.filePath), Len(projDirS) + 1)
-                ProjectRegisterFile(relPathS, header & rawBytes)
+                ProjectRegisterFile(relPathS, fileContent)
             End If
         End If
 
@@ -7717,6 +7767,8 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                 Return MENU_CMD_NEW_MD
             Case "G"
                 Return MENU_CMD_NEW_FONT
+            Case "Y"
+                Return MENU_CMD_NEW_SPRITE
             Case "O"
                 Return MENU_CMD_OPEN
             Case "S"
@@ -7827,6 +7879,8 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             EditorCreateMdUntitled()
         Case MENU_CMD_NEW_FONT
             EditorCreateFontUntitled()
+        Case MENU_CMD_NEW_SPRITE
+            EditorCreateSpriteBankUntitled()
         Case MENU_CMD_OPEN
             OpenDocumentDialog()
         Case MENU_CMD_SAVE
@@ -8069,6 +8123,13 @@ Sub EditorOpenFromPath(ByRef path As String)
         Else
             InitBlankPixelBuffer(docs(docCount), 256)
         End If
+    ElseIf openExtLower = ".spr" Then
+        InitSpriteEditorState(docs(docCount), 8, 0)
+        If Dir(path) <> "" Then
+            LoadSpriteBankFromDisk(docs(docCount), path)
+        Else
+            InitBlankSpriteBuffer(docs(docCount), 256)
+        End If
     ElseIf Dir(path) <> "" Then
         LoadFromDisk(docs(docCount), path)
     End If
@@ -8300,6 +8361,391 @@ Private Sub EditorCreateFontUntitled()
     End If
 End Sub
 
+' ===== Editor de Fontes/Sprites - suporte a Sprites (pixelEditKind = 1) =====
+'
+' Reaproveita toda a base do editor de fontes (Document, overview 16x16,
+' zoom ampliado, navegacao, integracao com projeto) - a diferenca esta so'
+' no tamanho do padrao (8x8 ou 16x16, escolhido na criacao do banco - no
+' MSX de verdade o tamanho do sprite e' uma configuracao GLOBAL do VDP,
+' nao por sprite, entao faz sentido ser fixo por banco) e na cor (MSX1 = 1
+' cor pro sprite inteiro, MSX2 = 1 cor por linha - tambem uma escolha de
+' modo de VDP, nao por sprite).
+'
+' Layout de bits de um sprite 16x16: 4 padroes de 8 bytes concatenados na
+' ORDEM REAL do VDP do MSX pra sprites grandes - quadrante
+' superior-esquerdo, inferior-esquerdo, superior-direito, inferior-direito
+' (nessa ordem: N, N+1, N+2, N+3). Um sprite 8x8 e' so' os 8 bytes crus,
+' formula degenera pro mesmo calculo usado no editor de fontes.
+Private Function SpritePixelGet(ByRef bits As String, ByVal gridSize As Integer, ByVal row As Integer, ByVal col As Integer) As Integer
+    Dim byteIdx As Integer
+    Dim bitCol As Integer
+    If gridSize = 16 Then
+        Dim qRow As Integer = row \ 8
+        Dim qCol As Integer = col \ 8
+        Dim quadrant As Integer = qCol * 2 + qRow ' 0=TL 1=BL 2=TR 3=BR
+        byteIdx = quadrant * 8 + (row Mod 8)
+        bitCol = col Mod 8
+    Else
+        byteIdx = row
+        bitCol = col
+    End If
+    If byteIdx < 0 Or byteIdx >= Len(bits) Then Return 0
+    Dim byteVal As Integer = Asc(Mid(bits, byteIdx + 1, 1))
+    Return IIf((byteVal And (128 Shr bitCol)) <> 0, 1, 0)
+End Function
+
+Private Sub SpritePixelToggle(ByRef bits As String, ByVal gridSize As Integer, ByVal row As Integer, ByVal col As Integer)
+    Dim byteIdx As Integer
+    Dim bitCol As Integer
+    If gridSize = 16 Then
+        Dim qRow As Integer = row \ 8
+        Dim qCol As Integer = col \ 8
+        Dim quadrant As Integer = qCol * 2 + qRow
+        byteIdx = quadrant * 8 + (row Mod 8)
+        bitCol = col Mod 8
+    Else
+        byteIdx = row
+        bitCol = col
+    End If
+    If byteIdx < 0 Or byteIdx >= Len(bits) Then Exit Sub
+    Dim byteVal As Integer = Asc(Mid(bits, byteIdx + 1, 1))
+    byteVal = byteVal Xor (128 Shr bitCol)
+    bits = Left(bits, byteIdx) & Chr(byteVal And 255) & Mid(bits, byteIdx + 2)
+End Sub
+
+' Paleta MSX1/MSX2 (16 cores fixas do VDP) aproximada pras 16 cores do
+' console - so' pra dar uma pista visual no preview do editor, nao e' uma
+' conversao de RGB de verdade.
+Private Function MsxColorToConsole(ByVal msxColor As Integer) As UByte
+    Select Case msxColor And 15
+        Case 0 : Return 0  ' transparente -> preto
+        Case 1 : Return 0  ' preto
+        Case 2 : Return 2  ' verde medio
+        Case 3 : Return 10 ' verde claro
+        Case 4 : Return 1  ' azul escuro
+        Case 5 : Return 9  ' azul claro
+        Case 6 : Return 4  ' vermelho escuro
+        Case 7 : Return 11 ' ciano
+        Case 8 : Return 4  ' vermelho medio
+        Case 9 : Return 12 ' vermelho claro
+        Case 10 : Return 6  ' amarelo escuro
+        Case 11 : Return 14 ' amarelo claro
+        Case 12 : Return 2  ' verde escuro
+        Case 13 : Return 5  ' magenta
+        Case 14 : Return 7  ' cinza
+        Case Else : Return 15 ' branco (15)
+    End Select
+End Function
+
+Private Function MsxColorName(ByVal msxColor As Integer) As String
+    Select Case msxColor And 15
+        Case 0 : Return "Transparente"
+        Case 1 : Return "Preto"
+        Case 2 : Return "Verde medio"
+        Case 3 : Return "Verde claro"
+        Case 4 : Return "Azul escuro"
+        Case 5 : Return "Azul claro"
+        Case 6 : Return "Vermelho escuro"
+        Case 7 : Return "Ciano"
+        Case 8 : Return "Vermelho medio"
+        Case 9 : Return "Vermelho claro"
+        Case 10 : Return "Amarelo escuro"
+        Case 11 : Return "Amarelo claro"
+        Case 12 : Return "Verde escuro"
+        Case 13 : Return "Magenta"
+        Case 14 : Return "Cinza"
+        Case Else : Return "Branco"
+    End Select
+End Function
+
+Private Sub InitSpriteEditorState(ByRef d As Document, ByVal spriteSize As Integer, ByVal colorMode As Integer)
+    InitPixelEditorState(d)
+    d.pixelEditKind = 1
+    d.spriteSize = IIf(spriteSize = 16, 16, 8)
+    d.spriteColorMode = IIf(colorMode = 1, 1, 0)
+End Sub
+
+' Banco em branco: todos os padroes zerados, cor padrao Branco (15) - pro
+' modo MSX2 (1 cor por linha), toda linha comeca em Branco tambem (nao faz
+' sentido um sprite novo comecar "invisivel" com cor 0/transparente).
+Private Sub InitBlankSpriteBuffer(ByRef d As Document, ByVal spriteCount As Integer)
+    Dim patternBytes As Integer = IIf(d.spriteSize = 16, 32, 8)
+    Dim colorBytes As Integer = IIf(d.spriteColorMode = 1, d.spriteSize, 1)
+    Dim blankPattern As String = String(patternBytes, Chr(0))
+    Dim blankColor As String = String(colorBytes, Chr(15))
+    d.lineCount = 0
+    Dim si As Integer
+    For si = 1 To spriteCount
+        If d.lineCount >= MAX_LINES Then Exit For
+        d.lineCount += 1
+        d.lines(d.lineCount) = blankPattern
+        d.spriteColors(d.lineCount) = blankColor
+    Next si
+End Sub
+
+' Formato de arquivo proprio do msxIDE pra bancos de sprite (nao existe um
+' formato ".spr" padrao unico do MSX pra isso, ao contrario da fonte que
+' segue o BSAVE real da BIOS - aqui inventamos um cabecalho simples e bem
+' documentado):
+'   byte 0: 'S' (53H) - marca magica
+'   byte 1: versao do formato (1)
+'   byte 2: tamanho do sprite (8 ou 16)
+'   byte 3: modo de cor (0=MSX1 1 cor/sprite, 1=MSX2 1 cor/linha)
+'   bytes 4-5: quantidade de sprites (16 bits little-endian)
+'   bytes 6-7: reservado (0,0)
+'   depois: bloco de padroes (spriteCount * 8 ou 32 bytes cada)
+'           bloco de cores   (spriteCount * 1 ou spriteSize bytes cada)
+Private Sub LoadSpriteBankFromDisk(ByRef d As Document, ByRef path As String)
+    Dim ff As Integer = FreeFile
+    d.lineCount = 0
+    If Open(path For Binary Access Read As #ff) <> 0 Then Exit Sub
+
+    Dim fileLen As LongInt = Lof(ff)
+    Dim rawBytes As String = ""
+    If fileLen > 0 Then
+        rawBytes = Space(fileLen)
+        Get #ff, 1, rawBytes
+    End If
+    Close #ff
+
+    If Len(rawBytes) < 8 Then Exit Sub
+    If Asc(Mid(rawBytes, 1, 1)) <> &H53 Then Exit Sub ' nao e' um banco de sprites valido
+
+    d.spriteSize = Asc(Mid(rawBytes, 3, 1))
+    If d.spriteSize <> 8 And d.spriteSize <> 16 Then d.spriteSize = 8
+    d.spriteColorMode = Asc(Mid(rawBytes, 4, 1))
+    If d.spriteColorMode <> 0 And d.spriteColorMode <> 1 Then d.spriteColorMode = 0
+    Dim spriteCount As Integer = Asc(Mid(rawBytes, 5, 1)) + Asc(Mid(rawBytes, 6, 1)) * 256
+
+    Dim patternBytes As Integer = IIf(d.spriteSize = 16, 32, 8)
+    Dim colorBytes As Integer = IIf(d.spriteColorMode = 1, d.spriteSize, 1)
+    Dim patStart As Integer = 9
+    Dim colStart As Integer = patStart + spriteCount * patternBytes
+
+    Dim si As Integer
+    For si = 0 To spriteCount - 1
+        If d.lineCount >= MAX_LINES Then Exit For
+        d.lineCount += 1
+        d.lines(d.lineCount) = Mid(rawBytes, patStart + si * patternBytes, patternBytes)
+        d.spriteColors(d.lineCount) = Mid(rawBytes, colStart + si * colorBytes, colorBytes)
+    Next si
+End Sub
+
+' Dialogo modal pequeno (mesmo padrao de PromptConfigExitAction): escolhe
+' tamanho (8x8/16x16) e modo de cor (MSX1/MSX2) ANTES de criar o banco -
+' fixos pro banco inteiro (ver nota no topo desta secao), nao da' pra
+' trocar depois sem invalidar os dados ja desenhados.
+Private Function PromptSpriteBankOptions(ByRef outSize As Integer, ByRef outColorMode As Integer) As Integer
+    Dim dialogW As Integer = Clamp(uiW - 20, 50, 78)
+    Dim dialogH As Integer = 9
+    Dim dialogX As Integer = ((uiW - dialogW) \ 2) + 1
+    Dim dialogY As Integer = ((uiH - dialogH) \ 2) + 1
+    Dim focusRow As Integer = 0 ' 0=tamanho, 1=modo de cor
+    Dim sizeChoice As Integer = 0  ' 0=8x8, 1=16x16
+    Dim colorChoice As Integer = 0 ' 0=MSX1, 1=MSX2
+    Dim confirmed As Integer = 0
+
+    Do
+        ConsoleBeginFrame()
+        DrawDesktop()
+        DrawDocumentsFull()
+        DrawMenuBar(MENU_VIEW_NONE)
+        DrawStatusBar()
+
+        ConsoleWriteText(dialogX, dialogY, Chr(201) & String(dialogW - 2, Chr(205)) & Chr(187), 15, 1)
+        Dim i As Integer
+        For i = 1 To dialogH - 2
+            ConsoleWriteText(dialogX, dialogY + i, Chr(186) & String(dialogW - 2, " ") & Chr(186), 15, 1)
+        Next i
+        ConsoleWriteText(dialogX, dialogY + dialogH - 1, Chr(200) & String(dialogW - 2, Chr(205)) & Chr(188), 15, 1)
+
+        ConsoleWriteText(dialogX + 2, dialogY, " Novo Banco de Sprites ", 0, 7, dialogW - 4)
+
+        Dim sizeFg0 As UByte = IIf(sizeChoice = 0, 0, 15) : Dim sizeBg0 As UByte = IIf(sizeChoice = 0, IIf(focusRow = 0, 11, 7), 1)
+        Dim sizeFg1 As UByte = IIf(sizeChoice = 1, 0, 15) : Dim sizeBg1 As UByte = IIf(sizeChoice = 1, IIf(focusRow = 0, 11, 7), 1)
+        ConsoleWriteText(dialogX + 2, dialogY + 2, "Tamanho:", 15, 1)
+        ConsoleWriteText(dialogX + 12, dialogY + 2, " 8x8 ", sizeFg0, sizeBg0)
+        ConsoleWriteText(dialogX + 18, dialogY + 2, " 16x16 ", sizeFg1, sizeBg1)
+
+        Dim colFg0 As UByte = IIf(colorChoice = 0, 0, 15) : Dim colBg0 As UByte = IIf(colorChoice = 0, IIf(focusRow = 1, 11, 7), 1)
+        Dim colFg1 As UByte = IIf(colorChoice = 1, 0, 15) : Dim colBg1 As UByte = IIf(colorChoice = 1, IIf(focusRow = 1, 11, 7), 1)
+        ConsoleWriteText(dialogX + 2, dialogY + 4, "Cor:", 15, 1)
+        ConsoleWriteText(dialogX + 12, dialogY + 4, " MSX1 (1 cor/sprite) ", colFg0, colBg0)
+        ConsoleWriteText(dialogX + 34, dialogY + 4, " MSX2 (1 cor/linha) ", colFg1, colBg1)
+
+        ConsoleWriteText(dialogX + 2, dialogY + 6, "Cima/Baixo escolhe opcao | Esquerda/Direita muda | Enter confirma | Esc cancela", 8, 1, dialogW - 4)
+
+        ConsoleSetCursor(1, 1, 0)
+        ConsoleFlush()
+        ConsoleEndFrame()
+
+        Dim eventType As Integer
+        Dim keyText As String
+        Dim mouseX As Integer
+        Dim mouseY As Integer
+        Dim mouseAction As Integer
+
+        If ConsolePollInput(eventType, keyText, mouseX, mouseY, mouseAction) = 0 Then
+            Sleep 5, 1
+            Continue Do
+        End If
+
+        If eventType <> MSX_INPUT_KEY Then Continue Do
+        keyText = NormalizeKey(keyText)
+
+        If keyText = Chr(27) Then
+            confirmed = 0
+            Exit Do
+        End If
+        If keyText = Chr(13) Then
+            confirmed = -1
+            Exit Do
+        End If
+
+        If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+            Select Case Asc(Right(keyText, 1))
+                Case 72, 80 ' Cima/Baixo
+                    focusRow = 1 - focusRow
+                Case 75 ' Esquerda
+                    If focusRow = 0 Then sizeChoice = 0 Else colorChoice = 0
+                Case 77 ' Direita
+                    If focusRow = 0 Then sizeChoice = 1 Else colorChoice = 1
+            End Select
+        End If
+    Loop
+
+    FinalizeModalInputState()
+
+    outSize = IIf(sizeChoice = 1, 16, 8)
+    outColorMode = colorChoice
+    Return confirmed
+End Function
+
+' Tela de selecao de cor MSX (as 16 cores fixas do VDP) - lista vertical
+' com indice + nome + um par de blocos na cor de console mais proxima
+' (mesmo mapeamento usado no preview do sprite, MsxColorToConsole), Cima/
+' Baixo navega, ENTER confirma, ESC cancela sem mudar nada. Chamada de
+' dentro do editor de sprites ampliado (tecla C) - pedido explicito do
+' usuario: "faltou uma tela de selecao das cores do MSX pra poder colocar
+' junto ao sprite" (ate agora so' dava pra ciclar +/- numero por numero).
+Private Function PromptMsxColorPicker(ByVal currentColor As Integer) As Integer
+    Dim dialogW As Integer = Clamp(uiW - 30, 40, 56)
+    Dim dialogH As Integer = 20
+    If dialogH > uiH - 4 Then dialogH = uiH - 4
+    Dim dialogX As Integer = ((uiW - dialogW) \ 2) + 1
+    Dim dialogY As Integer = ((uiH - dialogH) \ 2) + 1
+    Dim selected As Integer = currentColor
+    If selected < 0 Or selected > 15 Then selected = 15
+    Dim confirmed As Integer = 0
+
+    Do
+        ConsoleBeginFrame()
+        DrawDesktop()
+        DrawDocumentsFull()
+        DrawMenuBar(MENU_VIEW_NONE)
+        DrawStatusBar()
+
+        ConsoleWriteText(dialogX, dialogY, Chr(201) & String(dialogW - 2, Chr(205)) & Chr(187), 15, 1)
+        Dim i As Integer
+        For i = 1 To dialogH - 2
+            ConsoleWriteText(dialogX, dialogY + i, Chr(186) & String(dialogW - 2, " ") & Chr(186), 15, 1)
+        Next i
+        ConsoleWriteText(dialogX, dialogY + dialogH - 1, Chr(200) & String(dialogW - 2, Chr(205)) & Chr(188), 15, 1)
+
+        ConsoleWriteText(dialogX + 2, dialogY, " Cor MSX ", 0, 7, dialogW - 4)
+
+        Dim ci As Integer
+        For ci = 0 To 15
+            If ci + 2 > dialogH - 3 Then Exit For
+            Dim rowY As Integer = dialogY + 2 + ci
+            Dim rowFg As UByte = 15
+            Dim rowBg As UByte = 1
+            If ci = selected Then
+                rowFg = 0 : rowBg = 7
+            End If
+            Dim rowText As String = " " & Right("0" & Trim(Str(ci)), 2) & " " & MsxColorName(ci)
+            rowText = Left(rowText & Space(dialogW - 8), dialogW - 8)
+            ConsoleWriteText(dialogX + 2, rowY, rowText, rowFg, rowBg)
+            ConsoleSetCell(dialogX + dialogW - 5, rowY, Asc(Chr(219)), MsxColorToConsole(ci), rowBg)
+            ConsoleSetCell(dialogX + dialogW - 4, rowY, Asc(Chr(219)), MsxColorToConsole(ci), rowBg)
+        Next ci
+
+        ConsoleWriteText(dialogX + 2, dialogY + dialogH - 2, "Cima/Baixo escolhe | Enter confirma | Esc cancela", 8, 1, dialogW - 4)
+
+        ConsoleSetCursor(1, 1, 0)
+        ConsoleFlush()
+        ConsoleEndFrame()
+
+        Dim eventType As Integer
+        Dim keyText As String
+        Dim mouseX As Integer
+        Dim mouseY As Integer
+        Dim mouseAction As Integer
+
+        If ConsolePollInput(eventType, keyText, mouseX, mouseY, mouseAction) = 0 Then
+            Sleep 5, 1
+            Continue Do
+        End If
+
+        If eventType <> MSX_INPUT_KEY Then Continue Do
+        keyText = NormalizeKey(keyText)
+
+        If keyText = Chr(27) Then
+            confirmed = 0
+            Exit Do
+        End If
+        If keyText = Chr(13) Then
+            confirmed = -1
+            Exit Do
+        End If
+
+        If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+            Select Case Asc(Right(keyText, 1))
+                Case 72 ' Cima
+                    If selected > 0 Then selected -= 1
+                Case 80 ' Baixo
+                    If selected < 15 Then selected += 1
+            End Select
+        End If
+    Loop
+
+    FinalizeModalInputState()
+    Return IIf(confirmed <> 0, selected, -1)
+End Function
+
+' Testavel/headless: cria o banco direto, sem passar pelo dialogo - o
+' menu ("Y Novo Banco de Sprites") passa por EditorCreateSpriteBankUntitled
+' (que mostra o dialogo e so' chama esta se confirmado), mas testes/outros
+' fluxos podem chamar esta direto com os parametros ja definidos (mesmo
+' padrao de ProjectNew ser testavel enquanto ExecuteProjectNew e' so' o
+' wrapper com dialogo).
+Private Sub EditorCreateSpriteBankWithOptions(ByVal spriteSize As Integer, ByVal colorMode As Integer)
+    Dim romsDir As String = "roms" & Chr(92)
+    If ProjectIsActive() <> 0 Then romsDir = ProjectActiveDir() & "roms" & Chr(92)
+    Dim baseName As String = romsDir & "sprite" & Right("00" & Trim(Str(untitledSpriteCounter)), 2)
+    untitledSpriteCounter += 1
+
+    If docCount >= MAX_DOCS Then Exit Sub
+    docCount += 1
+    activeDoc = docCount
+    Dim fullPath As String = baseName & ".spr"
+    InitBlankDocument(docs(docCount), fullPath)
+    ClearMsxDictLineMap(docCount)
+    InitSpriteEditorState(docs(docCount), spriteSize, colorMode)
+    Dim spriteCount As Integer = IIf(spriteSize = 16, 64, 256)
+    InitBlankSpriteBuffer(docs(docCount), spriteCount)
+    LayoutNewDocumentWindow(docCount)
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
+End Sub
+
+Private Sub EditorCreateSpriteBankUntitled()
+    Dim chosenSize As Integer
+    Dim chosenColorMode As Integer
+    If PromptSpriteBankOptions(chosenSize, chosenColorMode) = 0 Then Exit Sub
+    EditorCreateSpriteBankWithOptions(chosenSize, chosenColorMode)
+End Sub
+
 ' Grade geral: indices em hexa, 16 colunas (convencao classica de mapa de
 ' caracteres 16x16), o selecionado em destaque - setas navegam, ENTER/Espaco
 ' entra no modo de edicao de pixel (pixelEditZoomed) sem esconder esta
@@ -8355,23 +8801,51 @@ End Sub
 ' Chr(219) aceso, espaco apagado) - cursor destacado so' quando pixelEditZoomed
 ' esta ligado (navegando a grade geral, mostra o desenho sem cursor de
 ' pixel). startX e' a primeira coluna de conteudo (ja depois da divisoria).
+' gridSize = 8 (fontes, sempre) ou 8/16 (sprites, conforme d.spriteSize).
+' Em sprites, as celulas acesas usam a cor MSX atribuida (do sprite inteiro
+' no modo MSX1, ou da linha correspondente no modo MSX2) mapeada pra cor
+' de console mais proxima - visualiza direto o efeito de "cor por linha".
 Private Sub DrawPixelEditorZoom(ByVal docIndex As Integer, ByVal clientW As Integer, ByVal clientH As Integer, ByVal startX As Integer)
     Dim ByRef d As Document = docs(docIndex)
+    Dim isSprite As Integer = (d.pixelEditKind = 1)
+    Dim gridSize As Integer = 8
+    If isSprite Then gridSize = d.spriteSize
+    If gridSize <> 8 And gridSize <> 16 Then gridSize = 8
+
     Dim bits As String = ""
     If d.pixelEditSelectedChar >= 0 And d.pixelEditSelectedChar + 1 <= d.lineCount Then
         bits = d.lines(d.pixelEditSelectedChar + 1)
     End If
-    If Len(bits) < 8 Then bits &= String(8 - Len(bits), Chr(0))
+    Dim expectedBytes As Integer = IIf(gridSize = 16, 32, 8)
+    If Len(bits) < expectedBytes Then bits &= String(expectedBytes - Len(bits), Chr(0))
+
+    Dim colors As String = ""
+    Dim colorBytesPerSprite As Integer = 1
+    If isSprite Then
+        colorBytesPerSprite = IIf(d.spriteColorMode = 1, gridSize, 1)
+        If d.pixelEditSelectedChar >= 0 And d.pixelEditSelectedChar + 1 <= d.lineCount Then
+            colors = d.spriteColors(d.pixelEditSelectedChar + 1)
+        End If
+        If Len(colors) < colorBytesPerSprite Then colors &= String(colorBytesPerSprite - Len(colors), Chr(15))
+    End If
 
     Dim row As Integer
-    For row = 0 To 7
+    For row = 0 To gridSize - 1
         If row >= clientH Then Continue For
         Dim rowY As Integer = d.winY + 1 + row
-        Dim byteVal As Integer = Asc(Mid(bits, row + 1, 1))
+
+        Dim rowConsoleColor As UByte = 15
+        If isSprite Then
+            Dim colorSlot As Integer = IIf(d.spriteColorMode = 1, row, 0)
+            Dim rowMsxColor As Integer = 15
+            If colorSlot >= 0 And colorSlot < Len(colors) Then rowMsxColor = Asc(Mid(colors, colorSlot + 1, 1))
+            rowConsoleColor = MsxColorToConsole(rowMsxColor)
+        End If
+
         Dim lineText As String = ""
         Dim col As Integer
-        For col = 0 To 7
-            If (byteVal And (128 Shr col)) <> 0 Then
+        For col = 0 To gridSize - 1
+            If SpritePixelGet(bits, gridSize, row, col) <> 0 Then
                 lineText &= Chr(219) & Chr(219)
             Else
                 lineText &= "  "
@@ -8381,13 +8855,14 @@ Private Sub DrawPixelEditorZoom(ByVal docIndex As Integer, ByVal clientW As Inte
         Dim padded As String = Left(lineText & Space(clientW), clientW)
         Dim i As Integer
         For i = 1 To clientW
-            Dim cellFg As UByte = 15
+            Dim srcCh As Integer = Asc(Mid(padded, i, 1))
+            Dim cellFg As UByte = IIf(srcCh = 219, rowConsoleColor, 15)
             Dim cellBg As UByte = 0
             If d.pixelEditZoomed <> 0 And row = d.pixelEditCursorRow Then
                 Dim cellStart As Integer = d.pixelEditCursorCol * 2 + 1
                 If i = cellStart Or i = cellStart + 1 Then cellBg = 4
             End If
-            ConsoleSetCell(startX + i - 1, rowY, Asc(Mid(padded, i, 1)), cellFg, cellBg)
+            ConsoleSetCell(startX + i - 1, rowY, srcCh, cellFg, cellBg)
         Next i
     Next row
 End Sub
@@ -8399,29 +8874,35 @@ End Sub
 ' de entrar no modo de edicao de pixel).
 Sub DrawPixelEditor(ByVal docIndex As Integer)
     Dim ByRef d As Document = docs(docIndex)
+    Dim isSprite As Integer = (d.pixelEditKind = 1)
+    Dim gridSize As Integer = 8
+    If isSprite Then gridSize = d.spriteSize
+    If gridSize <> 8 And gridSize <> 16 Then gridSize = 8
+
     Dim fullW As Integer = d.winW - 3
     If fullW < 1 Then fullW = 1
     Dim clientH As Integer = GetClientTextHeight(d)
     Dim availRows As Integer = clientH - 1 ' reserva 1 linha pro status no rodape
     If availRows < 1 Then availRows = 1
 
-    ' A grade geral so' precisa da altura pra caber todos os caracteres (16
-    ' por linha) - normalmente bem menos que a altura toda da janela. O
-    ' espaco sobrando embaixo (pedido explicito do usuario: "tem bastante
-    ' espaco... mostra os alfabetos que ja estao no projeto") vira a lista
-    ' de alfabetos do projeto ativo, logo abaixo da grade.
+    ' A grade geral so' precisa da altura pra caber todos os itens (16 por
+    ' linha) - normalmente bem menos que a altura toda da janela. O espaco
+    ' sobrando embaixo (pedido explicito do usuario: "tem bastante
+    ' espaco... mostra os alfabetos/sprites que ja estao no projeto") vira
+    ' a lista do banco ativo no projeto, logo abaixo da grade.
     Dim colsPerRow As Integer = 16
     Dim gridRowsNeeded As Integer = (d.lineCount + colsPerRow - 1) \ colsPerRow
-    If gridRowsNeeded < 8 Then gridRowsNeeded = 8 ' pelo menos a altura do preview ampliado
+    If gridRowsNeeded < gridSize Then gridRowsNeeded = gridSize ' pelo menos a altura do preview ampliado
     Dim gridH As Integer = gridRowsNeeded
     If gridH > availRows Then gridH = availRows
 
     Dim overviewW As Integer = 52 ' "XX: " (4) + 16 * "XX " (3) = 52 colunas
+    Dim requiredZoomW As Integer = gridSize * 2 ' 1 pixel = 2 colunas de texto
     Dim zoomW As Integer = fullW - overviewW - 1
-    If zoomW < 16 Then
+    If zoomW < requiredZoomW Then
         ' Janela estreita demais pra dividir - so' a grade geral, sem
-        ' preview lado a lado (continua mostrando o mapa de caracteres
-        ' inteiro, so nao cabe o desenho ampliado ao lado desta vez).
+        ' preview lado a lado (continua mostrando o mapa inteiro, so nao
+        ' cabe o desenho ampliado ao lado desta vez).
         overviewW = fullW
         zoomW = 0
     End If
@@ -8437,9 +8918,11 @@ Sub DrawPixelEditor(ByVal docIndex As Integer)
         DrawPixelEditorZoom(docIndex, zoomW, gridH, dividerX + 1)
     End If
 
+    Dim listExt As String = IIf(isSprite, ".spr", ".alf")
+    Dim listNoun As String = IIf(isSprite, "sprites", "alfabetos")
     Dim listPaths() As String
     Dim listCount As Integer
-    ProjectListFilesWithExt(".alf", listPaths(), listCount)
+    ProjectListFilesWithExt(listExt, listPaths(), listCount)
 
     Dim listRowsAvail As Integer = availRows - gridH
     Dim listShown As Integer = 0
@@ -8466,7 +8949,7 @@ Sub DrawPixelEditor(ByVal docIndex As Integer)
         End If
 
         Dim headerY As Integer = d.winY + 1 + gridH
-        Dim headerText As String = "Alfabetos no projeto - TAB foca a lista, ENTER abre:"
+        Dim headerText As String = UCase(Left(listNoun, 1)) & Mid(listNoun, 2) & " no projeto - TAB foca a lista, ENTER abre:"
         Dim headerPadded As String = Left(headerText & Space(fullW), fullW)
         Dim hi As Integer
         For hi = 1 To fullW
@@ -8496,16 +8979,29 @@ Sub DrawPixelEditor(ByVal docIndex As Integer)
         Next li
     End If
 
+    Dim itemLabel As String = IIf(isSprite, "Sprite ", "Caractere ")
     Dim statusRow As Integer = d.winY + 1 + gridH + listShown
     Dim statusText As String
     If d.pixelEditListFocus <> 0 Then
-        statusText = "Lista de alfabetos do projeto - Cima/Baixo escolhe  ENTER abre  TAB/ESC volta pra grade"
+        statusText = "Lista de " & listNoun & " do projeto - Cima/Baixo escolhe  ENTER abre  TAB/ESC volta pra grade"
     ElseIf d.pixelEditZoomed = 0 Then
-        statusText = "Caractere " & Hex(d.pixelEditSelectedChar, 2) & "H/" & Hex(d.lineCount - 1, 2) & "H - Setas/PgUp/PgDn navega  ENTER/Espaco edita pixel  F2 salva"
-        If listCount > 0 Then statusText &= "  TAB lista alfabetos"
+        statusText = itemLabel & Hex(d.pixelEditSelectedChar, 2) & "H/" & Hex(d.lineCount - 1, 2) & "H"
+        If isSprite Then statusText &= " (" & gridSize & "x" & gridSize & " " & IIf(d.spriteColorMode = 1, "MSX2", "MSX1") & ")"
+        statusText &= " - Setas/PgUp/PgDn navega  ENTER/Espaco edita pixel  F2 salva"
+        If listCount > 0 Then statusText &= "  TAB lista " & listNoun
         statusText &= "  ESC fecha"
     Else
-        statusText = "Caractere " & Hex(d.pixelEditSelectedChar, 2) & "H - Setas move o pixel  Espaco/ENTER alterna  PgUp/PgDn troca de caractere  F2 salva  ESC volta a navegar"
+        statusText = itemLabel & Hex(d.pixelEditSelectedChar, 2) & "H - Setas move o pixel  Espaco/ENTER alterna  PgUp/PgDn troca"
+        If isSprite Then
+            Dim curColors As String = ""
+            If d.pixelEditSelectedChar >= 0 And d.pixelEditSelectedChar + 1 <= d.lineCount Then curColors = d.spriteColors(d.pixelEditSelectedChar + 1)
+            Dim colorSlot As Integer = IIf(d.spriteColorMode = 1, d.pixelEditCursorRow, 0)
+            Dim curColorVal As Integer = 15
+            If colorSlot >= 0 And colorSlot < Len(curColors) Then curColorVal = Asc(Mid(curColors, colorSlot + 1, 1))
+            Dim colorScopeLabel As String = IIf(d.spriteColorMode = 1, "linha " & d.pixelEditCursorRow, "sprite")
+            statusText &= "  +/- ou C muda a cor da " & colorScopeLabel & " (" & curColorVal & " " & MsxColorName(curColorVal) & ")"
+        End If
+        statusText &= "  F2 salva  ESC volta a navegar"
     End If
     Dim sPadded As String = Left(statusText & Space(fullW), fullW)
     Dim si As Integer
@@ -8519,14 +9015,19 @@ End Sub
 Private Sub HandlePixelEditorKey(ByRef d As Document, ByRef keyText As String, ByRef renderHint As Integer)
     renderHint = RENDER_CLIENT
     Dim colsPerRow As Integer = 16
+    Dim isSprite As Integer = (d.pixelEditKind = 1)
+    Dim gridSize As Integer = 8
+    If isSprite Then gridSize = d.spriteSize
+    If gridSize <> 8 And gridSize <> 16 Then gridSize = 8
 
-    ' Lista de alfabetos do projeto (rodape) - TAB entra/sai do foco da
-    ' lista, setas Cima/Baixo escolhem, ENTER abre o escolhido (como
-    ' "Abrir..." generico, numa aba nova). So' faz sentido com projeto
-    ' aberto e pelo menos um .alf ja registrado.
+    ' Lista de alfabetos/sprites do projeto (rodape) - TAB entra/sai do
+    ' foco da lista, setas Cima/Baixo escolhem, ENTER abre o escolhido
+    ' (como "Abrir..." generico, numa aba nova). So' faz sentido com
+    ' projeto aberto e pelo menos um arquivo do mesmo tipo ja registrado.
+    Dim listExt As String = IIf(isSprite, ".spr", ".alf")
     Dim listPaths() As String
     Dim listCount As Integer
-    ProjectListFilesWithExt(".alf", listPaths(), listCount)
+    ProjectListFilesWithExt(listExt, listPaths(), listCount)
 
     If keyText = Chr(9) And listCount > 0 Then
         d.pixelEditListFocus = IIf(d.pixelEditListFocus = 0, -1, 0)
@@ -8598,23 +9099,60 @@ Private Sub HandlePixelEditorKey(ByRef d As Document, ByRef keyText As String, B
 
     If keyText = Chr(13) Or keyText = " " Then
         Dim curBits As String = d.lines(d.pixelEditSelectedChar + 1)
-        Dim curByte As Integer = Asc(Mid(curBits, d.pixelEditCursorRow + 1, 1))
-        Dim bitMask As Integer = 128 Shr d.pixelEditCursorCol
-        curByte = curByte Xor bitMask
-        curBits = Left(curBits, d.pixelEditCursorRow) & Chr(curByte And 255) & Mid(curBits, d.pixelEditCursorRow + 2)
+        SpritePixelToggle(curBits, gridSize, d.pixelEditCursorRow, d.pixelEditCursorCol)
         d.lines(d.pixelEditSelectedChar + 1) = curBits
+        Exit Sub
+    End If
+
+    ' +/- muda a cor MSX atribuida (so' faz sentido em sprites) - no modo
+    ' MSX2 (1 cor/linha) muda so' a linha onde o cursor de pixel esta'
+    ' agora; no modo MSX1 (1 cor/sprite) muda o sprite inteiro de uma vez,
+    ' independente da linha do cursor.
+    If isSprite And (keyText = "+" Or keyText = "-") Then
+        Dim colorBytesPerSprite As Integer = IIf(d.spriteColorMode = 1, gridSize, 1)
+        Dim curColors As String = d.spriteColors(d.pixelEditSelectedChar + 1)
+        If Len(curColors) < colorBytesPerSprite Then curColors &= String(colorBytesPerSprite - Len(curColors), Chr(15))
+        Dim colorSlot As Integer = IIf(d.spriteColorMode = 1, d.pixelEditCursorRow, 0)
+        If colorSlot >= 0 And colorSlot < colorBytesPerSprite Then
+            Dim curColorVal As Integer = Asc(Mid(curColors, colorSlot + 1, 1))
+            Dim delta As Integer = IIf(keyText = "+", 1, -1)
+            curColorVal = (curColorVal + delta + 16) Mod 16
+            curColors = Left(curColors, colorSlot) & Chr(curColorVal) & Mid(curColors, colorSlot + 2)
+            d.spriteColors(d.pixelEditSelectedChar + 1) = curColors
+        End If
+        Exit Sub
+    End If
+
+    ' Tela de selecao de cor MSX (pedido explicito do usuario, complementa
+    ' o ciclo rapido +/- acima com uma tela de verdade mostrando as 16
+    ' cores) - mesma logica de escopo (linha atual no modo MSX2, sprite
+    ' inteiro no MSX1).
+    If isSprite And UCase(keyText) = "C" Then
+        Dim colorBytesPerSpriteC As Integer = IIf(d.spriteColorMode = 1, gridSize, 1)
+        Dim curColorsC As String = d.spriteColors(d.pixelEditSelectedChar + 1)
+        If Len(curColorsC) < colorBytesPerSpriteC Then curColorsC &= String(colorBytesPerSpriteC - Len(curColorsC), Chr(15))
+        Dim colorSlotC As Integer = IIf(d.spriteColorMode = 1, d.pixelEditCursorRow, 0)
+        If colorSlotC >= 0 And colorSlotC < colorBytesPerSpriteC Then
+            Dim curColorValC As Integer = Asc(Mid(curColorsC, colorSlotC + 1, 1))
+            Dim chosenColor As Integer = PromptMsxColorPicker(curColorValC)
+            If chosenColor >= 0 And chosenColor <= 15 Then
+                curColorsC = Left(curColorsC, colorSlotC) & Chr(chosenColor) & Mid(curColorsC, colorSlotC + 2)
+                d.spriteColors(d.pixelEditSelectedChar + 1) = curColorsC
+            End If
+        End If
+        renderHint = RENDER_FULL
         Exit Sub
     End If
 
     If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
         Select Case Asc(Right(keyText, 1))
             Case 72 : If d.pixelEditCursorRow > 0 Then d.pixelEditCursorRow -= 1
-            Case 80 : If d.pixelEditCursorRow < 7 Then d.pixelEditCursorRow += 1
+            Case 80 : If d.pixelEditCursorRow < gridSize - 1 Then d.pixelEditCursorRow += 1
             Case 75 : If d.pixelEditCursorCol > 0 Then d.pixelEditCursorCol -= 1
-            Case 77 : If d.pixelEditCursorCol < 7 Then d.pixelEditCursorCol += 1
-            Case 73 ' PgUp -> caractere anterior, mantendo o zoom
+            Case 77 : If d.pixelEditCursorCol < gridSize - 1 Then d.pixelEditCursorCol += 1
+            Case 73 ' PgUp -> caractere/sprite anterior, mantendo o zoom
                 If d.pixelEditSelectedChar > 0 Then d.pixelEditSelectedChar -= 1
-            Case 81 ' PgDn -> proximo caractere, mantendo o zoom
+            Case 81 ' PgDn -> proximo caractere/sprite, mantendo o zoom
                 If d.pixelEditSelectedChar < d.lineCount - 1 Then d.pixelEditSelectedChar += 1
         End Select
     End If
@@ -15533,22 +16071,24 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                     Case 6
                         menuCmd = MENU_CMD_NEW_FONT
                     Case 7
-                        menuCmd = MENU_CMD_OPEN
+                        menuCmd = MENU_CMD_NEW_SPRITE
                     Case 8
-                        menuCmd = MENU_CMD_SAVE
+                        menuCmd = MENU_CMD_OPEN
                     Case 9
-                        menuCmd = MENU_CMD_SAVE_AS
+                        menuCmd = MENU_CMD_SAVE
                     Case 10
-                        menuCmd = MENU_CMD_CLOSE
+                        menuCmd = MENU_CMD_SAVE_AS
                     Case 11
+                        menuCmd = MENU_CMD_CLOSE
+                    Case 12
                         menuCmd = MENU_CMD_EXIT
-                    Case 13
-                        menuCmd = MENU_CMD_PROJECT_NEW
                     Case 14
-                        menuCmd = MENU_CMD_PROJECT_OPEN
+                        menuCmd = MENU_CMD_PROJECT_NEW
                     Case 15
-                        menuCmd = MENU_CMD_PROJECT_SAVE
+                        menuCmd = MENU_CMD_PROJECT_OPEN
                     Case 16
+                        menuCmd = MENU_CMD_PROJECT_SAVE
+                    Case 17
                         menuCmd = MENU_CMD_PROJECT_CLOSE
                 End Select
             End If
@@ -16502,6 +17042,202 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
 
     If Dir(fontTestPath) <> "" Then Kill fontTestPath
 
+    ' Editor/visualizador de Sprites (pixelEditKind=1, reaproveitando toda
+    ' a base do editor de fontes acima): criacao com tamanho/modo de cor
+    ' escolhidos, navegacao, toggle de pixel em 8x8 e 16x16 (conferindo a
+    ' ordem real de quadrantes do MSX), ciclo de cor MSX1 (1 cor/sprite) e
+    ' MSX2 (1 cor/linha), e round-trip binario com o cabecalho proprio.
+    ' Este teste cria varios documentos novos (8x8, reabertura generica,
+    ' 16x16) - fecha o excesso acumulado pelos testes anteriores pra
+    ' garantir espaco (MAX_DOCS), mesmo cuidado do teste de projeto mais
+    ' abaixo.
+    While docCount > 1
+        CloseDocument(docCount)
+    Wend
+
+    EditorCreateSpriteBankWithOptions(8, 0) ' 8x8, MSX1
+    Dim spr8DocIdx As Integer = activeDoc
+    If docs(spr8DocIdx).isPixelEditor = 0 Or docs(spr8DocIdx).pixelEditKind <> 1 Then
+        report = "SMOKE HELP FAIL: EditorCreateSpriteBankWithOptions deveria marcar isPixelEditor<>0 e pixelEditKind=1"
+        Return 0
+    End If
+    If docs(spr8DocIdx).lineCount <> 256 Then
+        report = "SMOKE HELP FAIL: banco de sprites 8x8 novo deveria ter 256 sprites, veio " & Trim(Str(docs(spr8DocIdx).lineCount))
+        Return 0
+    End If
+    If docs(spr8DocIdx).spriteSize <> 8 Or docs(spr8DocIdx).spriteColorMode <> 0 Then
+        report = "SMOKE HELP FAIL: banco de sprites novo deveria manter o tamanho/modo escolhidos (8x8 MSX1)"
+        Return 0
+    End If
+
+    Dim sprRunningDummy As Integer = 1
+    Dim sprMenuOpenDummy As Integer = 0
+    Dim sprRightKey As String = Chr(0) & Chr(77)
+    Dim sprDownKey As String = Chr(0) & Chr(80)
+    Dim sprEnterKey As String = Chr(13)
+    Dim sprSpaceKey As String = " "
+    Dim sprEscKey As String = Chr(27)
+
+    EditorHandleKey(sprRightKey, sprRunningDummy, sprMenuOpenDummy)
+    EditorHandleKey(sprDownKey, sprRunningDummy, sprMenuOpenDummy)
+    If docs(spr8DocIdx).pixelEditSelectedChar <> 17 Then
+        report = "SMOKE HELP FAIL: Direita+Baixo na visao geral do editor de sprites deveria selecionar o sprite 17, veio " & Trim(Str(docs(spr8DocIdx).pixelEditSelectedChar))
+        Return 0
+    End If
+
+    EditorHandleKey(sprEnterKey, sprRunningDummy, sprMenuOpenDummy)
+    If docs(spr8DocIdx).pixelEditZoomed = 0 Then
+        report = "SMOKE HELP FAIL: ENTER na visao geral do editor de sprites deveria entrar no editor ampliado"
+        Return 0
+    End If
+
+    EditorHandleKey(sprSpaceKey, sprRunningDummy, sprMenuOpenDummy)
+    Dim sprByte0 As Integer = Asc(Left(docs(spr8DocIdx).lines(18), 1))
+    If sprByte0 <> 128 Then
+        report = "SMOKE HELP FAIL: Espaco no pixel (0,0) do sprite 8x8 deveria acender o bit 80H no 1o byte, veio " & Hex(sprByte0, 2) & "H"
+        Return 0
+    End If
+
+    EditorHandleKey(sprRightKey, sprRunningDummy, sprMenuOpenDummy)
+    EditorHandleKey(sprSpaceKey, sprRunningDummy, sprMenuOpenDummy)
+    Dim sprByte0b As Integer = Asc(Left(docs(spr8DocIdx).lines(18), 1))
+    If sprByte0b <> 192 Then
+        report = "SMOKE HELP FAIL: Direita+Espaco no sprite 8x8 deveria tambem acender o bit 40H (0xC0), veio " & Hex(sprByte0b, 2) & "H"
+        Return 0
+    End If
+
+    ' Cor MSX1 (1 cor por sprite inteiro): comeca em Branco(15), +/- alterna
+    ' com wraparound 0..15.
+    Dim sprColorSeed As Integer = Asc(Left(docs(spr8DocIdx).spriteColors(18), 1))
+    If sprColorSeed <> 15 Then
+        report = "SMOKE HELP FAIL: sprite novo deveria comecar com cor 15 (Branco), veio " & Trim(Str(sprColorSeed))
+        Return 0
+    End If
+    EditorHandleKey("+", sprRunningDummy, sprMenuOpenDummy)
+    Dim sprColorAfterPlus As Integer = Asc(Left(docs(spr8DocIdx).spriteColors(18), 1))
+    If sprColorAfterPlus <> 0 Then
+        report = "SMOKE HELP FAIL: + deveria avancar a cor de 15 pra 0 (wraparound), veio " & Trim(Str(sprColorAfterPlus))
+        Return 0
+    End If
+    EditorHandleKey("-", sprRunningDummy, sprMenuOpenDummy)
+    Dim sprColorAfterMinus As Integer = Asc(Left(docs(spr8DocIdx).spriteColors(18), 1))
+    If sprColorAfterMinus <> 15 Then
+        report = "SMOKE HELP FAIL: - deveria voltar a cor de 0 pra 15 (wraparound), veio " & Trim(Str(sprColorAfterMinus))
+        Return 0
+    End If
+
+    EditorHandleKey(sprEscKey, sprRunningDummy, sprMenuOpenDummy)
+    If docs(spr8DocIdx).pixelEditZoomed <> 0 Then
+        report = "SMOKE HELP FAIL: ESC no editor ampliado de sprites deveria voltar pra visao geral, sem fechar o documento"
+        Return 0
+    End If
+
+    Dim sprTestPath As String = Environ("TEMP") & Chr(92) & "msxide_smoke_sprite8.spr"
+    docs(spr8DocIdx).filePath = sprTestPath
+    SaveDocumentToDisk(docs(spr8DocIdx))
+
+    Dim sprRawFF As Integer = FreeFile
+    Open sprTestPath For Binary Access Read As #sprRawFF
+    Dim sprRawHeader As String = Space(8)
+    Get #sprRawFF, 1, sprRawHeader
+    Close #sprRawFF
+    If Asc(Left(sprRawHeader, 1)) <> &H53 Then
+        report = "SMOKE HELP FAIL: arquivo .spr salvo deveria comecar com o byte magico 53H, veio " & Hex(Asc(Left(sprRawHeader, 1)), 2) & "H"
+        Return 0
+    End If
+    If Asc(Mid(sprRawHeader, 3, 1)) <> 8 Or Asc(Mid(sprRawHeader, 4, 1)) <> 0 Then
+        report = "SMOKE HELP FAIL: cabecalho do .spr deveria gravar tamanho=8 modo=0 (MSX1), veio tamanho=" & Trim(Str(Asc(Mid(sprRawHeader, 3, 1)))) & " modo=" & Trim(Str(Asc(Mid(sprRawHeader, 4, 1))))
+        Return 0
+    End If
+    Dim sprSavedCount As Integer = Asc(Mid(sprRawHeader, 5, 1)) + Asc(Mid(sprRawHeader, 6, 1)) * 256
+    If sprSavedCount <> 256 Then
+        report = "SMOKE HELP FAIL: cabecalho do .spr deveria gravar 256 sprites, veio " & Trim(Str(sprSavedCount))
+        Return 0
+    End If
+
+    Dim sprLoadDoc As Document
+    LoadSpriteBankFromDisk(sprLoadDoc, sprTestPath)
+    If sprLoadDoc.lineCount <> 256 Or sprLoadDoc.spriteSize <> 8 Or sprLoadDoc.spriteColorMode <> 0 Then
+        report = "SMOKE HELP FAIL: round-trip do banco de sprites deveria reler 256 sprites 8x8 MSX1"
+        Return 0
+    End If
+    If Asc(Left(sprLoadDoc.lines(18), 1)) <> sprByte0b Then
+        report = "SMOKE HELP FAIL: round-trip do banco de sprites deveria manter o byte editado no sprite 17, esperado " & Hex(sprByte0b, 2) & "H veio " & Hex(Asc(Left(sprLoadDoc.lines(18), 1)), 2) & "H"
+        Return 0
+    End If
+    If Asc(Left(sprLoadDoc.spriteColors(18), 1)) <> 15 Then
+        report = "SMOKE HELP FAIL: round-trip do banco de sprites deveria manter a cor 15 do sprite 17, veio " & Trim(Str(Asc(Left(sprLoadDoc.spriteColors(18), 1))))
+        Return 0
+    End If
+
+    EditorOpenFromPath(sprTestPath)
+    If docs(activeDoc).isPixelEditor = 0 Or docs(activeDoc).pixelEditKind <> 1 Then
+        report = "SMOKE HELP FAIL: abrir um .spr pelo caminho generico deveria cair no editor de sprites (deteccao por extensao)"
+        Return 0
+    End If
+    If docs(activeDoc).lineCount <> 256 Or Asc(Left(docs(activeDoc).lines(18), 1)) <> sprByte0b Then
+        report = "SMOKE HELP FAIL: abrir um .spr existente pelo caminho generico deveria carregar o conteudo binario de verdade"
+        Return 0
+    End If
+
+    If Dir(sprTestPath) <> "" Then Kill sprTestPath
+
+    ' 16x16 MSX2 (1 cor por linha): confere a ordem de quadrantes real do
+    ' MSX (N=superior-esq, N+1=inferior-esq, N+2=superior-dir,
+    ' N+3=inferior-dir) e que +/- muda so' a cor da linha do cursor, nao o
+    ' sprite inteiro.
+    EditorCreateSpriteBankWithOptions(16, 1)
+    Dim spr16DocIdx As Integer = activeDoc
+    If docs(spr16DocIdx).lineCount <> 64 Then
+        report = "SMOKE HELP FAIL: banco de sprites 16x16 novo deveria ter 64 sprites (256/4), veio " & Trim(Str(docs(spr16DocIdx).lineCount))
+        Return 0
+    End If
+    If docs(spr16DocIdx).spriteSize <> 16 Or docs(spr16DocIdx).spriteColorMode <> 1 Then
+        report = "SMOKE HELP FAIL: banco de sprites novo deveria manter o tamanho/modo escolhidos (16x16 MSX2)"
+        Return 0
+    End If
+
+    EditorHandleKey(sprEnterKey, sprRunningDummy, sprMenuOpenDummy) ' entra ampliado no sprite 0
+    ' Cursor assimetrico de proposito (linha 9 = metade de baixo, coluna 1 =
+    ' metade da esquerda) - com linha=coluna (ex.: 9,9) as formulas
+    ' qCol*2+qRow e qRow*2+qCol dao o MESMO resultado nesse ponto e o teste
+    ' não pegaria uma ordem de quadrante trocada (confirmado via A/B: um
+    ' quadrante errado deliberado passou batido com (9,9) e so' foi pego
+    ' depois de mudar pra (9,1)).
+    Dim mv As Integer
+    For mv = 1 To 9
+        EditorHandleKey(sprDownKey, sprRunningDummy, sprMenuOpenDummy)
+    Next mv
+    EditorHandleKey(sprRightKey, sprRunningDummy, sprMenuOpenDummy)
+    If docs(spr16DocIdx).pixelEditCursorRow <> 9 Or docs(spr16DocIdx).pixelEditCursorCol <> 1 Then
+        report = "SMOKE HELP FAIL: cursor do editor de sprites 16x16 deveria alcancar (9,1), veio (" & Trim(Str(docs(spr16DocIdx).pixelEditCursorRow)) & "," & Trim(Str(docs(spr16DocIdx).pixelEditCursorCol)) & ")"
+        Return 0
+    End If
+
+    EditorHandleKey(sprSpaceKey, sprRunningDummy, sprMenuOpenDummy)
+    ' quadrante inferior-esquerdo = indice 1 (TL=0,BL=1,TR=2,BR=3);
+    ' byte 0-based = 1*8 + (9 Mod 8) = 9 -> posicao 1-based 10; bit =
+    ' 128 Shr (1 Mod 8) = 128 Shr 1 = 40H.
+    Dim sprQuadByte As Integer = Asc(Mid(docs(spr16DocIdx).lines(1), 10, 1))
+    If sprQuadByte <> &H40 Then
+        report = "SMOKE HELP FAIL: pixel (9,1) num sprite 16x16 deveria acender o bit 40H no byte 9 (quadrante inferior-esquerdo - ordem real do MSX), veio " & Hex(sprQuadByte, 2) & "H"
+        Return 0
+    End If
+
+    EditorHandleKey("+", sprRunningDummy, sprMenuOpenDummy)
+    Dim sprRow9Color As Integer = Asc(Mid(docs(spr16DocIdx).spriteColors(1), 10, 1))
+    Dim sprRow0Color As Integer = Asc(Mid(docs(spr16DocIdx).spriteColors(1), 1, 1))
+    If sprRow9Color <> 0 Then
+        report = "SMOKE HELP FAIL: +/- no modo MSX2 deveria mudar so' a cor da linha do cursor (linha 9, 15->0), veio " & Trim(Str(sprRow9Color))
+        Return 0
+    End If
+    If sprRow0Color <> 15 Then
+        report = "SMOKE HELP FAIL: +/- no modo MSX2 nao deveria mudar a cor de OUTRAS linhas (linha 0 deveria continuar 15), veio " & Trim(Str(sprRow0Color))
+        Return 0
+    End If
+
+    EditorHandleKey(sprEscKey, sprRunningDummy, sprMenuOpenDummy)
+
     ' Integracao com projeto: salvar um .alf dentro de roms\ do projeto
     ' ativo deveria registrar ele no banco do projeto na hora (sem
     ' precisar de "Salvar Projeto"), permitir mais de um alfabeto por
@@ -16525,6 +17261,11 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
     ' registros de rodadas passadas.
     If Dir(projTestPath) <> "" Then Kill projTestPath
     projCleanEntry = Dir(projRomsDir & "*.alf")
+    While Len(projCleanEntry) > 0
+        Kill projRomsDir & projCleanEntry
+        projCleanEntry = Dir()
+    Wend
+    projCleanEntry = Dir(projRomsDir & "*.spr")
     While Len(projCleanEntry) > 0
         Kill projRomsDir & projCleanEntry
         projCleanEntry = Dir()
@@ -16581,6 +17322,63 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
+    ' Banco de sprites no mesmo projeto - mesma integracao (nasce dentro de
+    ' roms\ do projeto, se registra sozinho ao salvar) e a lista do rodape
+    ' fica filtrada por tipo (.spr aqui, .alf lá em cima), sem misturar.
+    EditorCreateSpriteBankWithOptions(8, 0)
+    Dim projSpriteDoc As Integer = activeDoc
+    If Left(LCase(docs(projSpriteDoc).filePath), Len(LCase(projTestDir))) <> LCase(projTestDir) Then
+        report = "SMOKE HELP FAIL: com projeto aberto, 'Novo Banco de Sprites' deveria propor um caminho dentro da pasta do projeto, veio " & docs(projSpriteDoc).filePath
+        ProjectClose()
+        Return 0
+    End If
+    SaveDocumentToDisk(docs(projSpriteDoc))
+
+    Dim projSprPaths() As String
+    Dim projSprCount As Integer
+    ProjectListFilesWithExt(".spr", projSprPaths(), projSprCount)
+    If projSprCount <> 1 Then
+        report = "SMOKE HELP FAIL: salvar o banco de sprites deveria registrar 1 arquivo .spr no projeto na hora, veio " & Trim(Str(projSprCount))
+        ProjectClose()
+        Return 0
+    End If
+    ' a lista de alfabetos nao pode ter "vazado" o sprite (extensoes
+    ' filtradas corretamente).
+    Dim projAlfRecheck() As String
+    Dim projAlfRecheckCount As Integer
+    ProjectListFilesWithExt(".alf", projAlfRecheck(), projAlfRecheckCount)
+    If projAlfRecheckCount <> 2 Then
+        report = "SMOKE HELP FAIL: registrar um .spr nao deveria alterar a contagem de .alf no projeto (esperado 2), veio " & Trim(Str(projAlfRecheckCount))
+        ProjectClose()
+        Return 0
+    End If
+
+    ' Lista no rodape do editor de SPRITES: TAB foca, ENTER abre o unico
+    ' sprite registrado (sem precisar navegar, ja e' o unico item).
+    Dim projTabKeySpr As String = Chr(9)
+    Dim projEnterKeySpr As String = Chr(13)
+    Dim projRunningDummySpr As Integer = 1
+    Dim projMenuOpenDummySpr As Integer = 0
+
+    EditorHandleKey(projTabKeySpr, projRunningDummySpr, projMenuOpenDummySpr)
+    If docs(activeDoc).pixelEditListFocus = 0 Then
+        report = "SMOKE HELP FAIL: TAB no editor de sprites com um sprite no projeto deveria focar a lista do rodape"
+        ProjectClose()
+        Return 0
+    End If
+    Dim docCountBeforeSprOpen As Integer = docCount
+    EditorHandleKey(projEnterKeySpr, projRunningDummySpr, projMenuOpenDummySpr)
+    If docCount <> docCountBeforeSprOpen + 1 Then
+        report = "SMOKE HELP FAIL: ENTER na lista de sprites do projeto deveria abrir o escolhido numa aba nova, docCount nao aumentou"
+        ProjectClose()
+        Return 0
+    End If
+    If docs(activeDoc).isPixelEditor = 0 Or docs(activeDoc).pixelEditKind <> 1 Then
+        report = "SMOKE HELP FAIL: abrir um sprite pela lista do projeto deveria cair no editor de sprites (pixelEditKind=1)"
+        ProjectClose()
+        Return 0
+    End If
+
     ' Lista no rodape do editor: TAB entra no foco da lista, Baixo troca a
     ' selecao, ENTER abre o alfabeto escolhido (mesma rota do "Abrir..."
     ' generico, numa aba nova).
@@ -16622,6 +17420,11 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
 
     If Dir(projTestPath) <> "" Then Kill projTestPath
     projCleanEntry = Dir(projRomsDir & "*.alf")
+    While Len(projCleanEntry) > 0
+        Kill projRomsDir & projCleanEntry
+        projCleanEntry = Dir()
+    Wend
+    projCleanEntry = Dir(projRomsDir & "*.spr")
     While Len(projCleanEntry) > 0
         Kill projRomsDir & projCleanEntry
         projCleanEntry = Dir()

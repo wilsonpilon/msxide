@@ -122,8 +122,8 @@ powershell -ExecutionPolicy Bypass -File .\tests\smoke\run-help-smoke.ps1       
 
 ## 6. Visão geral dos menus
 
-- **Arquivo**: novo documento (Basic Dignified, asMSX, Markdown ou Editor de Fontes MSX), abrir/salvar/
-  fechar, e o sistema de projetos (`.msxproj`).
+- **Arquivo**: novo documento (Basic Dignified, asMSX, Markdown, Editor de Fontes MSX ou Editor de
+  Sprites MSX), abrir/salvar/fechar, e o sistema de projetos (`.msxproj`).
 - **Configurar**: ajustes de Basic Dignified, MSX Basic (tokenizer), Emulador, e o novo configurador de
   memória do Mamute Assembler.
 - **Compilar**: MSX-Basic clássico, Basic Dignified, tokenizar AMX, compilar+executar no emulador, e o

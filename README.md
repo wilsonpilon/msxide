@@ -22,6 +22,11 @@ interativos da era 8-bit do MSX.
   pixels sempre visíveis lado a lado, lê/grava o formato BSAVE real de fonte do MSX (semeado a partir de
   `roms/msx1.alf`), e se integra ao sistema de projetos (vários alfabetos por projeto, listados e
   selecionáveis direto no rodapé do editor).
+- **Editor de Sprites MSX** (`.spr`): mesma base visual do editor de Fontes — mapa geral e preview
+  ampliado lado a lado — para bancos de sprite 8x8 ou 16x16 (4 padrões por sprite, ordem real de
+  quadrantes do VDP), em modo de cor MSX1 (1 cor por sprite) ou MSX2 (1 cor por linha), com uma tela
+  dedicada de seleção entre as 16 cores do MSX (tecla `C`) e a mesma integração com projetos (vários
+  bancos por projeto, listados no rodapé do editor).
 - **Compilação MSX BASIC / Basic Dignified**: gera `.amx`/`.bmx`, monta disco `.dsk` (boot MSX-DOS
   real) e lança o **openMSX** automaticamente.
 - **Z80 Assembly via asMSX**: novo documento `.asm` com um "Hello ASM World" pronto; compilar+executar
