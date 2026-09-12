@@ -118,3 +118,16 @@
 09-11-2026 21:11:15 [compile] modeLabel=Compilar e Executar rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
 09-11-2026 21:11:47 [compile] run emu rc=0 cmd=c:\msx\openmsx\openmsx.exe -diska C:\dos\msxide\disk\MSX00.dsk
 09-11-2026 21:11:47 [compile] success msg1=OK: Compilar e Executar msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx | Disco: C:\dos\msxide\disk\MSX00.dsk | openMSX iniciado
+09-11-2026 21:46:25 [compile] start mode=1 file=msx00.dmx
+09-11-2026 21:46:25 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 21:46:25 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 21:46:25 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 21:47:35 [compile] start mode=1 file=msx00.dmx
+09-11-2026 21:47:35 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 21:47:35 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 21:47:35 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 21:48:11 [compile] start mode=4 file=msx00.dmx
+09-11-2026 21:48:11 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 21:48:11 [compile] modeLabel=Compilar e Executar rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 21:49:01 [compile] run emu rc=0 cmd=c:\msx\openmsx\openmsx.exe -diska C:\dos\msxide\disk\MSX00.dsk
+09-11-2026 21:49:01 [compile] success msg1=OK: Compilar e Executar msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx | Disco: C:\dos\msxide\disk\MSX00.dsk | openMSX iniciado
