@@ -6,6 +6,21 @@ Const MAX_LINES = 2000
 Const SCREEN_W = 100
 Const SCREEN_H = 35
 
+' Historico de undo/redo: cada nivel guarda o buffer inteiro serializado
+' como UMA string (linhas juntadas por Chr(10), lineCount guardado a parte
+' pra reconstruir sem ambiguidade quando ha linhas em branco no final) -
+' bem mais barato de copiar/mover que um array de MAX_LINES strings por
+' nivel (o que pesaria MUITO em BringDocumentToFront/CloseDocument, que já
+' fazem docs(i) = docs(i+1) a cada troca de janela).
+Const MAX_UNDO = 40
+
+Type UndoSnapshot
+    text As String
+    lineCount As Integer
+    cursorX As Integer
+    cursorY As Integer
+End Type
+
 Type Document
     title As String
     filePath As String
@@ -47,6 +62,16 @@ Type Document
     normalY As Integer
     normalW As Integer
     normalH As Integer
+    selActive As Integer
+    selAnchorX As Integer
+    selAnchorY As Integer
+    undoTop As Integer
+    redoTop As Integer
+    undoRunKind As Integer
+    undoRunAtX As Integer
+    undoRunAtY As Integer
+    undoStack(1 To MAX_UNDO) As UndoSnapshot
+    redoStack(1 To MAX_UNDO) As UndoSnapshot
 End Type
 
 Declare Sub EditorInit(ByRef startupName As String)
@@ -58,6 +83,7 @@ Declare Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, 
 Declare Sub EditorSaveAllToDb()
 Declare Sub EditorShutdown()
 Declare Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
+Declare Function EditorRunTextEditSmokeTest(ByRef report As String) As Integer
 Declare Function EditorRunMamuteSmokeTest(ByRef report As String) As Integer
 Declare Function EditorRunMamuteDiag(ByRef report As String) As Integer
 

@@ -1,8 +1,5 @@
-1 ? "Press [A] to toogle"
-2 if inkey$ <> "A" THEN 2
-3 a$ = inkey$
-4 ? "Press [B] to exit"
-5 if a$ = "A" THEN 1
-6 if a$ = "B" THEN 8
-7 GOTO 3
-8 end
+1 declaretemp$,cores,ponto_inicial,ponto_final,colunas,linhas
+2 maxfiles=1:gosub4:gosub5:temp$=input$(1):gosub3
+3 screen0:color15,1,1:cls:width40:keyoff:end
+4 open"grp:"foroutputas#1:screen2,1:color4,7,5:cls:return
+5 forcores=0to15:ponto_inicial=cor*16:ponto_final=ponto_inicial+15:preset(ponto_inicial+5*(ponto_inicial*0),168):?#1,cores:line(ponto_inicial,176)-(ponto_final,191),cores,bf:nextf:forcolunas=0to256step16:line(colunas,0)-(colunas,192):nextcolunas:forlinhas=0to192step16:line(0,linhas)-(255,linhas):nextlinhas:return

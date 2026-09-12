@@ -110,6 +110,8 @@ Testes headless (não precisam de teclado/mouse, seguros pra rodar em automaçã
 ```powershell
 .\msxide.exe --smoke-help           # valida o sistema de ajuda/referencia inteiro
 .\msxide.exe --smoke-mamute         # valida o round-trip da config de memoria do Mamute (usa um banco descartavel proprio)
+.\msxide.exe --smoke-editor         # valida selecao/clipboard/undo-redo/busca/navegacao do editor de textos
+.\msxide.exe --smoke-keys           # valida a traducao Ctrl/Alt+tecla (backend win) sem precisar de teclado real
 ```
 
 Suíte de testes completa:
@@ -124,8 +126,8 @@ powershell -ExecutionPolicy Bypass -File .\tests\smoke\run-help-smoke.ps1       
 
 - **Arquivo**: novo documento (Basic Dignified, asMSX, Markdown, Editor de Fontes MSX ou Editor de
   Sprites MSX), abrir/salvar/fechar, e o sistema de projetos (`.msxproj`).
-- **Configurar**: ajustes de Basic Dignified, MSX Basic (tokenizer), Emulador, e o novo configurador de
-  memória do Mamute Assembler.
+- **Configurar**: ajustes de Basic Dignified, MSX Basic (tokenizer), Emulador, configurador de
+  memória do Mamute Assembler, Impressora, e Editor (quantidade de espaços que o `Tab` insere).
 - **Compilar**: MSX-Basic clássico, Basic Dignified, tokenizar AMX, compilar+executar no emulador, e o
   log de compilação.
 - **Ajuda**: documentação dos dialetos suportados, dicionário MSX BASIC completo, e o guia do próprio
@@ -136,6 +138,8 @@ powershell -ExecutionPolicy Bypass -File .\tests\smoke\run-help-smoke.ps1       
 - **Ajuda**: além da documentação dos dialetos e do guia do editor, também traz a referência completa do
   Mamute Assembler (todos os comandos do monitor, o editor `EDIT` e o comando `A`) — digite `HELP` no
   próprio terminal `MON>` ou use `Ajuda -> Mamute Assembler`.
+- **Inserir**: grade de caracteres especiais MSX (acentos/gráficos 128-255 e os símbolos que viram
+  letra, mesmo conjunto do "Translate" do Basic Dignified Suite) — `Alt+I`.
 
 ## 7. Atalhos essenciais
 
@@ -146,10 +150,22 @@ powershell -ExecutionPolicy Bypass -File .\tests\smoke\run-help-smoke.ps1       
 | `Shift+F1` | Verbete do dicionário MSX BASIC para a palavra sob o cursor |
 | `F2` / `F3` / `F4` / `F5` | Salvar / Abrir / Novo / Fechar |
 | `F6` | Alterna para a próxima janela aberta |
-| `F8` | Abre o menu Compilar |
+| `F8` / `F9` | Abre o menu Compilar / Configurar |
 | `Ctrl+L` | Abre o log de compilação direto |
 | `Esc` | Fecha menu/diálogo aberto, ou sai do msxIDE |
 | Roda do mouse | Rola o texto (edição e ajuda) |
+
+Edição de texto ao estilo Microsoft Edit/VS Code: `Shift`+movimento seleciona (`Ctrl+Seta` seleciona
+por palavra, `Ctrl+Shift+Seta` por parágrafo, `Shift+PgUp/PgDn` por tela, `Ctrl+A` o documento
+inteiro), `Ctrl+C`/`Ctrl+X`/`Ctrl+V` (ou `Ctrl+Insert`/`Shift+Delete`/`Shift+Insert`, o trio clássico
+dos editores MS-DOS) copiam/recortam/colam (área de transferência real do Windows,
+funciona com outros programas), `Ctrl+Z`/`Ctrl+Y` desfazem/refazem, `Ctrl+F`/`Ctrl+H`
+localizam/substituem, e `Ctrl+Seta`/`Ctrl+Seta vertical`/`Ctrl+PgUp/PgDn` andam por palavra/
+parágrafo/meia tela.
+
+Menus: `Alt+letra` abre qualquer um dos sete direto (`A` Arquivo, `O` Configurar, `C` Compilar, `R`
+Referência, `M` Mamute, `J` Ajuda, `I` Inserir); com um menu aberto, `Seta esquerda/direita` troca de
+menu, `Seta cima/baixo` navega os itens e `Enter` confirma.
 
 Lista completa e sempre atualizada: `Ajuda -> Editor` dentro do próprio programa.
 

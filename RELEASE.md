@@ -1,82 +1,97 @@
-# msxIDE v0.4.0 — "MAMUTE.FNT"
+# msxIDE v0.5.0 — "MAMUTE.MAP"
 
-*2026-09-08*
+*2026-09-11*
 
-O nome é um trocadilho direto: `.FNT` é a extensão clássica de arquivo de fonte bitmap (Windows,
-impressoras antigas) — e esta versão é justamente a que ensina o mamute a desenhar suas próprias letras,
-pixel a pixel, com um editor visual de fontes de caracteres MSX de verdade.
+O nome é um trocadilho duplo: `.MAP` é o arquivo clássico que relaciona símbolo com endereço num
+compilador/linker de verdade — exatamente o que a nova tabela nome-longo→nome-curto do Basic Dignified
+faz — e também é o nome do aplicativo Character Map do Windows, a inspiração direta da nova grade de
+caracteres especiais MSX.
 
 ## Tema da versão
 
-Duas frentes novas, as duas sobre "ver o que se está editando ao vivo":
+O Basic Dignified fica bem mais fiel à especificação, e o editor de texto ganha ergonomia de verdade:
 
-1. **Editor de Fontes MSX** — cria e edita fontes de caracteres 8x8 reais do MSX (o mesmo formato que o
-   hardware usa pra gerar caracteres na tela), com mapa geral e preview ampliado sempre visíveis lado a
-   lado, e integração direta com o sistema de projetos.
-2. **Editor de Markdown** — três modos de visualização (edição simples, dividido com preview ao vivo,
-   somente leitura), reaproveitando o mesmo motor de renderização que já desenha toda a Ajuda do
-   msxIDE.
+1. **Variáveis de nome longo → curto** — a funcionalidade mais complexa do dialeto, documentada há tempos
+   mas 100% ausente do compilador nativo até esta versão.
+2. **Caracteres especiais MSX** — uma grade de inserção pros acentos/gráficos e símbolos especiais do
+   conjunto MSX, direto do editor.
+3. Um conjunto de acertos pontuais no Basic Dignified (`Strip Spaces`, continuidade de linha com `:`) e
+   no editor (`Tab` configurável, atalhos de recortar/copiar/colar clássicos do MS-DOS).
 
 ## Novidades
 
-### Editor de Fontes MSX
+### Variáveis de nome longo → curto (Basic Dignified)
 
-- **`Arquivo -> Novo Editor de Fontes`** (ou abrir um `.alf`/`.fnt`/`.chr` existente) abre um editor
-  visual: mapa geral 16x16 dos 256 caracteres à esquerda, caractere selecionado ampliado em pixels (8x8,
-  cada pixel desenhado como bloco cheio duplicado horizontalmente pra ficar quadrado no console) à
-  direita — os dois sempre visíveis ao mesmo tempo, sem precisar esconder um pra ver o outro. Navegar
-  pelo mapa já atualiza o desenho ampliado na hora; `ENTER`/`Espaço` entra no modo de edição de pixel
-  (setas movem o cursor, `Espaço`/`ENTER` alterna o pixel).
-- **Formato de arquivo real do MSX**: cabeçalho BSAVE de 7 bytes (`FE` + endereço inicial, final e de
-  execução, 2 bytes cada, little-endian) seguido de 2048 bytes de dados (256 caracteres × 8 bytes, 1 bit
-  por pixel) — o mesmo formato que `BSAVE`/`BLOAD` usam no MSX de verdade. Todo alfabeto novo nasce
-  semeado a partir de `roms/msx1.alf` (a fonte MSX1 padrão, incluída neste pacote) em vez de começar em
-  branco; salvar sempre grava no endereço padrão de alfabeto do MSX (`9200H`), pronto pra carregar de
-  volta na RAM com `BLOAD` de verdade — mesmo que o arquivo de origem (como o próprio `msx1.alf`, um
-  dump de ROM) tenha vindo de outro endereço.
-- **Integração com projetos**: com um `.msxproj` aberto, cada alfabeto novo já nasce dentro da pasta
-  `roms\` do próprio projeto, e é registrado no banco do projeto assim que é salvo (`F2`) — sem precisar
-  passar por "Salvar Projeto" — permitindo quantos alfabetos forem necessários no mesmo projeto. O
-  espaço sobrando abaixo do mapa de caracteres (a grade só precisa de 16 linhas; a maioria das janelas
-  tem bem mais altura que isso) mostra a lista de alfabetos já salvos no projeto ativo: `TAB` foca a
-  lista, `Cima`/`Baixo` escolhe, `ENTER` abre o escolhido numa aba nova.
-- **Base pronta pro editor de Sprites**: a arquitetura (um campo `pixelEditKind` reservado no
-  `Document`, toda a lógica de edição de pixel isolada em funções próprias) já foi pensada pra que um
-  futuro editor de Sprites reaproveite quase tudo — só o formato dos dados e a tabela de destino mudam.
+- Nomes com **3 ou mais letras/números/underscore** (case-insensitive, não pode começar com número nem
+  ser só número) são automaticamente trocados por um par de letras. Atribuídos em ordem **descendente de
+  `ZZ` até `AA`** — nunca uma letra só, nunca letra+número. O mesmo nome longo sempre vira o mesmo curto
+  **independente do sufixo de tipo**: `variable1` e `variable1$` viram `zz` e `zz$`.
+- **`DECLARE nome:curto`** força um mapeamento explícito na mão. Vários numa linha só, separados por
+  vírgula: `declare comida:cd, bebida:bb`.
+- **`DECLARE nome1,nome2`** reserva sem mapear — um nome curto (1-2 letras) fica indisponível pro
+  auto-assign; um nome de 3+ letras nunca é encurtado em lugar nenhum do arquivo.
+- **`~nome`** mantém o nome por extenso em **todas** as ocorrências do arquivo, não só na marcada com
+  `~` — o `~` em si nunca aparece na saída.
+- Variáveis de **1-2 letras usadas direto** no código nunca são tocadas, e reservam automaticamente esse
+  par de letras (o auto-assign nunca gera um curto que colidiria com uma delas).
+- Um tokenizer novo varre cada linha reconhecendo identificadores, mas **nunca entra dentro de string
+  literal** nem **depois de `REM`/`'`/`DATA`** — sem isso, um comentário em português qualquer viraria
+  sopa de variáveis trocadas.
+- Cada arquivo (namespace de `INCLUDE`) tem sua própria tabela de nomes — o mesmo nome longo pode virar
+  um curto diferente em cada include, exatamente como a documentação sempre descreveu.
 
-### Editor de Markdown
+### `Inserir -> Caracteres Especiais MSX`
 
-- **`Arquivo -> Novo Arquivo MD`** (ou abrir qualquer `.md` existente) abre o arquivo no editor de texto
-  normal com um recurso a mais: `F7` alterna entre três modos — **edição simples** (só o texto cru),
-  **dividido** (metade esquerda editável, metade direita com o preview renderizado ao vivo, atualizado a
-  cada tecla) e **somente leitura** (a janela inteira mostra só o preview, útil pra revisar um documento
-  pronto).
-- Reaproveita o mesmo motor que já renderiza toda a Ajuda do msxIDE (cabeçalhos, **negrito**, `código`,
-  listas, tabelas com bordas de verdade) — extraído para uma função própria
-  (`BuildMarkdownBufferFromText`) sem alterar em nada o comportamento da Ajuda existente.
-  Arquivos `.md` entram no sistema de projetos junto com o código-fonte.
-- Novo tópico **`Ajuda -> Markdown`** com a referência rápida de formatação e o que já ganha destaque de
-  verdade no preview do msxIDE.
+- Novo item na barra de menus (`Alt+I`, depois `C`) abre uma grade navegável por setas com os caracteres
+  especiais do conjunto MSX — o mesmo conjunto que o "Translate" do Basic Dignified Suite reconhece
+  (`badig_msx.py`, `Parser.trans_char`).
+- **Acentos e gráficos (códigos 128-255)**: o byte escolhido é inserido direto no cursor e sai idêntico
+  no `.amx` gerado — sem nenhuma tradução do lado do compilador, porque o pipeline inteiro (editor,
+  arquivo em disco, `PreprocessDignified`) já é byte a byte, nunca passa por UTF-8.
+- **Símbolos especiais (`CHR$(1)` a `CHR$(31)`** — carinha, naipes, blocos): esses códigos baixos não são
+  imprimíveis de forma confiável via `PRINT`/string literal no MSX BASIC clássico, então a grade insere a
+  **letra equivalente** (`A`-`Z`, `[`, `]`, `\`, `^`, `_`) em vez do byte cru — o mesmo fallback de
+  segurança que o Basic Dignified Suite usa.
+- `Enter` insere sem fechar o diálogo (dá pra inserir vários caracteres seguidos), `Esc` fecha.
+
+### Editor de texto
+
+- **`Tab` configurável**: insere a quantidade de espaços definida em `Configurar -> Editor -> Indent
+  Size` (padrão 4, novo item no menu Configurar) em vez de não fazer nada.
+- **`Shift+Delete`/`Shift+Insert`/`Ctrl+Insert`**: o trio clássico de recortar/colar/copiar dos editores
+  MS-DOS de antes do `Ctrl+X`/`Ctrl+V`/`Ctrl+C` (QEdit, Norton Editor, Brief...) — mapeados pro mesmo
+  código interno dos atalhos modernos.
+- **`Alt+C` agora abre Compilar e `Alt+O` abre Configurar** (antes `Alt+P` e `Alt+C`, respectivamente).
+
+### Basic Dignified: continuidade de linha com `:`
+
+- Recurso já documentado (`BASIC_DIGNIFIED.md`, "Line separation") mas nunca implementado — uma linha
+  terminada em `:` agora se junta com a próxima (e uma linha começada em `:` se junta com a anterior)
+  antes de virar uma linha numerada. `SCREEN 0:` seguido de `WIDTH 40` vira `10 SCREEN 0:WIDTH 40`, uma
+  linha só, em vez de duas.
 
 ## Corrigido
 
-- **`F7` não tinha mapeamento nenhum**: faltava tanto no backend nativo do Windows (`console_win.bas`)
-  quanto na tabela de fallback ANSI (`NormalizeKey`) — descoberto durante a implementação do atalho de
-  alternância de modo do editor de Markdown, que dependia exatamente dessa tecla.
+- **`Strip Spaces` só colapsava espaços duplicados**, nunca removia de fato — agora remove *todos* os
+  espaços fora de string literal (inclusive colados no `:`), como a própria documentação sempre disse
+  ("all non essential spaces from the code can be removed").
+- **Ordem do pipeline de formatação do Basic Dignified**: `Strip Spaces` rodava *antes* da conversão de
+  `PRINT`/`?` e `THEN`/`GOTO` (que dependem de espaço ao redor da palavra-chave pra reconhecê-la com
+  segurança) — com as duas opções ligadas ao mesmo tempo, o strip quebrava silenciosamente as outras
+  duas. Ordem agora é Convert PRINT → Strip THEN GOTO → Strip Spaces → Capitalize.
 
 ## Bastidores
 
-- Todo o trabalho novo foi verificado com testes headless (`--smoke-help`) expandidos: navegação/edição
-  de pixel no editor de Fontes, round-trip binário completo com cabeçalho BSAVE real, e um cenário de
-  ponta a ponta do fluxo de projeto (criar projeto, salvar dois alfabetos, navegar e abrir pela lista do
-  rodapé via teclas reais simuladas) — incluindo verificações A/B (quebra deliberada de um trecho +
-  confirmação de que o teste realmente pega a regressão, depois restaurado) na detecção do cabeçalho
-  BSAVE ao carregar e no endereço fixo usado ao gravar.
-- O pacote `distribute/roms/msx1.alf` foi adicionado à distribuição (`build-distribute.ps1`) — sem ele,
-  o Editor de Fontes cairia num alfabeto em branco em qualquer cópia instalada a partir deste pacote,
-  em vez de vir pré-semeado com a fonte MSX1 padrão. Os dumps de BIOS/ROM reais (`roms\*.ROM`) continuam
-  de fora do pacote distribuído — como sempre, são apontados manualmente pelo usuário em
-  `Configurar -> Mamute`.
+- Todo o trabalho novo foi verificado com testes headless novos e expandidos: `--smoke-badig` ganhou um
+  cenário dedicado à conversão de variáveis (auto-atribuição descendente, independência de tipo, string
+  literal e `REM`/`DATA` protegidos da varredura, `declare` explícito e de reserva, `~` consistente em
+  todas as ocorrências, variável curta usada direto nunca é tocada) e outro pra continuidade de linha
+  por `:`; `--smoke-editor` ganhou cobertura pro `Tab` configurável, pro item novo do menu Configurar e
+  pro menu Inserir; `--smoke-keys` ganhou os atalhos clássicos de recortar/copiar/colar.
+- Simplificação assumida na conversão de variáveis: o sistema de avisos/erros de conflito do Basic
+  Dignified original (declaração duplicada, curto já usado por outra variável, etc.) não foi portado —
+  são heurísticas de QA que não afetam a correção do programa gerado. O relatório de variáveis
+  (`cfg.badig.var_report`) também não foi implementado nesta versão.
 
 ## Créditos
 

@@ -105,6 +105,11 @@ Private Sub RestoreInputMode()
     inputMode = inputMode Or ENABLE_MOUSE_INPUT
     inputMode = inputMode Or ENABLE_WINDOW_INPUT
     inputMode = inputMode And Not ENABLE_QUICK_EDIT_MODE
+    ' Sem isso o Windows intercepta Ctrl+C como sinal de encerramento do
+    ' processo (CTRL_C_EVENT) e ele NUNCA chega como tecla normal via
+    ' ReadConsoleInput - precisamos dele como tecla de verdade pro atalho
+    ' de Copiar do editor.
+    inputMode = inputMode And Not ENABLE_PROCESSED_INPUT
     SetConsoleMode(gIn, inputMode)
 End Sub
 
@@ -197,30 +202,141 @@ Sub ConsoleShutdown()
     SetConsoleCursorInfo(gOut, @ci)
 End Sub
 
+' Protocolo de tecla estendida do editor: 2 bytes, Chr(0) & Chr(codigo).
+' Segue a tabela classica de scan codes estendidos do BIOS/DOS (INT16h)
+' onde ela existe (setas, F1-F10, Ctrl+seta, Ctrl+Home/End/PgUp/PgDn,
+' Shift+F1) - DOS nunca definiu codigos proprios pra Shift+seta ou
+' Ctrl+seta-vertical, entao esses (e as combinacoes Ctrl+Shift+seta, usadas
+' pra selecao de texto por palavra/paragrafo) usam uma faixa inventada
+' (150-165) que nao colide com nada da tabela real. Ctrl+<letra> usa uma
+' faixa proria (200-225 = 200 + (A..Z ofsetado de 0)) em vez do control-char
+' ASCII classico (Ctrl+H=Chr(8), por exemplo) porque varios desses ja tem
+' dono (Chr(8)=Backspace, Chr(9)=Tab, Chr(13)=Enter) - misturar os dois
+' esquemas tornaria essas teclas indistinguiveis no protocolo. Alt+<letra>
+' (letras de acesso rapido do menu) usa a mesma ideia, faixa 230-255.
+' Shift+Del / Shift+Insert / Ctrl+Insert sao o trio classico de
+' recortar/colar/copiar dos editores MS-DOS de antes do Ctrl+C/X/V
+' (QEdit, Norton Editor, Brief...) - em vez de inventar codigo novo,
+' cada um deles emite o MESMO byte que seu equivalente moderno ja usa
+' (Ctrl+X=223, Ctrl+V=221, Ctrl+C=202), entao o editor.bas nem sabe que
+' existe diferenca: ganha o atalho antigo de graca, com o mesmo guard de
+' "editable" que o atalho novo ja tinha.
 Private Function TranslateKeyEvent(ByRef rec As KEY_EVENT_RECORD, ByRef keyText As String) As Integer
     If rec.bKeyDown = 0 Then Return 0
 
+    Dim ctrlDown As Integer = (rec.dwControlKeyState And (LEFT_CTRL_PRESSED Or RIGHT_CTRL_PRESSED))
+    Dim shiftDown As Integer = (rec.dwControlKeyState And SHIFT_PRESSED)
+
     Select Case rec.wVirtualKeyCode
         Case VK_LEFT
-            keyText = Chr(0) & Chr(75): Return -1
+            If ctrlDown <> 0 And shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(160)
+            ElseIf ctrlDown <> 0 Then
+                keyText = Chr(0) & Chr(115)
+            ElseIf shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(152)
+            Else
+                keyText = Chr(0) & Chr(75)
+            End If
+            Return -1
         Case VK_RIGHT
-            keyText = Chr(0) & Chr(77): Return -1
+            If ctrlDown <> 0 And shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(161)
+            ElseIf ctrlDown <> 0 Then
+                keyText = Chr(0) & Chr(116)
+            ElseIf shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(153)
+            Else
+                keyText = Chr(0) & Chr(77)
+            End If
+            Return -1
         Case VK_UP
-            keyText = Chr(0) & Chr(72): Return -1
+            If ctrlDown <> 0 And shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(162)
+            ElseIf ctrlDown <> 0 Then
+                keyText = Chr(0) & Chr(150)
+            ElseIf shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(154)
+            Else
+                keyText = Chr(0) & Chr(72)
+            End If
+            Return -1
         Case VK_DOWN
-            keyText = Chr(0) & Chr(80): Return -1
+            If ctrlDown <> 0 And shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(163)
+            ElseIf ctrlDown <> 0 Then
+                keyText = Chr(0) & Chr(151)
+            ElseIf shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(155)
+            Else
+                keyText = Chr(0) & Chr(80)
+            End If
+            Return -1
         Case VK_HOME
-            keyText = Chr(0) & Chr(71): Return -1
+            If ctrlDown <> 0 And shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(164)
+            ElseIf ctrlDown <> 0 Then
+                keyText = Chr(0) & Chr(119)
+            ElseIf shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(156)
+            Else
+                keyText = Chr(0) & Chr(71)
+            End If
+            Return -1
         Case VK_END
-            keyText = Chr(0) & Chr(79): Return -1
+            If ctrlDown <> 0 And shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(165)
+            ElseIf ctrlDown <> 0 Then
+                keyText = Chr(0) & Chr(117)
+            ElseIf shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(157)
+            Else
+                keyText = Chr(0) & Chr(79)
+            End If
+            Return -1
         Case VK_PRIOR
-            keyText = Chr(0) & Chr(73): Return -1
+            If ctrlDown <> 0 Then
+                keyText = Chr(0) & Chr(132)
+            ElseIf shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(158)
+            Else
+                keyText = Chr(0) & Chr(73)
+            End If
+            Return -1
         Case VK_NEXT
-            keyText = Chr(0) & Chr(81): Return -1
+            If ctrlDown <> 0 Then
+                keyText = Chr(0) & Chr(118)
+            ElseIf shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(159)
+            Else
+                keyText = Chr(0) & Chr(81)
+            End If
+            Return -1
         Case VK_DELETE
-            keyText = Chr(0) & Chr(83): Return -1
+            If shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(223) ' Shift+Del = Ctrl+X (recortar)
+            Else
+                keyText = Chr(0) & Chr(83)
+            End If
+            Return -1
+        Case VK_INSERT
+            If shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(221) ' Shift+Insert = Ctrl+V (colar)
+                Return -1
+            ElseIf ctrlDown <> 0 Then
+                keyText = Chr(0) & Chr(202) ' Ctrl+Insert = Ctrl+C (copiar)
+                Return -1
+            End If
+            Return 0
+        Case VK_TAB
+            If shiftDown <> 0 Then
+                keyText = Chr(0) & Chr(15)
+            Else
+                keyText = Chr(9)
+            End If
+            Return -1
         Case VK_F1
-            If (rec.dwControlKeyState And SHIFT_PRESSED) <> 0 Then
+            If shiftDown <> 0 Then
                 keyText = Chr(0) & Chr(84)
             Else
                 keyText = Chr(0) & Chr(59)
@@ -238,6 +354,10 @@ Private Function TranslateKeyEvent(ByRef rec As KEY_EVENT_RECORD, ByRef keyText 
             keyText = Chr(0) & Chr(64): Return -1
         Case VK_F7
             keyText = Chr(0) & Chr(65): Return -1
+        Case VK_F8
+            keyText = Chr(0) & Chr(66): Return -1
+        Case VK_F9
+            keyText = Chr(0) & Chr(67): Return -1
         Case VK_F10
             keyText = Chr(0) & Chr(68): Return -1
         Case VK_RETURN
@@ -248,6 +368,21 @@ Private Function TranslateKeyEvent(ByRef rec As KEY_EVENT_RECORD, ByRef keyText 
             keyText = Chr(27): Return -1
     End Select
 
+    If ctrlDown <> 0 And rec.wVirtualKeyCode >= VK_A And rec.wVirtualKeyCode <= VK_Z Then
+        keyText = Chr(0) & Chr(200 + (rec.wVirtualKeyCode - VK_A))
+        Return -1
+    End If
+
+    ' Alt+<letra> = letras de acesso rapido do menu (faixa 230-255). So'
+    ' com Alt puro - AltGr (usado por @/#/etc no layout PT-BR) chega com
+    ' LEFT_CTRL_PRESSED e RIGHT_ALT_PRESSED ligados ao mesmo tempo, e nao
+    ' pode ser confundido com isso.
+    Dim altOnly As Integer = ((rec.dwControlKeyState And (LEFT_ALT_PRESSED Or RIGHT_ALT_PRESSED)) <> 0) And ctrlDown = 0
+    If altOnly <> 0 And rec.wVirtualKeyCode >= VK_A And rec.wVirtualKeyCode <= VK_Z Then
+        keyText = Chr(0) & Chr(230 + (rec.wVirtualKeyCode - VK_A))
+        Return -1
+    End If
+
     Dim c As Integer = rec.uChar.UnicodeChar
     If c >= 32 And c <= 126 Then
         keyText = Chr(c)
@@ -255,6 +390,96 @@ Private Function TranslateKeyEvent(ByRef rec As KEY_EVENT_RECORD, ByRef keyText 
     End If
 
     Return 0
+End Function
+
+' Testa TranslateKeyEvent direto, com KEY_EVENT_RECORD sinteticos - a unica
+' forma de validar sem teclado de verdade que Ctrl+C/X/V/Z/Y/A/F/H,
+' Alt+letra (mnemonico de menu), Shift/Ctrl+seta etc. realmente produzem o
+' protocolo de 2 bytes que o editor espera. O smoke test do editor
+' (--smoke-editor) injeta esses 2 bytes DIRETO em EditorHandleKey - nunca
+' passa por aqui, entao nunca pegaria uma regressao nesta funcao.
+Private Function CheckKeyTranslation(ByVal vk As Integer, ByVal ctrlState As DWORD, ByRef expected As String, ByRef testName As String, ByRef failReport As String) As Integer
+    Dim rec As KEY_EVENT_RECORD
+    rec.bKeyDown = 1
+    rec.wVirtualKeyCode = vk
+    rec.wVirtualScanCode = 0
+    rec.dwControlKeyState = ctrlState
+    rec.uChar.UnicodeChar = 0
+
+    Dim keyText As String
+    Dim gotKey As Integer = TranslateKeyEvent(rec, keyText)
+
+    If gotKey = 0 Then
+        failReport = "SMOKE KEYS FAIL: " & testName & " nao produziu tecla nenhuma"
+        Return 0
+    End If
+    If keyText <> expected Then
+        Dim gotHex As String = ""
+        Dim i As Integer
+        For i = 1 To Len(keyText)
+            gotHex &= Hex(Asc(Mid(keyText, i, 1))) & " "
+        Next i
+        failReport = "SMOKE KEYS FAIL: " & testName & " produziu bytes [" & Trim(gotHex) & "] diferente do esperado"
+        Return 0
+    End If
+    Return -1
+End Function
+
+Function ConsoleRunKeyTranslationSmokeTest(ByRef report As String) As Integer
+    report = ""
+
+    If CheckKeyTranslation(VK_LEFT, 0, Chr(0) & Chr(75), "Seta esquerda", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_LEFT, SHIFT_PRESSED, Chr(0) & Chr(152), "Shift+Esquerda", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_LEFT, LEFT_CTRL_PRESSED, Chr(0) & Chr(115), "Ctrl+Esquerda", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_LEFT, LEFT_CTRL_PRESSED Or SHIFT_PRESSED, Chr(0) & Chr(160), "Ctrl+Shift+Esquerda", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_UP, LEFT_CTRL_PRESSED, Chr(0) & Chr(150), "Ctrl+Cima", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_PRIOR, LEFT_CTRL_PRESSED, Chr(0) & Chr(132), "Ctrl+PgUp", report) = 0 Then Return 0
+
+    If CheckKeyTranslation(VK_C, LEFT_CTRL_PRESSED, Chr(0) & Chr(202), "Ctrl+C", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_X, LEFT_CTRL_PRESSED, Chr(0) & Chr(223), "Ctrl+X", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_V, LEFT_CTRL_PRESSED, Chr(0) & Chr(221), "Ctrl+V", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_DELETE, SHIFT_PRESSED, Chr(0) & Chr(223), "Shift+Del (recortar)", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_INSERT, SHIFT_PRESSED, Chr(0) & Chr(221), "Shift+Insert (colar)", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_INSERT, LEFT_CTRL_PRESSED, Chr(0) & Chr(202), "Ctrl+Insert (copiar)", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_A, LEFT_CTRL_PRESSED, Chr(0) & Chr(200), "Ctrl+A", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_Z, LEFT_CTRL_PRESSED, Chr(0) & Chr(225), "Ctrl+Z", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_Y, LEFT_CTRL_PRESSED, Chr(0) & Chr(224), "Ctrl+Y", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_F, LEFT_CTRL_PRESSED, Chr(0) & Chr(205), "Ctrl+F", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_H, LEFT_CTRL_PRESSED, Chr(0) & Chr(207), "Ctrl+H", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_L, LEFT_CTRL_PRESSED, Chr(0) & Chr(211), "Ctrl+L", report) = 0 Then Return 0
+    ' Ctrl com o lado DIREITO fisico tambem tem que funcionar (nem todo
+    ' teclado/layout usa o esquerdo).
+    If CheckKeyTranslation(VK_C, RIGHT_CTRL_PRESSED, Chr(0) & Chr(202), "Ctrl(direito)+C", report) = 0 Then Return 0
+
+    If CheckKeyTranslation(VK_A, LEFT_ALT_PRESSED, Chr(0) & Chr(230), "Alt+A", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_C, LEFT_ALT_PRESSED, Chr(0) & Chr(232), "Alt+C", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_P, LEFT_ALT_PRESSED, Chr(0) & Chr(245), "Alt+P", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_R, LEFT_ALT_PRESSED, Chr(0) & Chr(247), "Alt+R", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_M, LEFT_ALT_PRESSED, Chr(0) & Chr(242), "Alt+M", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_J, LEFT_ALT_PRESSED, Chr(0) & Chr(239), "Alt+J", report) = 0 Then Return 0
+
+    If CheckKeyTranslation(VK_F8, 0, Chr(0) & Chr(66), "F8", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_F9, 0, Chr(0) & Chr(67), "F9", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_TAB, 0, Chr(9), "Tab", report) = 0 Then Return 0
+    If CheckKeyTranslation(VK_TAB, SHIFT_PRESSED, Chr(0) & Chr(15), "Shift+Tab", report) = 0 Then Return 0
+
+    ' AltGr (Ctrl+Alt direito juntos, usado pra @/#/etc no layout PT-BR) NAO
+    ' pode ser confundido com Alt+letra (mnemonico de menu) - senao digitar
+    ' caractere composto abriria um menu no meio da digitacao.
+    Dim altGrRec As KEY_EVENT_RECORD
+    altGrRec.bKeyDown = 1
+    altGrRec.wVirtualKeyCode = VK_A
+    altGrRec.dwControlKeyState = LEFT_CTRL_PRESSED Or RIGHT_ALT_PRESSED
+    altGrRec.uChar.UnicodeChar = 0
+    Dim altGrText As String
+    Dim altGrGot As Integer = TranslateKeyEvent(altGrRec, altGrText)
+    If altGrGot <> 0 And altGrText = Chr(0) & Chr(230) Then
+        report = "SMOKE KEYS FAIL: AltGr+A foi confundido com Alt+A (mnemonico do menu Arquivo)"
+        Return 0
+    End If
+
+    report = "SMOKE KEYS OK: Ctrl+letra (C/X/V/A/Z/Y/F/H/L, os dois lados de Ctrl), Alt+letra (A/C/P/R/M/J), Shift+seta, Ctrl+seta/PgUp, Ctrl+Shift+seta, F8/F9, Tab/Shift+Tab, AltGr nao confundido com Alt, Shift+Del/Shift+Insert/Ctrl+Insert (atalhos MS-DOS de recortar/colar/copiar)"
+    Return -1
 End Function
 
 Private Function TranslateMouseEvent(ByRef rec As MOUSE_EVENT_RECORD, ByRef mouseX As Integer, ByRef mouseY As Integer, ByRef mouseAction As Integer) As Integer
@@ -391,6 +616,73 @@ Function ConsoleUtf8ToActiveCp(ByRef txt As String) As String
     DeAllocate(wBuf)
     DeAllocate(outBuf)
 
+    Return result
+End Function
+
+' Integracao com a area de transferencia REAL do Windows (CF_UNICODETEXT) -
+' sem isso, Ctrl+C/Ctrl+X/Ctrl+V do editor mexiam so' numa string interna
+' do processo, e colar fora do msxide trazia o que estivesse no clipboard
+' do Windows antes (nunca o que acabou de ser copiado/recortado dentro do
+' editor). txt/o retorno usam a mesma codepage do console (GetConsoleOutputCP,
+' normalmente 860) - o mesmo byte-a-byte que ConsoleSetCell ja espera.
+Sub ConsoleSetClipboardText(ByRef text As String)
+    Dim srcLen As Long = Len(text)
+    Dim srcCp As UInteger = GetConsoleOutputCP()
+    If srcCp = 0 Then srcCp = CP_OEMCP
+
+    Dim wLen As Long = 0
+    If srcLen > 0 Then
+        wLen = MultiByteToWideChar(srcCp, 0, StrPtr(text), srcLen, 0, 0)
+        If wLen < 0 Then wLen = 0
+    End If
+
+    If OpenClipboard(0) = 0 Then Exit Sub
+    EmptyClipboard()
+
+    Dim hMem As HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, CULng((wLen + 1) * 2))
+    If hMem <> 0 Then
+        Dim wBuf As Any Ptr = GlobalLock(hMem)
+        If wBuf <> 0 Then
+            If wLen > 0 Then MultiByteToWideChar(srcCp, 0, StrPtr(text), srcLen, Cast(LPWSTR, wBuf), wLen)
+            Cast(UShort Ptr, wBuf)[wLen] = 0
+            GlobalUnlock(hMem)
+            SetClipboardData(CF_UNICODETEXT, hMem)
+        End If
+    End If
+
+    CloseClipboard()
+End Sub
+
+Function ConsoleGetClipboardText() As String
+    Dim result As String = ""
+    If IsClipboardFormatAvailable(CF_UNICODETEXT) = 0 Then Return ""
+    If OpenClipboard(0) = 0 Then Return ""
+
+    Dim hMem As HANDLE = GetClipboardData(CF_UNICODETEXT)
+    If hMem <> 0 Then
+        Dim wBuf As Any Ptr = GlobalLock(hMem)
+        If wBuf <> 0 Then
+            Dim wLen As Long = lstrlenW(Cast(LPCWSTR, wBuf))
+            If wLen > 0 Then
+                Dim targetCp As UInteger = GetConsoleOutputCP()
+                If targetCp = 0 Then targetCp = CP_OEMCP
+
+                Dim outLen As Long = WideCharToMultiByte(targetCp, 0, Cast(LPCWCH, wBuf), wLen, 0, 0, 0, 0)
+                If outLen > 0 Then
+                    Dim outBuf As Any Ptr = CAllocate(outLen + 1)
+                    If outBuf <> 0 Then
+                        WideCharToMultiByte(targetCp, 0, Cast(LPCWCH, wBuf), wLen, Cast(LPSTR, outBuf), outLen, 0, 0)
+                        result = Space(outLen)
+                        CopyMemory(StrPtr(result), outBuf, outLen)
+                        DeAllocate(outBuf)
+                    End If
+                End If
+            End If
+            GlobalUnlock(hMem)
+        End If
+    End If
+
+    CloseClipboard()
     Return result
 End Function
 

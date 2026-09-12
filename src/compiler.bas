@@ -265,10 +265,14 @@ Private Function StripCR(ByRef txt As String) As String
     Return outText
 End Function
 
-Private Function CollapseSpacesOutsideStrings(ByRef txt As String) As String
+' "Strip Spaces" (cfg.badig.strip_spaces) - remove TODOS os espacos/tabs
+' fora de literais de string (o classico "crunch" de listagem BASIC: uma
+' keyword tokeniza igual mesmo colada num numero/identificador/`:`
+' seguinte, GOTO100 e' identico a GOTO 100 pro tokenizer real). So' nao
+' mexe no que esta' entre aspas - "A  B" continua "A  B".
+Private Function StripSpacesOutsideStrings(ByRef txt As String) As String
     Dim outText As String = ""
     Dim inString As Integer = 0
-    Dim prevSpace As Integer = 0
     Dim i As Integer
 
     For i = 1 To Len(txt)
@@ -276,19 +280,14 @@ Private Function CollapseSpacesOutsideStrings(ByRef txt As String) As String
         If ch = Chr(34) Then
             inString = Not inString
             outText &= ch
-            prevSpace = 0
         ElseIf inString = 0 And (ch = " " Or ch = Chr(9)) Then
-            If prevSpace = 0 Then
-                outText &= " "
-                prevSpace = -1
-            End If
+            ' fora de string: descarta o espaco/tab, nao substitui por nada
         Else
             outText &= ch
-            prevSpace = 0
         End If
     Next i
 
-    Return Trim(outText)
+    Return outText
 End Function
 
 Private Function IsTrueSetting(ByRef keyName As String, ByVal fallbackValue As Integer = 0) As Integer
@@ -673,6 +672,392 @@ Private Function ScopedName(ByRef nsKey As String, ByRef localName As String) As
     Return UCase(nsKey) & "|" & UCase(Trim(localName))
 End Function
 
+' ===========================================================================
+' Variaveis de nome longo -> nome curto (2 letras), igual ao Basic Dignified
+' Suite (badig.py get_declares/process_variable + badig_msx.py Description,
+' c_reserved_kw/c_var_chr/trans_char). So' letras/numeros/underscore, nao
+' pode comecar com numero nem ser so' numero, minimo 3 caracteres (BASIC_
+' DIGNIFIED.md, secao "Long named variables"). Atribuidas em ORDEM
+' DESCENDENTE de ZZ ate' AA (nunca uma letra so' ou letra+numero). O mesmo
+' nome longo sempre vira o mesmo curto independente do sufixo de tipo
+' ($%!#) - variable1 e variable1$ viram XX e XX$. DECLARE forca/reserva
+' mapeamentos na mao, ~ mantem o nome longo (nunca encurtado, em NENHUMA
+' ocorrencia do arquivo inteiro). Variaveis de 1-2 letras usadas direto no
+' codigo NUNCA sao tocadas, e ficam reservadas (o auto-assign nunca gera
+' um curto que colida com uma delas).
+' ===========================================================================
+
+Type VarMapEntry
+    scopedKey As String  ' ScopedName(ns, NOMELONGO) - namespace isola includes diferentes
+    shortVal As String   ' nome curto atribuido (1-2 chars, minusculo por padrao)
+End Type
+
+Type VarTokenSpan
+    startPos As Integer   ' posicao (1-based) do 1o char do identificador
+    lenChars As Integer   ' tamanho do identificador (sem o sufixo de tipo)
+    hasTilde As Integer   ' -1 se precedido por ~ colado (sem espaco)
+    typeCharPos As Integer ' posicao do sufixo $%!# logo depois, ou 0 se nao tem
+End Type
+
+Private Function IsIdentStartChar(ByVal ch As Integer) As Integer
+    If ch >= Asc("A") And ch <= Asc("Z") Then Return -1
+    If ch >= Asc("a") And ch <= Asc("z") Then Return -1
+    Return 0
+End Function
+
+Private Function IsIdentBodyChar(ByVal ch As Integer) As Integer
+    If IsIdentStartChar(ch) <> 0 Then Return -1
+    If ch >= Asc("0") And ch <= Asc("9") Then Return -1
+    If ch = Asc("_") Then Return -1
+    Return 0
+End Function
+
+' Lista mestra de palavras reservadas (instrucoes/funcoes/operadores/saltos
+' classicos do dialeto MSX-BASIC, badig_msx.py Description.__init__, mais os
+' comandos proprios do Dignified, badig_dignified.py) - as funcoes com $
+' (CHR$, INKEY$, etc) ja vem com o $ embutido, conferidas a parte contra
+' "identificador & tipo" quando o tipo for exatamente $.
+Private Function ReservedKeywordList() As String
+    Return " AS BASE BEEP BLOAD BSAVE CALL CIRCLE CLEAR CLOAD CLOSE CLS CMD COLOR CONT COPY CSAVE CSRLIN DEF DEFDBL DEFINT MAXFILES DEFSNG DEFSTR DIM DRAW DSKI END EQV ERASE ERR ERROR FIELD FILES FN FOR GET IF INPUT INTERVAL IMP IPL KILL LET LFILES LINE LOAD LOCATE LPRINT LSET MAX MERGE MOTOR NAME NEW NEXT OFF ON OPEN OUT OUTPUT PAINT POINT POKE PRESET PRINT PSET PUT READ RSET SAVE SCREEN SET SOUND STEP STOP SWAP TIME TO TROFF TRON USING VPOKE WAIT WIDTH" & _
+           " ATTR$ BIN$ CHR$ DSKO$ HEX$ INKEY$ INPUT$ LEFT$ MID$ MKD$ MKI$ MKS$ OCT$ RIGHT$ SPACE$ SPRITE$ STR$ STRING$" & _
+           " ABS ASC ATN CDBL CINT COS CSNG CVD CVI CVS DSKF EOF EXP FIX FPOS FRE INP INSTR INT KEY LEN LOC LOF LOG LPOS PAD PDL PEEK PLAY POS RND SGN SIN SPC SPRITE SQR STICK STRIG TAB TAN VAL VARPTR VDP VPEEK" & _
+           " RESTORE AUTO RENUM DELETE RESUME ERL ELSE RUN LIST LLIST GOTO RETURN THEN GOSUB" & _
+           " AND MOD NOT OR XOR DATA REM" & _
+           " DECLARE DEFINE INCLUDE KEEP ENDIF FUNC RET EXIT TRUE FALSE "
+End Function
+
+' USR/DEFUSR aceitam um digito opcional colado (USR0-USR9, DEFUSR0-DEFUSR9)
+' - o resto das palavras reservadas nao tem essa variante.
+Private Function IsUsrLikeReserved(ByRef upperIdent As String) As Integer
+    Dim bases(1 To 2) As String
+    bases(1) = "USR"
+    bases(2) = "DEFUSR"
+    Dim i As Integer
+    For i = 1 To 2
+        Dim b As String = bases(i)
+        If upperIdent = b Then Return -1
+        If Len(upperIdent) = Len(b) + 1 And Left(upperIdent, Len(b)) = b Then
+            Dim lastCh As Integer = Asc(Right(upperIdent, 1))
+            If lastCh >= Asc("0") And lastCh <= Asc("9") Then Return -1
+        End If
+    Next i
+    Return 0
+End Function
+
+Private Function IsReservedKeyword(ByRef ident As String, ByRef typeCharIfAny As String) As Integer
+    Dim u As String = UCase(ident)
+    If IsUsrLikeReserved(u) <> 0 Then Return -1
+
+    Dim list As String = ReservedKeywordList()
+    If InStr(list, " " & u & " ") > 0 Then Return -1
+    If typeCharIfAny = "$" And InStr(list, " " & u & "$ ") > 0 Then Return -1
+    Return 0
+End Function
+
+' Varre o texto (fora de string literal) e devolve TODOS os identificadores
+' (palavra-chave ou variavel, sem distincao ainda - quem chama decide) numa
+' unica passada. Para na primeira REM/DATA/' encontrada fora de string (o
+' resto da linha logica e' comentario ou dado literal - nem palavra reservada
+' nem variavel deve ser "encontrada" ali dentro, senao um comentario em
+' ingles vira sopa de variaveis trocadas).
+Private Function TokenizeIdentifierSpans(ByRef text As String, spans() As VarTokenSpan) As Integer
+    Dim spanCount As Integer = 0
+    Dim n As Integer = Len(text)
+    Dim i As Integer = 1
+    Dim inString As Integer = 0
+
+    While i <= n
+        Dim ch As Integer = Asc(Mid(text, i, 1))
+
+        If inString <> 0 Then
+            If ch = Asc(Chr(34)) Then inString = 0
+            i += 1
+            Continue While
+        End If
+
+        If ch = Asc(Chr(34)) Then
+            inString = -1
+            i += 1
+            Continue While
+        End If
+
+        If ch = Asc("'") Then Exit While ' REM curto - resto da linha e' comentario
+
+        Dim boundaryBefore As Integer = (i = 1) Or (IsIdentBodyChar(Asc(Mid(text, i - 1, 1))) = 0)
+        If boundaryBefore <> 0 Then
+            If i + 2 <= n + 1 And UCase(Mid(text, i, 3)) = "REM" And IsIdentBodyChar(Asc(Mid(text, i + 3, 1))) = 0 Then Exit While
+            If i + 3 <= n + 1 And UCase(Mid(text, i, 4)) = "DATA" And IsIdentBodyChar(Asc(Mid(text, i + 4, 1))) = 0 Then Exit While
+        End If
+
+        If IsIdentStartChar(ch) <> 0 Then
+            Dim startPos As Integer = i
+            Dim j As Integer = i + 1
+            While j <= n AndAlso IsIdentBodyChar(Asc(Mid(text, j, 1))) <> 0
+                j += 1
+            Wend
+
+            Dim hasTilde As Integer = 0
+            If startPos > 1 AndAlso Mid(text, startPos - 1, 1) = "~" Then hasTilde = -1
+
+            Dim typeCharPos As Integer = 0
+            If j <= n Then
+                Dim tch As String = Mid(text, j, 1)
+                If tch = "$" Or tch = "%" Or tch = "!" Or tch = "#" Then typeCharPos = j
+            End If
+
+            spanCount += 1
+            ReDim Preserve spans(1 To spanCount)
+            spans(spanCount).startPos = startPos
+            spans(spanCount).lenChars = j - startPos
+            spans(spanCount).hasTilde = hasTilde
+            spans(spanCount).typeCharPos = typeCharPos
+
+            i = j
+            Continue While
+        End If
+
+        i += 1
+    Wend
+
+    Return spanCount
+End Function
+
+Private Function FindStringIndex(arr() As String, ByVal n As Integer, ByRef key As String) As Integer
+    Dim i As Integer
+    For i = 1 To n
+        If arr(i) = key Then Return i
+    Next i
+    Return 0
+End Function
+
+Private Sub AddStringIfMissing(arr() As String, ByRef n As Integer, ByRef key As String)
+    If FindStringIndex(arr(), n, key) > 0 Then Exit Sub
+    n += 1
+    ReDim Preserve arr(1 To n)
+    arr(n) = key
+End Sub
+
+Private Function FindVarMapIndex(varMap() As VarMapEntry, ByVal n As Integer, ByRef scopedKey As String) As Integer
+    Dim i As Integer
+    For i = 1 To n
+        If varMap(i).scopedKey = scopedKey Then Return i
+    Next i
+    Return 0
+End Function
+
+Private Sub UpsertVarMap(varMap() As VarMapEntry, ByRef n As Integer, ByRef scopedKey As String, ByRef shortVal As String)
+    Dim idx As Integer = FindVarMapIndex(varMap(), n, scopedKey)
+    If idx <= 0 Then
+        n += 1
+        ReDim Preserve varMap(1 To n)
+        idx = n
+    End If
+    varMap(idx).scopedKey = scopedKey
+    varMap(idx).shortVal = shortVal
+End Sub
+
+' "declare longo:curto" (forca um mapeamento) ou "declare longo1,longo2,..."
+' /"declare curto1,curto2,..." (reserva - nao deixa o auto-assign usar,
+' seja um nome curto direto ou os 2 primeiros chars de um nome que vai
+' ficar sempre por extenso). Varios itens separados por virgula na mesma
+' linha. Chamado durante o parsing linha-a-linha, igual ao DEFINE - a
+' linha inteira e' consumida, nunca vira um stmt de saida.
+Private Function ProcessDeclareLine(ByRef body As String, ByRef currentNs As String, varMap() As VarMapEntry, ByRef varMapCount As Integer, keepLongKeys() As String, ByRef keepLongCount As Integer, reservedShortVals() As String, ByRef reservedShortCount As Integer, ByRef errMsg As String) As Integer
+    If Len(Trim(body)) = 0 Then Return -1
+
+    Dim items() As String
+    Dim itemCount As Integer = 0
+    Dim chunk As String = ""
+    Dim i As Integer
+    For i = 1 To Len(body)
+        Dim ch As String = Mid(body, i, 1)
+        If ch = "," Then
+            itemCount += 1
+            ReDim Preserve items(1 To itemCount)
+            items(itemCount) = Trim(chunk)
+            chunk = ""
+        Else
+            chunk &= ch
+        End If
+    Next i
+    If Len(Trim(chunk)) > 0 Then
+        itemCount += 1
+        ReDim Preserve items(1 To itemCount)
+        items(itemCount) = Trim(chunk)
+    End If
+
+    Dim di As Integer
+    For di = 1 To itemCount
+        Dim entry As String = items(di)
+        If Len(entry) = 0 Then Continue For
+
+        Dim colonPos As Integer = InStr(entry, ":")
+        If colonPos > 0 Then
+            Dim longName As String = Trim(Left(entry, colonPos - 1))
+            Dim shortName As String = Trim(Mid(entry, colonPos + 1))
+
+            If Len(longName) < 2 Or IsIdentStartChar(Asc(Left(longName, 1))) = 0 Then
+                errMsg = "declare: nome longo invalido: " & longName
+                Return 0
+            End If
+            If InStr("$%!#", Right(shortName, 1)) > 0 Then
+                errMsg = "declare: nao pode usar sufixo de tipo ($%!#) - " & entry
+                Return 0
+            End If
+            If Len(shortName) < 1 Or Len(shortName) > 2 Or IsIdentStartChar(Asc(Left(shortName, 1))) = 0 Then
+                errMsg = "declare: nome curto invalido: " & shortName
+                Return 0
+            End If
+            If IsReservedKeyword(longName, "") <> 0 Then
+                errMsg = "declare: " & longName & " e' uma palavra reservada do BASIC."
+                Return 0
+            End If
+
+            UpsertVarMap(varMap(), varMapCount, ScopedName(currentNs, longName), LCase(shortName))
+            AddStringIfMissing(reservedShortVals(), reservedShortCount, UCase(shortName))
+        Else
+            If Len(entry) = 0 Or IsIdentStartChar(Asc(Left(entry, 1))) = 0 Then
+                errMsg = "declare: identificador invalido: " & entry
+                Return 0
+            End If
+            If Len(entry) = 1 Then
+                errMsg = "declare: nao da' pra reservar variavel de 1 letra: " & entry
+                Return 0
+            End If
+
+            If Len(entry) <= 2 Then
+                AddStringIfMissing(reservedShortVals(), reservedShortCount, UCase(entry))
+            Else
+                If IsReservedKeyword(entry, "") <> 0 Then
+                    errMsg = "declare: " & entry & " e' uma palavra reservada do BASIC."
+                    Return 0
+                End If
+                AddStringIfMissing(keepLongKeys(), keepLongCount, ScopedName(currentNs, entry))
+            End If
+        End If
+    Next di
+
+    Return -1
+End Function
+
+' Varre TODAS as statements normais (kind=STMT_NORMAL) coletando: nomes
+' ~marcados (ficam por extenso pra sempre), variaveis de 1-2 letras usadas
+' direto (reservam esse curto), e candidatos a variavel longa (3+ letras,
+' nao reservada, sem ~) na ORDEM em que aparecem no fonte - essa ordem e'
+' a ordem de atribuicao do auto-assign (descendente de ZZ).
+Private Sub CollectVariableUsage(stmts() As ProcLine, ByVal stmtCount As Integer, keepLongKeys() As String, ByRef keepLongCount As Integer, reservedShortVals() As String, ByRef reservedShortCount As Integer, longVarKeys() As String, ByRef longVarCount As Integer)
+    Dim i As Integer
+    For i = 1 To stmtCount
+        If stmts(i).kind <> STMT_NORMAL Then Continue For
+
+        Dim spans() As VarTokenSpan
+        Dim spanCount As Integer = TokenizeIdentifierSpans(stmts(i).text, spans())
+        Dim s As Integer
+        For s = 1 To spanCount
+            Dim ident As String = Mid(stmts(i).text, spans(s).startPos, spans(s).lenChars)
+            Dim typeChar As String = ""
+            If spans(s).typeCharPos > 0 Then typeChar = Mid(stmts(i).text, spans(s).typeCharPos, 1)
+
+            If IsReservedKeyword(ident, typeChar) <> 0 Then Continue For
+
+            If spans(s).hasTilde <> 0 Then
+                If Len(ident) >= 3 Then AddStringIfMissing(keepLongKeys(), keepLongCount, ScopedName(stmts(i).nsKey, ident))
+                Continue For
+            End If
+
+            If Len(ident) <= 2 Then
+                AddStringIfMissing(reservedShortVals(), reservedShortCount, UCase(ident))
+            Else
+                AddStringIfMissing(longVarKeys(), longVarCount, ScopedName(stmts(i).nsKey, ident))
+            End If
+        Next s
+    Next i
+End Sub
+
+' Gera o proximo par de letras livre, descendo de "zz" ate' "aa" (676
+' combinacoes, nunca 1 letra so' nem letra+numero) - pula qualquer par ja'
+' reservado (hardcoded, declare, ou 2 primeiras letras de um nome mantido
+' por extenso).
+Private Sub AssignShortNames(longVarKeys() As String, ByVal longVarCount As Integer, keepLongKeys() As String, ByVal keepLongCount As Integer, reservedShortVals() As String, ByRef reservedShortCount As Integer, varMap() As VarMapEntry, ByRef varMapCount As Integer)
+    Const letters = "abcdefghijklmnopqrstuvwxyz"
+
+    Dim k As Integer
+    For k = 1 To keepLongCount
+        Dim barPos As Integer = InStr(keepLongKeys(k), "|")
+        Dim localPart As String = Mid(keepLongKeys(k), barPos + 1)
+        AddStringIfMissing(reservedShortVals(), reservedShortCount, Left(localPart, 2))
+    Next k
+    For k = 1 To varMapCount
+        AddStringIfMissing(reservedShortVals(), reservedShortCount, UCase(varMap(k).shortVal))
+    Next k
+
+    Dim varIndex As Integer = 675 ' 26*26 - 1, comeca em "zz"
+    Dim v As Integer
+    For v = 1 To longVarCount
+        If FindVarMapIndex(varMap(), varMapCount, longVarKeys(v)) > 0 Then Continue For ' ja' veio de declare
+        ' ~ em QUALQUER ocorrencia (mesmo numa so' linha, nao necessariamente
+        ' a 1a) marca a variavel inteira como "mantem por extenso" pro
+        ' arquivo todo - se apareceu aqui tambem sem ~ antes de a gente
+        ' notar isso, precisa ser descartada agora, senao viraria curta
+        ' nas ocorrencias sem ~ e comprida so' na com ~ (inconsistente).
+        If FindStringIndex(keepLongKeys(), keepLongCount, longVarKeys(v)) > 0 Then Continue For
+
+        Dim assigned As Integer = 0
+        Do While varIndex >= 0 And assigned = 0
+            Dim idxH As Integer = varIndex \ 26
+            Dim idxL As Integer = varIndex Mod 26
+            Dim candidate As String = Mid(letters, idxH + 1, 1) & Mid(letters, idxL + 1, 1)
+            varIndex -= 1
+
+            If FindStringIndex(reservedShortVals(), reservedShortCount, UCase(candidate)) = 0 Then
+                UpsertVarMap(varMap(), varMapCount, longVarKeys(v), candidate)
+                AddStringIfMissing(reservedShortVals(), reservedShortCount, UCase(candidate))
+                assigned = -1
+            End If
+        Loop
+    Next v
+End Sub
+
+' Reconstroi o texto trocando cada variavel longa conhecida pelo curto
+' associado (mantendo o sufixo de tipo $%!# do jeito que estava) - palavra
+' reservada, variavel curta usada direto e nome ~marcado passam intactos.
+' O ~ em si e' sempre removido da saida (marcador de compilacao, nao existe
+' no BASIC de verdade).
+Private Function SubstituteVariables(ByRef text As String, ByRef nsKey As String, varMap() As VarMapEntry, ByVal varMapCount As Integer) As String
+    Dim spans() As VarTokenSpan
+    Dim spanCount As Integer = TokenizeIdentifierSpans(text, spans())
+    If spanCount = 0 Then Return text
+
+    Dim outText As String = ""
+    Dim lastPos As Integer = 0
+    Dim s As Integer
+    For s = 1 To spanCount
+        Dim gapEnd As Integer = spans(s).startPos - 1
+        If spans(s).hasTilde <> 0 Then gapEnd -= 1
+        outText &= Mid(text, lastPos + 1, gapEnd - lastPos)
+
+        Dim ident As String = Mid(text, spans(s).startPos, spans(s).lenChars)
+        Dim typeChar As String = ""
+        If spans(s).typeCharPos > 0 Then typeChar = Mid(text, spans(s).typeCharPos, 1)
+
+        Dim replaced As Integer = 0
+        If IsReservedKeyword(ident, typeChar) = 0 And spans(s).hasTilde = 0 Then
+            Dim idx As Integer = FindVarMapIndex(varMap(), varMapCount, ScopedName(nsKey, ident))
+            If idx > 0 Then
+                outText &= varMap(idx).shortVal & typeChar
+                replaced = -1
+            End If
+        End If
+        If replaced = 0 Then outText &= ident
+
+        lastPos = spans(s).startPos + spans(s).lenChars - 1
+        If replaced <> 0 And spans(s).typeCharPos > 0 Then lastPos = spans(s).typeCharPos
+    Next s
+    outText &= Mid(text, lastPos + 1)
+
+    Return outText
+End Function
+
 Private Function ParseDefineLine(ByRef lineText As String, defs() As DefineEntry, ByRef defCount As Integer) As Integer
     Dim t As String = LTrim(lineText)
     If Len(t) < 6 Then Return 0
@@ -860,6 +1245,55 @@ Private Function ExpandIncludesText(ByRef sourcePath As String, ByRef sourceText
     Return -1
 End Function
 
+' "Linhas terminadas em : continuam na linha seguinte, e linhas iniciadas
+' em : continuam a linha anterior" (BASIC_DIGNIFIED.md, "Line separation")
+' - o : e' mantido no texto final, com a mesma funcao de separador de
+' instrucoes do BASIC classico. Roda ANTES do loop principal de
+' PreprocessDignified pra que cada "linha" que ele enxerga ja' seja o
+' resultado final da juncao (vira uma unica linha numerada, nao varias).
+Private Function JoinContinuationLines(ByRef textIn As String) As String
+    Dim outText As String = ""
+    Dim group As String = ""
+    Dim haveGroup As Integer = 0
+    Dim posStart As Integer = 1
+
+    While posStart <= Len(textIn)
+        Dim br As Integer = InStr(posStart, textIn, Chr(10))
+        Dim oneLine As String
+        If br = 0 Then
+            oneLine = Mid(textIn, posStart)
+            posStart = Len(textIn) + 1
+        Else
+            oneLine = Mid(textIn, posStart, br - posStart)
+            posStart = br + 1
+        End If
+
+        Dim t As String = Trim(oneLine)
+
+        If haveGroup = 0 Then
+            group = t
+            haveGroup = -1
+        ElseIf Right(group, 1) = ":" Or Left(t, 1) = ":" Then
+            If Right(group, 1) = ":" And Left(t, 1) = ":" Then
+                group &= Mid(t, 2) ' os dois lados tem : - mantem so' um, senao duplicava
+            Else
+                group &= t
+            End If
+        Else
+            If Len(outText) > 0 Then outText &= Chr(10)
+            outText &= group
+            group = t
+        End If
+    Wend
+
+    If haveGroup <> 0 Then
+        If Len(outText) > 0 Then outText &= Chr(10)
+        outText &= group
+    End If
+
+    Return outText
+End Function
+
 Private Function FindLabelIndex(labels() As LabelMap, ByVal labelCount As Integer, ByRef nameKey As String) As Integer
     Dim key As String = UCase(Trim(nameKey))
     Dim i As Integer
@@ -967,6 +1401,15 @@ Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath A
     Dim stmts() As ProcLine
     Dim stmtCount As Integer = 0
 
+    Dim varMap() As VarMapEntry
+    Dim varMapCount As Integer = 0
+    Dim keepLongKeys() As String
+    Dim keepLongCount As Integer = 0
+    Dim reservedShortVals() As String
+    Dim reservedShortCount As Integer = 0
+    Dim longVarKeys() As String
+    Dim longVarCount As Integer = 0
+
     Dim labels() As LabelMap
     Dim labelCount As Integer = 0
 
@@ -980,7 +1423,7 @@ Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath A
     Dim pendingCount As Integer = 0
 
     Dim posStart As Integer = 1
-    Dim normalized As String = StripCR(expandedSource)
+    Dim normalized As String = JoinContinuationLines(StripCR(expandedSource))
 
     While posStart <= Len(normalized)
         Dim br As Integer = InStr(posStart, normalized, Chr(10))
@@ -1087,6 +1530,14 @@ Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath A
                         UpsertDefine(defs(), defCount, ScopedName(currentNs, dName), dContent)
                     End If
                 Next di
+            End If
+            Continue While
+        End If
+
+        If UCase(Left(parseLine, 7)) = "DECLARE" And (Len(parseLine) = 7 Or IsIdentBodyChar(Asc(Mid(parseLine, 8, 1))) = 0) Then
+            Dim declBody As String = Trim(Mid(parseLine, 8))
+            If ProcessDeclareLine(declBody, currentNs, varMap(), varMapCount, keepLongKeys(), keepLongCount, reservedShortVals(), reservedShortCount, errMsg) = 0 Then
+                Return 0
             End If
             Continue While
         End If
@@ -1204,6 +1655,9 @@ Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath A
         Return 0
     End If
 
+    CollectVariableUsage(stmts(), stmtCount, keepLongKeys(), keepLongCount, reservedShortVals(), reservedShortCount, longVarKeys(), longVarCount)
+    AssignShortNames(longVarKeys(), longVarCount, keepLongKeys(), keepLongCount, reservedShortVals(), reservedShortCount, varMap(), varMapCount)
+
     Dim stmtLineNos(1 To stmtCount) As Integer
     Dim i As Integer
     For i = 1 To stmtCount
@@ -1248,9 +1702,17 @@ Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath A
             End If
         End If
 
-        If stripSpaces <> 0 Then body = CollapseSpacesOutsideStrings(body)
+        body = SubstituteVariables(body, stmts(i).nsKey, varMap(), varMapCount)
+
+        ' ConvertPrintByMode/RewriteIfThenGotoByMode precisam rodar ANTES do
+        ' strip - elas reconhecem PRINT/THEN/GOTO exigindo um limite
+        ' nao-alfanumerico dos dois lados (IsTokenBoundaryAt), pra nao
+        ' confundir a keyword com um pedaco de identificador. Depois de
+        ' stripado tudo fica colado (ex.: "IFXTHENGOTO100") e essa deteccao
+        ' de limite quebraria - por isso o strip e' sempre o ULTIMO passo.
         body = ConvertPrintByMode(body, convertPrintMode)
         body = RewriteIfThenGotoByMode(body, ifJumpMode)
+        If stripSpaces <> 0 Then body = StripSpacesOutsideStrings(body)
         If uppercaseAll <> 0 Then body = UCase(body)
 
         Dim outLine As String = Trim(Str(stmtLineNos(i))) & " " & body
@@ -2095,6 +2557,326 @@ Function CompilerCompileToAmx(ByRef srcPath As String, ByRef outAmxPath As Strin
         Return 0
     End If
     CompilerDebugLog("compiler", "CompilerCompileToAmx ok out=" & outAmxPath & " size=" & Trim(Str(Len(amxText))))
+    Return -1
+End Function
+
+Private Function CompactUpper(ByRef s As String) As String
+    Dim outS As String = ""
+    Dim i As Integer
+    For i = 1 To Len(s)
+        Dim ch As String = Mid(s, i, 1)
+        If ch <> " " Then outS &= ch
+    Next i
+    Return UCase(outS)
+End Function
+
+' Smoke test headless da juncao de linha por : (BASIC_DIGNIFIED.md, "Line
+' separation") - chama PreprocessDignified direto em memoria, sem nenhum
+' arquivo no disco (o texto de entrada nao usa INCLUDE, entao
+' ExpandIncludesText nunca precisa ler nada fora da string).
+Private Function SplitNonBlankTrimmedLines(ByRef txt As String, outLines() As String) As Integer
+    Dim outLineCount As Integer = 0
+    Dim posStart As Integer = 1
+    Dim normalized As String = StripCR(txt)
+    While posStart <= Len(normalized)
+        Dim br As Integer = InStr(posStart, normalized, Chr(10))
+        Dim oneLine As String
+        If br = 0 Then
+            oneLine = Mid(normalized, posStart)
+            posStart = Len(normalized) + 1
+        Else
+            oneLine = Mid(normalized, posStart, br - posStart)
+            posStart = br + 1
+        End If
+        If Len(Trim(oneLine)) > 0 Then
+            outLineCount += 1
+            ReDim Preserve outLines(1 To outLineCount)
+            outLines(outLineCount) = Trim(oneLine)
+        End If
+    Wend
+    Return outLineCount
+End Function
+
+Function CompilerRunJoinSmokeTest(ByRef report As String) As Integer
+    Dim srcText As String = "screen 0:" & Chr(10) & "width 40" & Chr(10) & "print 1" & Chr(10) & ":print 2" & Chr(10) & "print 3"
+    Dim amxText As String
+    Dim amxOverride As String
+    Dim errMsg As String
+
+    If PreprocessDignified(srcText, "smoke_join.dmx", amxText, amxOverride, errMsg) = 0 Then
+        report = "SMOKE BADIG FAIL: PreprocessDignified deu erro - " & errMsg
+        Return 0
+    End If
+
+    Dim outLines() As String
+    Dim outLineCount As Integer = SplitNonBlankTrimmedLines(amxText, outLines())
+
+    ' "screen 0:" (: no fim) funde com "width 40" - vira UMA linha so'.
+    ' "print 1" nao tem : de nenhum lado com "width 40", entao comeca
+    ' grupo novo - mas ":print 2" (: no inicio) funde com ele. "print 3"
+    ' nao tem : de nenhum lado, fica na sua propria linha. 3 grupos ao todo.
+    If outLineCount <> 3 Then
+        report = "SMOKE BADIG FAIL: esperava 3 linhas geradas, vieram " & Trim(Str(outLineCount)) & " - " & amxText
+        Return 0
+    End If
+
+    Dim compact1 As String = CompactUpper(outLines(1))
+    Dim compact2 As String = CompactUpper(outLines(2))
+
+    If InStr(compact1, "SCREEN0:WIDTH40") = 0 Then
+        report = "SMOKE BADIG FAIL: 1a linha nao tem o corpo esperado (screen 0:width 40) - '" & outLines(1) & "'"
+        Return 0
+    End If
+    If InStr(compact2, "PRINT1:PRINT2") = 0 Then
+        report = "SMOKE BADIG FAIL: 2a linha nao tem o corpo esperado (print 1:print 2) - '" & outLines(2) & "'"
+        Return 0
+    End If
+    If InStr(UCase(outLines(3)), "PRINT 3") = 0 Then
+        report = "SMOKE BADIG FAIL: 3a linha deveria ser PRINT 3 (sem : ligando a linha anterior) - '" & outLines(3) & "'"
+        Return 0
+    End If
+
+    report = "SMOKE BADIG OK: linhas terminadas/iniciadas em : sao unidas numa unica linha numerada (screen 0:width 40, print 1:print 2), linha sem : fica separada (print 3)"
+    Return -1
+End Function
+
+' Smoke test headless das 3 opcoes de formatacao do Basic Dignified que o
+' preprocessador deve respeitar: Strip Spaces (cfg.badig.strip_spaces),
+' Convert PRINT (cfg.msxbasic.badig.convert_print, "?" ou "PRINT") e
+' Strip THEN GOTO (cfg.msxbasic.badig.strip_then_goto, "THEN" ou "GOTO").
+' Grava/restaura as 3 chaves reais no banco (igual ao padrao do smoke do
+' Mamute) pra nunca deixar sujeira permanente na configuracao de quem
+' rodou o build.
+Function CompilerRunFormatSmokeTest(ByRef report As String) As Integer
+    Dim savedStrip As String = DbGetSetting("cfg.badig.strip_spaces", "False")
+    Dim savedPrint As String = DbGetSetting("cfg.msxbasic.badig.convert_print", "")
+    Dim savedThenGoto As String = DbGetSetting("cfg.msxbasic.badig.strip_then_goto", "")
+
+    Dim amxText As String
+    Dim amxOverride As String
+    Dim errMsg As String
+    Dim outLines() As String
+    Dim outLineCount As Integer
+    Dim srcWithSpecial As String
+
+    ' --- Convert PRINT: "?" troca PRINT pelo sinal, "PRINT" troca o sinal
+    ' pela palavra - dos dois lados, sem strip_spaces no meio pra nao
+    ' interferir na leitura do resultado.
+    DbSetSetting("cfg.badig.strip_spaces", "False")
+    DbSetSetting("cfg.msxbasic.badig.strip_then_goto", "")
+
+    DbSetSetting("cfg.msxbasic.badig.convert_print", "?")
+    If PreprocessDignified("print 1", "smoke_fmt.dmx", amxText, amxOverride, errMsg) = 0 Then
+        GoTo FormatSmokeFail
+    End If
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 1 Or InStr(UCase(outLines(1)), "? 1") = 0 Then
+        DbSetSetting("cfg.badig.strip_spaces", savedStrip)
+        DbSetSetting("cfg.msxbasic.badig.convert_print", savedPrint)
+        DbSetSetting("cfg.msxbasic.badig.strip_then_goto", savedThenGoto)
+        report = "SMOKE BADIG FMT FAIL: Convert PRINT=? nao trocou PRINT por ? - '" & amxText & "'"
+        Return 0
+    End If
+
+    DbSetSetting("cfg.msxbasic.badig.convert_print", "PRINT")
+    If PreprocessDignified("? 1", "smoke_fmt.dmx", amxText, amxOverride, errMsg) = 0 Then
+        GoTo FormatSmokeFail
+    End If
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 1 Or InStr(UCase(outLines(1)), "PRINT 1") = 0 Then
+        DbSetSetting("cfg.badig.strip_spaces", savedStrip)
+        DbSetSetting("cfg.msxbasic.badig.convert_print", savedPrint)
+        DbSetSetting("cfg.msxbasic.badig.strip_then_goto", savedThenGoto)
+        report = "SMOKE BADIG FMT FAIL: Convert PRINT=PRINT nao trocou ? por PRINT - '" & amxText & "'"
+        Return 0
+    End If
+    DbSetSetting("cfg.msxbasic.badig.convert_print", "")
+
+    ' --- Strip THEN GOTO: "GOTO" derruba o THEN, "THEN" derruba o GOTO
+    ' (as duas formas sao validas e equivalentes no MSX-BASIC classico).
+    DbSetSetting("cfg.msxbasic.badig.strip_then_goto", "GOTO")
+    If PreprocessDignified("if x=1 then goto 100", "smoke_fmt.dmx", amxText, amxOverride, errMsg) = 0 Then
+        GoTo FormatSmokeFail
+    End If
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 1 Or InStr(UCase(outLines(1)), "THEN") <> 0 Or InStr(UCase(outLines(1)), "GOTO 100") = 0 Then
+        DbSetSetting("cfg.badig.strip_spaces", savedStrip)
+        DbSetSetting("cfg.msxbasic.badig.convert_print", savedPrint)
+        DbSetSetting("cfg.msxbasic.badig.strip_then_goto", savedThenGoto)
+        report = "SMOKE BADIG FMT FAIL: Strip THEN GOTO=GOTO deveria derrubar o THEN - '" & amxText & "'"
+        Return 0
+    End If
+
+    DbSetSetting("cfg.msxbasic.badig.strip_then_goto", "THEN")
+    If PreprocessDignified("if x=1 goto 100", "smoke_fmt.dmx", amxText, amxOverride, errMsg) = 0 Then
+        GoTo FormatSmokeFail
+    End If
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 1 Or InStr(UCase(outLines(1)), "GOTO") <> 0 Or InStr(UCase(outLines(1)), "THEN 100") = 0 Then
+        DbSetSetting("cfg.badig.strip_spaces", savedStrip)
+        DbSetSetting("cfg.msxbasic.badig.convert_print", savedPrint)
+        DbSetSetting("cfg.msxbasic.badig.strip_then_goto", savedThenGoto)
+        report = "SMOKE BADIG FMT FAIL: Strip THEN GOTO=THEN deveria derrubar o GOTO - '" & amxText & "'"
+        Return 0
+    End If
+    DbSetSetting("cfg.msxbasic.badig.strip_then_goto", "")
+
+    ' --- Strip Spaces: remove TODOS os espacos fora de string (nao so'
+    ' colapsa repetidos) - inclusive os que ficam colados no ':' - mas
+    ' preserva o que estiver dentro de aspas.
+    DbSetSetting("cfg.badig.strip_spaces", "True")
+    If PreprocessDignified("print  ""a b""  :  print  2", "smoke_fmt.dmx", amxText, amxOverride, errMsg) = 0 Then
+        GoTo FormatSmokeFail
+    End If
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 1 Or InStr(UCase(outLines(1)), "PRINT" & Chr(34) & "A B" & Chr(34) & ":PRINT2") = 0 Then
+        DbSetSetting("cfg.badig.strip_spaces", savedStrip)
+        DbSetSetting("cfg.msxbasic.badig.convert_print", savedPrint)
+        DbSetSetting("cfg.msxbasic.badig.strip_then_goto", savedThenGoto)
+        report = "SMOKE BADIG FMT FAIL: Strip Spaces deveria remover todo espaco fora de string (preservando 'a b' entre aspas) - '" & amxText & "'"
+        Return 0
+    End If
+
+    DbSetSetting("cfg.badig.strip_spaces", savedStrip)
+    DbSetSetting("cfg.msxbasic.badig.convert_print", savedPrint)
+    DbSetSetting("cfg.msxbasic.badig.strip_then_goto", savedThenGoto)
+
+    ' --- Caracteres especiais MSX (Inserir->Caracteres Especiais no
+    ' editor, codigos 128-255): o pipeline inteiro (editor/arquivo/
+    ' PreprocessDignified) e' byte-a-byte, nunca passa por UTF-8 - entao
+    ' um byte alto dentro de um literal de string tem que sair do outro
+    ' lado IDENTICO, sem nenhuma "tradução" no compilador (a traducao
+    ' inteira acontece na hora de INSERIR o caractere no editor, nao
+    ' aqui). Confere com o byte 200 (arbitrario, dentro de 128-255).
+    DbSetSetting("cfg.badig.strip_spaces", "False")
+    srcWithSpecial = "print " & Chr(34) & "A" & Chr(200) & "B" & Chr(34)
+    If PreprocessDignified(srcWithSpecial, "smoke_fmt.dmx", amxText, amxOverride, errMsg) = 0 Then
+        DbSetSetting("cfg.badig.strip_spaces", savedStrip)
+        GoTo FormatSmokeFail
+    End If
+    DbSetSetting("cfg.badig.strip_spaces", savedStrip)
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 1 Or InStr(outLines(1), "A" & Chr(200) & "B") = 0 Then
+        DbSetSetting("cfg.msxbasic.badig.convert_print", savedPrint)
+        DbSetSetting("cfg.msxbasic.badig.strip_then_goto", savedThenGoto)
+        Dim gotHex As String = ""
+        Dim hi As Integer
+        For hi = 1 To Len(outLines(1))
+            gotHex &= Hex(Asc(Mid(outLines(1), hi, 1))) & " "
+        Next hi
+        report = "SMOKE BADIG FMT FAIL: byte 200 (caractere especial MSX) nao sobreviveu intacto ao PreprocessDignified - bytes da linha: " & gotHex
+        Return 0
+    End If
+
+    report = "SMOKE BADIG FMT OK: Convert PRINT (?/PRINT dos dois lados), Strip THEN GOTO (THEN/GOTO dos dois lados), Strip Spaces (remove tudo fora de string, preserva literal), caractere especial MSX (byte 128-255) preservado intacto dentro de string"
+    Return -1
+
+FormatSmokeFail:
+    DbSetSetting("cfg.badig.strip_spaces", savedStrip)
+    DbSetSetting("cfg.msxbasic.badig.convert_print", savedPrint)
+    DbSetSetting("cfg.msxbasic.badig.strip_then_goto", savedThenGoto)
+    report = "SMOKE BADIG FMT FAIL: PreprocessDignified deu erro - " & errMsg
+    Return 0
+End Function
+
+' Smoke test headless da conversao de variaveis de nome longo -> curto
+' (BASIC_DIGNIFIED.md, "Long named variables" - badig.py get_declares +
+' badig_msx.py process_variable/get_hard_variable). Cada cenario e' uma
+' chamada independente de PreprocessDignified, sem nenhuma config de
+' banco envolvida (a feature nao depende de nenhuma chave cfg.*).
+Function CompilerRunVariableSmokeTest(ByRef report As String) As Integer
+    Dim amxText As String
+    Dim amxOverride As String
+    Dim errMsg As String
+    Dim outLines() As String
+    Dim outLineCount As Integer
+
+    ' --- A: auto-assign descendente (zz) + mesmo curto independente do
+    ' tipo ($) + string literal NUNCA e' varrida (senao "score" da string
+    ' roubaria o "zz" que tem que ir pra "variable1", que aparece depois).
+    If PreprocessDignified("print " & Chr(34) & "score is high" & Chr(34) & Chr(10) & "variable1=5" & Chr(10) & "print variable1$", "smoke_var.dmx", amxText, amxOverride, errMsg) = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario A - PreprocessDignified deu erro - " & errMsg
+        Return 0
+    End If
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 3 Then
+        report = "SMOKE BADIG VAR FAIL: cenario A - esperava 3 linhas, veio " & Trim(Str(outLineCount)) & " - " & amxText
+        Return 0
+    End If
+    If InStr(outLines(1), Chr(34) & "score is high" & Chr(34)) = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario A - string literal foi alterada (varrida por engano) - '" & outLines(1) & "'"
+        Return 0
+    End If
+    If InStr(LCase(outLines(2)), "zz=5") = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario A - variable1 deveria virar zz (1o nome longo de verdade, a string nao conta) - '" & outLines(2) & "'"
+        Return 0
+    End If
+    If InStr(LCase(outLines(3)), "zz$") = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario A - variable1$ deveria virar zz$ (mesmo curto do variable1 sem $) - '" & outLines(3) & "'"
+        Return 0
+    End If
+
+    ' --- B: REM apaga o resto da linha da varredura - a 2a ocorrencia de
+    ' "longname", dentro do comentario, NAO pode ser trocada.
+    If PreprocessDignified("longname=1:rem this uses longname word", "smoke_var.dmx", amxText, amxOverride, errMsg) = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario B - PreprocessDignified deu erro - " & errMsg
+        Return 0
+    End If
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 1 Then
+        report = "SMOKE BADIG VAR FAIL: cenario B - esperava 1 linha, veio " & Trim(Str(outLineCount)) & " - " & amxText
+        Return 0
+    End If
+    If InStr(LCase(outLines(1)), "zz=1") = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario B - longname (antes do REM) deveria virar zz - '" & outLines(1) & "'"
+        Return 0
+    End If
+    If InStr(LCase(outLines(1)), "rem this uses longname word") = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario B - texto do REM nao pode ser mexido (longname ali dentro tem que continuar por extenso) - '" & outLines(1) & "'"
+        Return 0
+    End If
+
+    ' --- C: declare explicito (myvar:mv), declare reserva curto (zz),
+    ' ~ mantem nome por extenso em TODAS as ocorrencias (mesmo a sem ~).
+    Dim srcC As String = "declare myvar:mv" & Chr(10) & "declare zz" & Chr(10) & "myvar=1" & Chr(10) & "~longkept=2" & Chr(10) & "print longkept" & Chr(10) & "otherlong=3"
+    If PreprocessDignified(srcC, "smoke_var.dmx", amxText, amxOverride, errMsg) = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario C - PreprocessDignified deu erro - " & errMsg
+        Return 0
+    End If
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 4 Then
+        report = "SMOKE BADIG VAR FAIL: cenario C - esperava 4 linhas (as 2 declare nao geram linha), veio " & Trim(Str(outLineCount)) & " - " & amxText
+        Return 0
+    End If
+    If InStr(LCase(outLines(1)), "mv=1") = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario C - myvar deveria virar mv (declare explicito) - '" & outLines(1) & "'"
+        Return 0
+    End If
+    If InStr(LCase(outLines(2)), "longkept=2") = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario C - ~longkept deveria manter o nome por extenso, sem o ~ - '" & outLines(2) & "'"
+        Return 0
+    End If
+    If InStr(LCase(outLines(3)), "print longkept") = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario C - segunda ocorrencia de longkept (sem ~) tambem tem que ficar por extenso - '" & outLines(3) & "'"
+        Return 0
+    End If
+    If InStr(LCase(outLines(4)), "zy=3") = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario C - otherlong deveria virar zy (zz reservado por declare, mv e' o curto do myvar, lo e' reservado pelas 2 letras de longkept) - '" & outLines(4) & "'"
+        Return 0
+    End If
+
+    ' --- D: variavel de 1-2 letras usada direto nunca e' tocada.
+    If PreprocessDignified("ab=5", "smoke_var.dmx", amxText, amxOverride, errMsg) = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario D - PreprocessDignified deu erro - " & errMsg
+        Return 0
+    End If
+    outLineCount = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount <> 1 Or InStr(LCase(outLines(1)), "ab=5") = 0 Then
+        report = "SMOKE BADIG VAR FAIL: cenario D - variavel curta 'ab' usada direto nao pode ser alterada - '" & amxText & "'"
+        Return 0
+    End If
+
+    report = "SMOKE BADIG VAR OK: nome longo->curto (zz descendente), mesmo curto independente de tipo ($), string/REM protegidos da varredura, declare explicito e reserva de curto, ~ mantem nome por extenso em todas as ocorrencias, variavel de 1-2 letras usada direto nunca e' tocada"
     Return -1
 End Function
 

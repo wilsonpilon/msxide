@@ -1,6 +1,7 @@
 #Include Once "editor.bi"
 #Include Once "db.bi"
 #Include Once "console.bi"
+#Include Once "compiler.bi"
 
 Dim running As Integer = 1
 Dim menuOpen As Integer = 0
@@ -12,6 +13,9 @@ Dim hasArgs As Integer = 0
 Dim runHelpSmoke As Integer = 0
 Dim runMamuteSmoke As Integer = 0
 Dim runMamuteDiag As Integer = 0
+Dim runEditSmoke As Integer = 0
+Dim runKeysSmoke As Integer = 0
+Dim runBadigSmoke As Integer = 0
 Dim needsRedraw As Integer = 1
 Dim inputType As Integer
 Dim mouseX As Integer
@@ -28,6 +32,53 @@ If Len(argText) > 0 Then
         runMamuteSmoke = -1
     ElseIf LCase(argText) = "--mamute-diag" Then
         runMamuteDiag = -1
+    ElseIf LCase(argText) = "--smoke-editor" Then
+        runEditSmoke = -1
+    ElseIf LCase(argText) = "--smoke-keys" Then
+        runKeysSmoke = -1
+    ElseIf LCase(argText) = "--smoke-badig" Then
+        runBadigSmoke = -1
+    End If
+End If
+
+' Testa a traducao de KEY_EVENT_RECORD (Ctrl/Alt/Shift+tecla) direto, sem
+' precisar de banco/editor/documento nenhum - roda e sai antes de qualquer
+' outra coisa neste arquivo.
+If runKeysSmoke <> 0 Then
+    Dim keysSmokeReport As String
+    Dim keysSmokeOk As Integer = ConsoleRunKeyTranslationSmokeTest(keysSmokeReport)
+    Print keysSmokeReport
+    If keysSmokeOk <> 0 Then
+        End 0
+    Else
+        End 1
+    End If
+End If
+
+' Smoke test do preprocessador Basic Dignified (juncao de linha por :) -
+' so' precisa de banco pra IntSetting/DbGetSetting terem algo pra ler
+' (usa um banco descartavel proprio, igual o do Mamute, pra nunca tocar
+' no msxide.db de verdade) - nao precisa de editor/documento nenhum.
+Dim badigSmokeDbPath As String = "msxide_badig_smoke.db"
+If runBadigSmoke <> 0 Then
+    DbInit(badigSmokeDbPath)
+    Dim badigSmokeReport As String
+    Dim badigSmokeOk As Integer = CompilerRunJoinSmokeTest(badigSmokeReport)
+    Print badigSmokeReport
+    If badigSmokeOk <> 0 Then
+        badigSmokeOk = CompilerRunFormatSmokeTest(badigSmokeReport)
+        Print badigSmokeReport
+    End If
+    If badigSmokeOk <> 0 Then
+        badigSmokeOk = CompilerRunVariableSmokeTest(badigSmokeReport)
+        Print badigSmokeReport
+    End If
+    DbShutdown()
+    If Dir(badigSmokeDbPath) <> "" Then Kill badigSmokeDbPath
+    If badigSmokeOk <> 0 Then
+        End 0
+    Else
+        End 1
     End If
 End If
 
@@ -49,7 +100,7 @@ Else
 End If
 
 If hasArgs <> 0 Then
-    If runHelpSmoke = 0 And runMamuteSmoke = 0 And runMamuteDiag = 0 Then
+    If runHelpSmoke = 0 And runMamuteSmoke = 0 And runMamuteDiag = 0 And runEditSmoke = 0 And runKeysSmoke = 0 Then
         EditorOpenFromPath(argText)
         argIndex += 1
         While Len(Command(argIndex)) > 0
@@ -96,6 +147,20 @@ If runMamuteDiag <> 0 Then
     DbShutdown()
     EditorShutdown()
     End 0
+End If
+
+If runEditSmoke <> 0 Then
+    Dim editSmokeReport As String
+    Dim editSmokeOk As Integer = EditorRunTextEditSmokeTest(editSmokeReport)
+    Print editSmokeReport
+    EditorSaveAllToDb()
+    DbShutdown()
+    EditorShutdown()
+    If editSmokeOk <> 0 Then
+        End 0
+    Else
+        End 1
+    End If
 End If
 
 Do While running <> 0

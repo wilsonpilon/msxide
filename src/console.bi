@@ -27,5 +27,8 @@ Declare Sub ConsoleGetLastFrameStats(ByRef charCalls As UInteger, ByRef attrCall
 Declare Sub ConsoleGetTotalStats(ByRef charCalls As UInteger, ByRef attrCalls As UInteger, ByRef fillCalls As UInteger)
 Declare Sub ConsoleGetMouseHud(ByRef available As Integer, ByRef enabled As Integer, ByRef x As Integer, ByRef y As Integer)
 Declare Function ConsoleUtf8ToActiveCp(ByRef txt As String) As String
+Declare Sub ConsoleSetClipboardText(ByRef text As String)
+Declare Function ConsoleGetClipboardText() As String
+Declare Function ConsoleRunKeyTranslationSmokeTest(ByRef report As String) As Integer
 
 #endif

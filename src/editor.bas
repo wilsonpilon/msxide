@@ -18,6 +18,13 @@ Dim Shared forceFullRedraw As Integer = 1
 Dim Shared uiW As Integer = 100
 Dim Shared uiH As Integer = 35
 
+' Clipboard e ultima busca/substituicao do editor de textos - um unico
+' global pro processo inteiro (igual a area de transferencia real), nao por
+' documento, pra poder copiar de uma janela e colar em outra.
+Dim Shared gClipboard As String
+Dim Shared gFindText As String
+Dim Shared gReplaceText As String
+
 Const RENDER_CURSOR = 1
 Const RENDER_LINE = 2
 Const RENDER_CLIENT = 3
@@ -68,6 +75,8 @@ Const MENU_CMD_NEW_MD = 44
 Const MENU_CMD_HELP_MARKDOWN = 45
 Const MENU_CMD_NEW_FONT = 46
 Const MENU_CMD_NEW_SPRITE = 47
+Const MENU_CMD_CFG_EDITOR = 48
+Const MENU_CMD_INSERT_CHARMAP = 49
 
 Const MENU_VIEW_NONE = 0
 Const MENU_VIEW_FILE = 1
@@ -76,6 +85,7 @@ Const MENU_VIEW_CONFIG = 3
 Const MENU_VIEW_COMPILE = 4
 Const MENU_VIEW_REFERENCE = 5
 Const MENU_VIEW_MAMUTE = 6
+Const MENU_VIEW_INSERT = 7
 
 Const HELP_THEME_CLASSIC = 1
 Const HELP_THEME_EDITORIAL = 2
@@ -90,6 +100,11 @@ Dim Shared perfFrameCount As Integer
 Dim Shared perfCharSamples(1 To MAX_PERF_FRAMES) As UInteger
 Dim Shared perfAttrSamples(1 To MAX_PERF_FRAMES) As UInteger
 Dim Shared perfFillSamples(1 To MAX_PERF_FRAMES) As UInteger
+' Item destacado (1-based) dentro do menu suspenso aberto no momento -
+' navegado com Seta cima/baixo, confirmado com Enter. Zerado automaticamente
+' sempre que o menu aberto muda (ver o Static dentro de DrawMenuBar).
+Dim Shared menuHighlightIndex As Integer = 1
+
 Dim Shared dragMode As Integer
 Dim Shared dragOffsetX As Integer
 Dim Shared dragOffsetY As Integer
@@ -215,6 +230,12 @@ Const COL_DEFINE = 5
 Const COL_SYMBOL = 7
 Const COL_LITERAL = 6
 Const COL_VARIABLE = 2
+Const COL_SEL_BG = 1
+
+Const UNDO_KIND_NONE = 0
+Const UNDO_KIND_INSERT = 1
+Const UNDO_KIND_BACKSPACE = 2
+Const UNDO_KIND_DELETE = 3
 
 Const LIST_CLASSIC_CMDS = "|AS|AUTO|BASE|BEEP|BLOAD|BSAVE|CALL|CIRCLE|CLEAR|CLOAD|CLOSE|CLS|CMD|COLOR|CONT|COPY|CSAVE|CSRLIN|DATA|DEF|DEFDBL|DEFINT|DEFSNG|DEFSTR|DELETE|DIM|DRAW|END|ERASE|ERROR|FIELD|FILES|FOR|GET|GOSUB|GOTO|IF|INPUT|IPL|KEY|KILL|LET|LFILES|LINE|LIST|LLIST|LOAD|LOCATE|LPRINT|LSET|MAX|MERGE|MOTOR|NAME|NEW|NEXT|OFF|ON|OPEN|OUT|PAINT|POKE|PRESET|PRINT|PSET|PUT|READ|RENUM|RESTORE|RESUME|RETURN|RSET|RUN|SAVE|SCREEN|SET|SOUND|SPRITE|STEP|STOP|SWAP|THEN|TIME|TO|TROFF|TRON|USING|VDP|VPOKE|WAIT|WIDTH|"
 Const LIST_CLASSIC_JUMPS = "|AUTO|DELETE|ELSE|ERL|GOSUB|GOTO|LLIST|LIST|RENUM|RESTORE|RESUME|RETURN|RUN|THEN|"
@@ -269,6 +290,7 @@ Declare Sub DrawMamuteInputLine(ByVal docIndex As Integer, ByVal rowY As Integer
 Declare Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As Integer, outLines() As String, outColors() As UByte, outBgs() As UByte, ByRef outCount As Integer, indexTargets() As Integer, indexEntryLine() As Integer, ByRef indexCount As Integer)
 Declare Sub EnsureHelpRerender(ByRef d As Document)
 Declare Sub ShowConfigForm(ByRef titleText As String, ByRef configGroup As String)
+Declare Sub ShowMsxCharPickerDialog()
 Declare Function PromptConfigExitAction(ByRef titleText As String) As Integer
 Declare Sub CompileActiveDocument(ByVal compileMode As Integer)
 Declare Sub ShowInfoDialog(ByRef titleText As String, ByRef msg1 As String, ByRef msg2 As String = "")
@@ -2066,6 +2088,35 @@ Private Function OpenMsxDictFromActiveIndexCursor() As Integer
     Return -1
 End Function
 
+' Retorna as colunas (1-based, no texto completo da linha - nao na tela)
+' cobertas pela selecao ativa nesta lineIndex, em colFrom/colTo. colTo <
+' colFrom significa "nada selecionado nesta linha". Quando a linha inteira
+' faz parte de uma selecao multi-linha, colTo vai ate Len()+1 pra pintar
+' tambem uma celula "fantasma" representando a quebra de linha incluida na
+' selecao (igual todo editor GUI faz).
+Private Sub GetSelectionColsForLine(ByRef d As Document, ByVal lineIndex As Integer, ByRef colFrom As Integer, ByRef colTo As Integer)
+    colFrom = 1
+    colTo = 0
+    If d.selActive = 0 Then Exit Sub
+    If d.selAnchorX = d.cursorX And d.selAnchorY = d.cursorY Then Exit Sub
+
+    Dim sy As Integer, sx As Integer, ey As Integer, ex As Integer
+    If d.selAnchorY < d.cursorY Or (d.selAnchorY = d.cursorY And d.selAnchorX < d.cursorX) Then
+        sy = d.selAnchorY: sx = d.selAnchorX: ey = d.cursorY: ex = d.cursorX
+    Else
+        sy = d.cursorY: sx = d.cursorX: ey = d.selAnchorY: ex = d.selAnchorX
+    End If
+
+    If lineIndex < sy Or lineIndex > ey Then Exit Sub
+
+    If lineIndex = sy Then colFrom = sx Else colFrom = 1
+    If lineIndex = ey Then
+        colTo = ex - 1
+    Else
+        colTo = Len(d.lines(lineIndex)) + 1
+    End If
+End Sub
+
 Private Sub PaintRange(colors() As UByte, ByVal startPos As Integer, ByVal endPos As Integer, ByVal colorCode As UByte, ByVal maxLen As Integer)
     Dim i As Integer
     If startPos < 1 Then startPos = 1
@@ -2288,8 +2339,17 @@ Private Sub DrawSyntaxLine(ByVal docIndex As Integer, ByVal lineIndex As Integer
         i += 1
     Wend
 
+    Dim selFrom As Integer, selTo As Integer
+    GetSelectionColsForLine(d, lineIndex, selFrom, selTo)
+    Dim scrFrom As Integer = selFrom - d.scrollX
+    Dim scrTo As Integer = selTo - d.scrollX
+    If scrFrom < 1 Then scrFrom = 1
+    If scrTo > clientW Then scrTo = clientW
+
     For i = 1 To clientW
-        ConsoleSetCell(d.winX + i, rowY, Asc(Mid(padded, i, 1)), colors(i), 0)
+        Dim cellBg As UByte = 0
+        If i >= scrFrom And i <= scrTo Then cellBg = COL_SEL_BG
+        ConsoleSetCell(d.winX + i, rowY, Asc(Mid(padded, i, 1)), colors(i), cellBg)
     Next i
 End Sub
 
@@ -2973,7 +3033,140 @@ Private Sub DrawScrollBars(ByVal docIndex As Integer)
     ConsoleSetCell(d.winX + d.winW - 2, d.winY + d.winH - 2, 206, IIf(isActive, 14, 8), 0)
 End Sub
 
+' Ordem esquerda->direita igual a' barra de menu na tela - usada pra Seta
+' esquerda/direita andar entre os menus do topo com o suspenso aberto.
+Private Function NextMenuView(ByVal current As Integer, ByVal stepDir As Integer) As Integer
+    Dim order(1 To 7) As Integer
+    order(1) = MENU_VIEW_FILE
+    order(2) = MENU_VIEW_CONFIG
+    order(3) = MENU_VIEW_COMPILE
+    order(4) = MENU_VIEW_REFERENCE
+    order(5) = MENU_VIEW_MAMUTE
+    order(6) = MENU_VIEW_HELP
+    order(7) = MENU_VIEW_INSERT
+
+    Dim idx As Integer = 1
+    Dim i As Integer
+    For i = 1 To 7
+        If order(i) = current Then idx = i
+    Next i
+
+    idx += stepDir
+    If idx < 1 Then idx = 7
+    If idx > 7 Then idx = 1
+    Return order(idx)
+End Function
+
+Private Function GetMenuItemCount(ByVal menuView As Integer) As Integer
+    Select Case menuView
+        Case MENU_VIEW_FILE : Return 14
+        Case MENU_VIEW_CONFIG : Return 6
+        Case MENU_VIEW_COMPILE : Return 5
+        Case MENU_VIEW_HELP : Return 9
+        Case MENU_VIEW_REFERENCE : Return 10
+        Case MENU_VIEW_MAMUTE : Return 1
+        Case MENU_VIEW_INSERT : Return 1
+    End Select
+    Return 0
+End Function
+
+' Mapeia (menu, indice do item na ordem de cima pra baixo na tela) pro
+' MENU_CMD_* correspondente - usado tanto por Enter (confirma o item em
+' destaque) quanto por DrawMenuBar (decidir qual linha pintar destacada).
+Private Function GetMenuCommandAtIndex(ByVal menuView As Integer, ByVal idx As Integer) As Integer
+    Select Case menuView
+        Case MENU_VIEW_FILE
+            Select Case idx
+                Case 1 : Return MENU_CMD_NEW
+                Case 2 : Return MENU_CMD_NEW_ASMSX
+                Case 3 : Return MENU_CMD_NEW_MD
+                Case 4 : Return MENU_CMD_NEW_FONT
+                Case 5 : Return MENU_CMD_NEW_SPRITE
+                Case 6 : Return MENU_CMD_OPEN
+                Case 7 : Return MENU_CMD_SAVE
+                Case 8 : Return MENU_CMD_SAVE_AS
+                Case 9 : Return MENU_CMD_CLOSE
+                Case 10 : Return MENU_CMD_EXIT
+                Case 11 : Return MENU_CMD_PROJECT_NEW
+                Case 12 : Return MENU_CMD_PROJECT_OPEN
+                Case 13 : Return MENU_CMD_PROJECT_SAVE
+                Case 14 : Return MENU_CMD_PROJECT_CLOSE
+            End Select
+        Case MENU_VIEW_CONFIG
+            Select Case idx
+                Case 1 : Return MENU_CMD_CFG_BADIG
+                Case 2 : Return MENU_CMD_CFG_MSX
+                Case 3 : Return MENU_CMD_CFG_EMULATOR
+                Case 4 : Return MENU_CMD_CFG_MAMUTE_MEM
+                Case 5 : Return MENU_CMD_CFG_PRINTER
+                Case 6 : Return MENU_CMD_CFG_EDITOR
+            End Select
+        Case MENU_VIEW_COMPILE
+            Select Case idx
+                Case 1 : Return MENU_CMD_COMPILE_MSX
+                Case 2 : Return MENU_CMD_COMPILE_DIGNIFIED
+                Case 3 : Return MENU_CMD_COMPILE_TOKENIZE_AMX
+                Case 4 : Return MENU_CMD_COMPILE_RUN_EMU
+                Case 5 : Return MENU_CMD_COMPILE_OPEN_LOG
+            End Select
+        Case MENU_VIEW_HELP
+            Select Case idx
+                Case 1 : Return MENU_CMD_HELP_BASIC
+                Case 2 : Return MENU_CMD_HELP_DIGNIFIED
+                Case 3 : Return MENU_CMD_HELP_BATOKEN
+                Case 4 : Return MENU_CMD_HELP_ASMSX
+                Case 5 : Return MENU_CMD_HELP_MSX_DICT
+                Case 6 : Return MENU_CMD_HELP_EDITOR
+                Case 7 : Return MENU_CMD_MAMUTE_HELP
+                Case 8 : Return MENU_CMD_HELP_MARKDOWN
+                Case 9 : Return MENU_CMD_HELP_THEME
+            End Select
+        Case MENU_VIEW_REFERENCE
+            Select Case idx
+                Case 1 : Return MENU_CMD_REF_REDBOOK
+                Case 2 : Return MENU_CMD_REF_NESTOR
+                Case 3 : Return MENU_CMD_REF_HANDBOOK
+                Case 4 : Return MENU_CMD_REF_MANUALS
+                Case 5 : Return MENU_CMD_REF_BIOSCALLS
+                Case 6 : Return MENU_CMD_REF_HARDWARE
+                Case 7 : Return MENU_CMD_REF_BIOSDOC
+                Case 8 : Return MENU_CMD_REF_SEETRACKER
+                Case 9 : Return MENU_CMD_REF_OPENMSX
+                Case 10 : Return MENU_CMD_REF_MSXBAS2ROM
+            End Select
+        Case MENU_VIEW_MAMUTE
+            If idx = 1 Then Return MENU_CMD_MAMUTE_OPEN
+        Case MENU_VIEW_INSERT
+            If idx = 1 Then Return MENU_CMD_INSERT_CHARMAP
+    End Select
+    Return MENU_CMD_NONE
+End Function
+
+' Desenha uma linha de item dentro de uma caixa de menu suspensa, com o
+' realce (fundo azul) se for o item em destaque no momento (navegacao por
+' Seta cima/baixo).
+Private Sub DrawMenuItemRow(ByVal x As Integer, ByVal y As Integer, ByRef innerText As String, ByVal itemIndex As Integer, ByVal highlightIdx As Integer)
+    Dim fg As UByte = 0
+    Dim bg As UByte = 7
+    If itemIndex = highlightIdx Then
+        fg = 15
+        bg = 1
+    End If
+    ConsoleWriteText(x, y, Chr(186) & innerText & Chr(186), fg, bg)
+End Sub
+
 Private Sub DrawMenuBar(ByVal menuOpen As Integer)
+    ' Sempre que o menu suspenso aberto muda (troquei de menu, fechei,
+    ' acabei de abrir) o destaque de navegacao volta pro primeiro item -
+    ' Static preserva o ultimo valor visto entre chamadas sem precisar
+    ' mexer em todo canto que muda menuOpen (F-teclas, Alt+letra, mouse,
+    ' Seta esquerda/direita).
+    Static lastMenuOpen As Integer = -1
+    If menuOpen <> lastMenuOpen Then
+        menuHighlightIndex = 1
+        lastMenuOpen = menuOpen
+    End If
+
     ConsoleWriteText(1, 1, String(uiW, " "), 15, 1)
 
     If menuOpen = MENU_VIEW_FILE Then
@@ -3012,69 +3205,80 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
         ConsoleWriteText(53, 1, "Ajuda", 15, 1)
     End If
 
+    If menuOpen = MENU_VIEW_INSERT Then
+        ConsoleWriteText(60, 1, "Inserir", 0, 7)
+    Else
+        ConsoleWriteText(60, 1, "Inserir", 15, 1)
+    End If
+
     If menuOpen = MENU_VIEW_FILE Then
         ConsoleWriteText(2, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(2, 3, Chr(186) & " N Novo Basic Dignified    F4   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 4, Chr(186) & " Z Novo asMSX                   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 5, Chr(186) & " M Novo Arquivo MD              " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 6, Chr(186) & " G Novo Editor de Fontes        " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 7, Chr(186) & " Y Novo Banco de Sprites        " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 8, Chr(186) & " O Abrir...                F3   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 9, Chr(186) & " S Salvar                  F2   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 10, Chr(186) & " A Salvar Como                  " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 11, Chr(186) & " F Fechar                  F5   " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 12, Chr(186) & " X Exit                         " & Chr(186), 0, 7)
+        DrawMenuItemRow(2, 3, " N Novo Basic Dignified    F4   ", 1, menuHighlightIndex)
+        DrawMenuItemRow(2, 4, " Z Novo asMSX                   ", 2, menuHighlightIndex)
+        DrawMenuItemRow(2, 5, " M Novo Arquivo MD              ", 3, menuHighlightIndex)
+        DrawMenuItemRow(2, 6, " G Novo Editor de Fontes        ", 4, menuHighlightIndex)
+        DrawMenuItemRow(2, 7, " Y Novo Banco de Sprites        ", 5, menuHighlightIndex)
+        DrawMenuItemRow(2, 8, " O Abrir...                F3   ", 6, menuHighlightIndex)
+        DrawMenuItemRow(2, 9, " S Salvar                  F2   ", 7, menuHighlightIndex)
+        DrawMenuItemRow(2, 10, " A Salvar Como                  ", 8, menuHighlightIndex)
+        DrawMenuItemRow(2, 11, " F Fechar                  F5   ", 9, menuHighlightIndex)
+        DrawMenuItemRow(2, 12, " X Exit                         ", 10, menuHighlightIndex)
         ConsoleWriteText(2, 13, Chr(186) & "                                " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 14, Chr(186) & " P Novo Projeto                 " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 15, Chr(186) & " J Abrir Projeto...             " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 16, Chr(186) & " K Salvar Projeto               " & Chr(186), 0, 7)
-        ConsoleWriteText(2, 17, Chr(186) & " W Fechar Projeto               " & Chr(186), 0, 7)
+        DrawMenuItemRow(2, 14, " P Novo Projeto                 ", 11, menuHighlightIndex)
+        DrawMenuItemRow(2, 15, " J Abrir Projeto...             ", 12, menuHighlightIndex)
+        DrawMenuItemRow(2, 16, " K Salvar Projeto               ", 13, menuHighlightIndex)
+        DrawMenuItemRow(2, 17, " W Fechar Projeto               ", 14, menuHighlightIndex)
         ConsoleWriteText(2, 18, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_CONFIG Then
         ConsoleWriteText(11, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(11, 3, Chr(186) & " B Basic Dignified               " & Chr(186), 0, 7)
-        ConsoleWriteText(11, 4, Chr(186) & " M MSX Basic                     " & Chr(186), 0, 7)
-        ConsoleWriteText(11, 5, Chr(186) & " E Emulador                      " & Chr(186), 0, 7)
-        ConsoleWriteText(11, 6, Chr(186) & Left(" A Mamute (Memoria)" & Space(32), 32) & Chr(186), 0, 7)
-        ConsoleWriteText(11, 7, Chr(186) & Left(" I Impressora" & Space(32), 32) & Chr(186), 0, 7)
-        ConsoleWriteText(11, 8, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
+        DrawMenuItemRow(11, 3, " B Basic Dignified               ", 1, menuHighlightIndex)
+        DrawMenuItemRow(11, 4, " M MSX Basic                     ", 2, menuHighlightIndex)
+        DrawMenuItemRow(11, 5, " E Emulador                      ", 3, menuHighlightIndex)
+        DrawMenuItemRow(11, 6, Left(" A Mamute (Memoria)" & Space(32), 32), 4, menuHighlightIndex)
+        DrawMenuItemRow(11, 7, Left(" I Impressora" & Space(32), 32), 5, menuHighlightIndex)
+        DrawMenuItemRow(11, 8, Left(" D Editor" & Space(32), 32), 6, menuHighlightIndex)
+        ConsoleWriteText(11, 9, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_COMPILE Then
         ConsoleWriteText(23, 2, Chr(201) & String(42, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(23, 3, Chr(186) & " M MSX-Basic (gera .amx + .bmx)             " & Chr(186), 0, 7)
-        ConsoleWriteText(23, 4, Chr(186) & " D Basic Dignified (gera .amx)              " & Chr(186), 0, 7)
-        ConsoleWriteText(23, 5, Chr(186) & " A Tokenizar AMX atual (forca modo classico)" & Chr(186), 0, 7)
-        ConsoleWriteText(23, 6, Chr(186) & " E Compilar + Executar no emulador          " & Chr(186), 0, 7)
-        ConsoleWriteText(23, 7, Chr(186) & " L Abrir log de compilacao                  " & Chr(186), 0, 7)
+        DrawMenuItemRow(23, 3, " M MSX-Basic (gera .amx + .bmx)             ", 1, menuHighlightIndex)
+        DrawMenuItemRow(23, 4, " D Basic Dignified (gera .amx)              ", 2, menuHighlightIndex)
+        DrawMenuItemRow(23, 5, " A Tokenizar AMX atual (forca modo classico)", 3, menuHighlightIndex)
+        DrawMenuItemRow(23, 6, " E Compilar + Executar no emulador          ", 4, menuHighlightIndex)
+        DrawMenuItemRow(23, 7, " L Abrir log de compilacao                  ", 5, menuHighlightIndex)
         ConsoleWriteText(23, 8, Chr(200) & String(42, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_HELP Then
         ConsoleWriteText(53, 2, Chr(201) & String(34, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(53, 3, Chr(186) & " B Basic Dignified                  " & Chr(186), 0, 7)
-        ConsoleWriteText(53, 4, Chr(186) & " D Dignified                        " & Chr(186), 0, 7)
-        ConsoleWriteText(53, 5, Chr(186) & " T BaToken                          " & Chr(186), 0, 7)
-        ConsoleWriteText(53, 6, Chr(186) & " A asMSX                            " & Chr(186), 0, 7)
-        ConsoleWriteText(53, 7, Chr(186) & " M MSX BASIC Dictionary             " & Chr(186), 0, 7)
-        ConsoleWriteText(53, 8, Chr(186) & " E Editor                           " & Chr(186), 0, 7)
-        ConsoleWriteText(53, 9, Chr(186) & " N Mamute Assembler                 " & Chr(186), 0, 7)
-        ConsoleWriteText(53, 10, Chr(186) & " K Markdown                         " & Chr(186), 0, 7)
-        ConsoleWriteText(53, 11, Chr(186) & IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    ") & Chr(186), 0, 7)
+        DrawMenuItemRow(53, 3, " B Basic Dignified                  ", 1, menuHighlightIndex)
+        DrawMenuItemRow(53, 4, " D Dignified                        ", 2, menuHighlightIndex)
+        DrawMenuItemRow(53, 5, " T BaToken                          ", 3, menuHighlightIndex)
+        DrawMenuItemRow(53, 6, " A asMSX                            ", 4, menuHighlightIndex)
+        DrawMenuItemRow(53, 7, " M MSX BASIC Dictionary             ", 5, menuHighlightIndex)
+        DrawMenuItemRow(53, 8, " E Editor                           ", 6, menuHighlightIndex)
+        DrawMenuItemRow(53, 9, " N Mamute Assembler                 ", 7, menuHighlightIndex)
+        DrawMenuItemRow(53, 10, " K Markdown                         ", 8, menuHighlightIndex)
+        DrawMenuItemRow(53, 11, IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    "), 9, menuHighlightIndex)
         ConsoleWriteText(53, 12, Chr(200) & String(34, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_REFERENCE Then
         ConsoleWriteText(33, 2, Chr(201) & String(40, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(33, 3, Chr(186) & Left(" R The MSX Red Book" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(33, 4, Chr(186) & Left(" N Nestor Basic" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(33, 5, Chr(186) & Left(" T MSX2 Technical Handbook" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(33, 6, Chr(186) & Left(" M Manuais MSX" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(33, 7, Chr(186) & Left(" C BIOS Chamadas" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(33, 8, Chr(186) & Left(" W BIOS Hardware" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(33, 9, Chr(186) & Left(" D BIOS Documentacao" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(33, 10, Chr(186) & Left(" S SEE Tracker" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(33, 11, Chr(186) & Left(" O openMSX" & Space(40), 40) & Chr(186), 0, 7)
-        ConsoleWriteText(33, 12, Chr(186) & Left(" X MSXBAS2ROM" & Space(40), 40) & Chr(186), 0, 7)
+        DrawMenuItemRow(33, 3, Left(" R The MSX Red Book" & Space(40), 40), 1, menuHighlightIndex)
+        DrawMenuItemRow(33, 4, Left(" N Nestor Basic" & Space(40), 40), 2, menuHighlightIndex)
+        DrawMenuItemRow(33, 5, Left(" T MSX2 Technical Handbook" & Space(40), 40), 3, menuHighlightIndex)
+        DrawMenuItemRow(33, 6, Left(" M Manuais MSX" & Space(40), 40), 4, menuHighlightIndex)
+        DrawMenuItemRow(33, 7, Left(" C BIOS Chamadas" & Space(40), 40), 5, menuHighlightIndex)
+        DrawMenuItemRow(33, 8, Left(" W BIOS Hardware" & Space(40), 40), 6, menuHighlightIndex)
+        DrawMenuItemRow(33, 9, Left(" D BIOS Documentacao" & Space(40), 40), 7, menuHighlightIndex)
+        DrawMenuItemRow(33, 10, Left(" S SEE Tracker" & Space(40), 40), 8, menuHighlightIndex)
+        DrawMenuItemRow(33, 11, Left(" O openMSX" & Space(40), 40), 9, menuHighlightIndex)
+        DrawMenuItemRow(33, 12, Left(" X MSXBAS2ROM" & Space(40), 40), 10, menuHighlightIndex)
         ConsoleWriteText(33, 13, Chr(200) & String(40, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_MAMUTE Then
         ConsoleWriteText(45, 2, Chr(201) & String(30, Chr(205)) & Chr(187), 15, 1)
-        ConsoleWriteText(45, 3, Chr(186) & Left(" A Abrir Mamute Assembler" & Space(30), 30) & Chr(186), 0, 7)
+        DrawMenuItemRow(45, 3, Left(" A Abrir Mamute Assembler" & Space(30), 30), 1, menuHighlightIndex)
         ConsoleWriteText(45, 4, Chr(200) & String(30, Chr(205)) & Chr(188), 15, 1)
+    ElseIf menuOpen = MENU_VIEW_INSERT Then
+        ConsoleWriteText(60, 2, Chr(201) & String(28, Chr(205)) & Chr(187), 15, 1)
+        DrawMenuItemRow(60, 3, Left(" C Caracteres Especiais MSX" & Space(28), 28), 1, menuHighlightIndex)
+        ConsoleWriteText(60, 4, Chr(200) & String(28, Chr(205)) & Chr(188), 15, 1)
     End If
 End Sub
 
@@ -7397,7 +7601,7 @@ Sub ShowConfigForm(ByRef titleText As String, ByRef configGroup As String)
         AddConfigField(fields(), fieldCount, "cfg.badig.line_start", "Line Start", CFG_KIND_INT, "10", "Primeira linha", "", -1, 1, 65535)
         AddConfigField(fields(), fieldCount, "cfg.badig.line_step", "Line Step", CFG_KIND_INT, "10", "Incremento", "", -1, 1, 9999)
         AddConfigField(fields(), fieldCount, "cfg.badig.rem_header", "REM Header", CFG_KIND_TEXT, "", "Texto de cabecalho")
-        AddConfigField(fields(), fieldCount, "cfg.badig.strip_spaces", "Strip Spaces", CFG_KIND_BOOL, "False", "Remover espacos extras")
+        AddConfigField(fields(), fieldCount, "cfg.badig.strip_spaces", "Strip Spaces", CFG_KIND_BOOL, "False", "Remover todos os espacos fora de strings")
         AddConfigField(fields(), fieldCount, "cfg.badig.capitalize_all", "Capitalize All", CFG_KIND_BOOL, "False", "Forcar maiusculas")
         AddConfigField(fields(), fieldCount, "cfg.badig.translate", "Translate", CFG_KIND_BOOL, "False", "Traduzir palavras-chave")
         AddConfigField(fields(), fieldCount, "cfg.badig.print_report", "Print Report", CFG_KIND_BOOL, "False", "Resumo no fim")
@@ -7433,6 +7637,8 @@ Sub ShowConfigForm(ByRef titleText As String, ByRef configGroup As String)
         AddConfigField(fields(), fieldCount, "cfg.emulator.windows.emulator_path", "Windows Emulator Path", CFG_KIND_PATH, "PATH_TO\\openmsx.exe", "Caminho do openmsx.exe")
         AddConfigField(fields(), fieldCount, "cfg.emulator.darwin.emulator_path", "Darwin Emulator Path", CFG_KIND_PATH, "PATH_TO/openMSX.app", "Caminho no macOS")
         AddConfigField(fields(), fieldCount, "cfg.emulator.linux.emulator_path", "Linux Emulator Path", CFG_KIND_PATH, "PATH_TO/openMSX", "Caminho no Linux")
+    ElseIf grp = "editor" Then
+        AddConfigField(fields(), fieldCount, "cfg.editor.indent_size", "Indent Size", CFG_KIND_INT, "4", "Quantidade de espacos inseridos pelo TAB", "", -1, 1, 16)
     ElseIf grp = "printer" Then
         AddConfigField(fields(), fieldCount, "cfg.mamute.printer.paper", "Papel", CFG_KIND_ENUM, "a4", "A4 ou continuo (formulario CPD picotado)", "a4|continuous")
         AddConfigField(fields(), fieldCount, "cfg.mamute.printer.font", "Fonte", CFG_KIND_ENUM, "normal", "Densidade: normal (10 cps) ou condensada (17 cps)", "normal|condensed")
@@ -7688,6 +7894,8 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                     Return MENU_CMD_CFG_MAMUTE_MEM
                 Case "I"
                     Return MENU_CMD_CFG_PRINTER
+                Case "D"
+                    Return MENU_CMD_CFG_EDITOR
             End Select
         End If
         Return MENU_CMD_NONE
@@ -7752,6 +7960,16 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
             Select Case UCase(keyText)
                 Case "A"
                     Return MENU_CMD_MAMUTE_OPEN
+            End Select
+        End If
+        Return MENU_CMD_NONE
+    End If
+
+    If menuView = MENU_VIEW_INSERT Then
+        If Len(keyText) = 1 Then
+            Select Case UCase(keyText)
+                Case "C"
+                    Return MENU_CMD_INSERT_CHARMAP
             End Select
         End If
         Return MENU_CMD_NONE
@@ -7962,11 +8180,734 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             OpenHelpDocument("Mamute Assembler", "dbhelp:MAMUTE|docs\help\mamute.md")
         Case MENU_CMD_CFG_PRINTER
             ShowConfigForm("Impressora", "printer")
+        Case MENU_CMD_CFG_EDITOR
+            ShowConfigForm("Editor", "editor")
+        Case MENU_CMD_INSERT_CHARMAP
+            ShowMsxCharPickerDialog()
         Case MENU_CMD_HELP_MARKDOWN
             OpenHelpDocument("Markdown", "dbhelp:MARKDOWN|docs\help\markdown.md")
     End Select
 
     menuOpen = 0
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
+End Sub
+
+' ===========================================================================
+' Selecao de texto, clipboard, undo/redo, navegacao por palavra/paragrafo/
+' tela e localizar/substituir - o "motor" novo do editor de textos, ao
+' estilo do Microsoft Edit (setas com Shift selecionam, Ctrl anda por
+' palavra/paragrafo, Ctrl+C/X/V/Z/Y sao copiar/recortar/colar/desfazer/
+' refazer). So se aplica a documentos de texto de verdade (nao ajuda,
+' nao terminal Mamute, nao editor de pixel, nao preview .md somente-leitura)
+' - HandleEditorKey ja garante isso antes de chamar qualquer coisa aqui.
+' ===========================================================================
+
+Private Function HasSelection(ByRef d As Document) As Integer
+    If d.selActive = 0 Then Return 0
+    If d.selAnchorX = d.cursorX And d.selAnchorY = d.cursorY Then Return 0
+    Return -1
+End Function
+
+Private Function GetSelectionOrdered(ByRef d As Document, ByRef sy As Integer, ByRef sx As Integer, ByRef ey As Integer, ByRef ex As Integer) As Integer
+    If HasSelection(d) = 0 Then Return 0
+    If d.selAnchorY < d.cursorY Or (d.selAnchorY = d.cursorY And d.selAnchorX < d.cursorX) Then
+        sy = d.selAnchorY: sx = d.selAnchorX: ey = d.cursorY: ex = d.cursorX
+    Else
+        sy = d.cursorY: sx = d.cursorX: ey = d.selAnchorY: ex = d.selAnchorX
+    End If
+    Return -1
+End Function
+
+Private Sub SelClear(ByRef d As Document)
+    d.selActive = 0
+End Sub
+
+Private Sub SelBeginOrKeep(ByRef d As Document)
+    If d.selActive = 0 Then
+        d.selAnchorX = d.cursorX
+        d.selAnchorY = d.cursorY
+        d.selActive = -1
+    End If
+End Sub
+
+Private Function GetSelectedText(ByRef d As Document) As String
+    Dim sy As Integer, sx As Integer, ey As Integer, ex As Integer
+    If GetSelectionOrdered(d, sy, sx, ey, ex) = 0 Then Return ""
+
+    If sy = ey Then Return Mid(d.lines(sy), sx, ex - sx)
+
+    Dim s As String = Mid(d.lines(sy), sx) & Chr(10)
+    Dim i As Integer
+    For i = sy + 1 To ey - 1
+        s &= d.lines(i) & Chr(10)
+    Next i
+    s &= Left(d.lines(ey), ex - 1)
+    Return s
+End Function
+
+' Apaga a selecao ativa (bruto - quem chama e' responsavel por checkpoint
+' de undo antes, se for o caso). Deixa o cursor no inicio da selecao.
+Private Sub DeleteSelectionRange(ByRef d As Document)
+    Dim sy As Integer, sx As Integer, ey As Integer, ex As Integer
+    If GetSelectionOrdered(d, sy, sx, ey, ex) = 0 Then Exit Sub
+
+    If d.isMarkdown <> 0 Then d.mdPreviewDirty = -1
+
+    If sy = ey Then
+        Dim lineText As String = d.lines(sy)
+        d.lines(sy) = Left(lineText, sx - 1) & Mid(lineText, ex)
+    Else
+        d.lines(sy) = Left(d.lines(sy), sx - 1) & Mid(d.lines(ey), ex)
+        Dim removeCount As Integer = ey - sy
+        Dim i As Integer
+        For i = sy + 1 To d.lineCount - removeCount
+            d.lines(i) = d.lines(i + removeCount)
+        Next i
+        For i = d.lineCount - removeCount + 1 To d.lineCount
+            d.lines(i) = ""
+        Next i
+        d.lineCount -= removeCount
+    End If
+
+    d.cursorX = sx
+    d.cursorY = sy
+    d.selActive = 0
+End Sub
+
+' --- Undo/redo -------------------------------------------------------------
+
+Private Function SerializeDocText(ByRef d As Document) As String
+    Dim s As String = ""
+    Dim i As Integer
+    For i = 1 To d.lineCount
+        If i > 1 Then s &= Chr(10)
+        s &= d.lines(i)
+    Next i
+    Return s
+End Function
+
+' lineCountIn dirige exatamente quantos pedacos separar (em vez de confiar
+' so' nas quebras Chr(10) achadas) - assim linhas em branco no FIM do buffer
+' nao se perdem na volta (uma string terminando em "...\n\n" e' ambigua sem
+' saber de antemao quantas linhas existiam).
+Private Sub DeserializeDocText(ByRef d As Document, ByRef text As String, ByVal lineCountIn As Integer)
+    d.lineCount = 0
+    If lineCountIn < 1 Then lineCountIn = 1
+    If lineCountIn > MAX_LINES Then lineCountIn = MAX_LINES
+
+    Dim p As Integer = 1
+    Dim n As Integer = Len(text)
+    Dim idx As Integer = 0
+    While idx < lineCountIn
+        idx += 1
+        Dim br As Integer = InStr(p, text, Chr(10))
+        Dim one As String
+        If br = 0 Then
+            one = Mid(text, p)
+            p = n + 1
+        Else
+            one = Mid(text, p, br - p)
+            p = br + 1
+        End If
+        d.lineCount += 1
+        d.lines(d.lineCount) = one
+    Wend
+End Sub
+
+Private Sub PushUndoSnapshot(ByRef d As Document)
+    Dim snap As UndoSnapshot
+    snap.text = SerializeDocText(d)
+    snap.lineCount = d.lineCount
+    snap.cursorX = d.cursorX
+    snap.cursorY = d.cursorY
+
+    If d.undoTop >= MAX_UNDO Then
+        Dim i As Integer
+        For i = 1 To MAX_UNDO - 1
+            d.undoStack(i) = d.undoStack(i + 1)
+        Next i
+        d.undoStack(MAX_UNDO) = snap
+    Else
+        d.undoTop += 1
+        d.undoStack(d.undoTop) = snap
+    End If
+End Sub
+
+' Chamado ANTES de cada mutacao de digitacao (insere char/backspace/apaga).
+' Decide se essa tecla continua a "corrida" de edicao em andamento (varios
+' caracteres digitados/apagados em sequencia viram UM nivel de undo, igual
+' editor moderno) ou se abre um nivel novo - continua so' se for o mesmo
+' tipo de edicao E o cursor estiver exatamente onde a edicao anterior da
+' mesma corrida deixou (senao o cursor pulou de lugar no meio, ex.: usuario
+' moveu o cursor com seta entre uma tecla e outra).
+Private Sub UndoBeforeEdit(ByRef d As Document, ByVal kind As Integer)
+    Dim isContinuation As Integer = 0
+    If kind <> 0 And d.undoRunKind = kind And d.undoRunAtX = d.cursorX And d.undoRunAtY = d.cursorY Then
+        isContinuation = -1
+    End If
+
+    If isContinuation = 0 Then
+        PushUndoSnapshot(d)
+        d.redoTop = 0
+        d.undoRunKind = kind
+    End If
+End Sub
+
+' Sempre chamado como bloco unico "empurra estado atual pro undo, limpa
+' redo, encerra qualquer corrida em andamento" - usado por operacoes que
+' nunca devem se fundir com a edicao anterior (Enter, colar, recortar,
+' apagar selecao, substituir).
+Private Sub UndoCheckpointFresh(ByRef d As Document)
+    PushUndoSnapshot(d)
+    d.redoTop = 0
+    d.undoRunKind = UNDO_KIND_NONE
+End Sub
+
+Private Sub EditorUndo(ByRef d As Document)
+    If d.undoTop < 1 Then Exit Sub
+
+    Dim curSnap As UndoSnapshot
+    curSnap.text = SerializeDocText(d)
+    curSnap.lineCount = d.lineCount
+    curSnap.cursorX = d.cursorX
+    curSnap.cursorY = d.cursorY
+    If d.redoTop < MAX_UNDO Then
+        d.redoTop += 1
+        d.redoStack(d.redoTop) = curSnap
+    End If
+
+    Dim popSnap As UndoSnapshot = d.undoStack(d.undoTop)
+    d.undoTop -= 1
+
+    DeserializeDocText(d, popSnap.text, popSnap.lineCount)
+    d.cursorY = Clamp(popSnap.cursorY, 1, d.lineCount)
+    d.cursorX = Clamp(popSnap.cursorX, 1, Len(d.lines(d.cursorY)) + 1)
+    d.selActive = 0
+    d.undoRunKind = UNDO_KIND_NONE
+    If d.isMarkdown <> 0 Then d.mdPreviewDirty = -1
+End Sub
+
+Private Sub EditorRedo(ByRef d As Document)
+    If d.redoTop < 1 Then Exit Sub
+
+    Dim curSnap As UndoSnapshot
+    curSnap.text = SerializeDocText(d)
+    curSnap.lineCount = d.lineCount
+    curSnap.cursorX = d.cursorX
+    curSnap.cursorY = d.cursorY
+    If d.undoTop < MAX_UNDO Then
+        d.undoTop += 1
+        d.undoStack(d.undoTop) = curSnap
+    End If
+
+    Dim popSnap As UndoSnapshot = d.redoStack(d.redoTop)
+    d.redoTop -= 1
+
+    DeserializeDocText(d, popSnap.text, popSnap.lineCount)
+    d.cursorY = Clamp(popSnap.cursorY, 1, d.lineCount)
+    d.cursorX = Clamp(popSnap.cursorX, 1, Len(d.lines(d.cursorY)) + 1)
+    d.selActive = 0
+    d.undoRunKind = UNDO_KIND_NONE
+    If d.isMarkdown <> 0 Then d.mdPreviewDirty = -1
+End Sub
+
+' --- Clipboard ---------------------------------------------------------
+
+' Sem selecao, Copiar/Recortar agem na linha inteira do cursor (igual
+' VS Code/Microsoft Edit) - bem mais util do dia-a-dia que nao fazer nada.
+'
+' gClipboard (copia interna, em memoria) e' sempre a fonte de verdade pra
+' colar DENTRO do msxIDE - nunca depende de reler de volta o clipboard do
+' Windows, que na pratica se mostrou nao confiavel logo em seguida de uma
+' escrita (SetClipboardData pode falhar silenciosamente, ou ter atraso
+' vindo de outro processo com um listener de clipboard - historico de
+' area de transferencia do Windows, sincronia com a nuvem, etc. - e nesse
+' caso reler ia trazer o valor ANTIGO, nao o que acabou de ser copiado).
+' ConsoleSetClipboardText ainda e' chamado em paralelo, como melhor
+' esforco, so' pra colar FORA do msxIDE (nao influencia o que volta ao
+' colar dentro do proprio editor).
+Private Sub SetGlobalClipboard(ByRef text As String)
+    gClipboard = text
+    ConsoleSetClipboardText(text)
+End Sub
+
+Private Sub EditorCopySelection(ByRef d As Document)
+    If HasSelection(d) <> 0 Then
+        SetGlobalClipboard(GetSelectedText(d))
+    Else
+        SetGlobalClipboard(d.lines(d.cursorY) & Chr(10))
+    End If
+End Sub
+
+Private Sub EditorCutSelection(ByRef d As Document)
+    If HasSelection(d) <> 0 Then
+        SetGlobalClipboard(GetSelectedText(d))
+        UndoCheckpointFresh(d)
+        DeleteSelectionRange(d)
+        Exit Sub
+    End If
+
+    SetGlobalClipboard(d.lines(d.cursorY) & Chr(10))
+    UndoCheckpointFresh(d)
+
+    If d.isMarkdown <> 0 Then d.mdPreviewDirty = -1
+
+    If d.lineCount <= 1 Then
+        d.lines(1) = ""
+        d.lineCount = 1
+    Else
+        Dim i As Integer
+        For i = d.cursorY To d.lineCount - 1
+            d.lines(i) = d.lines(i + 1)
+        Next i
+        d.lines(d.lineCount) = ""
+        d.lineCount -= 1
+        If d.cursorY > d.lineCount Then d.cursorY = d.lineCount
+    End If
+    d.cursorX = 1
+End Sub
+
+' Insercao bruta de texto (possivelmente multi-linha) na posicao do cursor,
+' reaproveitando InsertCharAtCursor/InsertNewLine (ja tratam limite de
+' MAX_LINES e avanco de cursor corretamente) em vez de duplicar a logica de
+' deslocar linhas na mao. Sem checkpoint de undo proprio - quem chama
+' decide quando abrir um nivel novo.
+Private Sub PasteTextAtCursor(ByRef d As Document, ByRef text As String)
+    If Len(text) = 0 Then Exit Sub
+    Dim src As String = StripCR(text)
+    Dim i As Integer
+    For i = 1 To Len(src)
+        Dim ch As String = Mid(src, i, 1)
+        If ch = Chr(10) Then
+            InsertNewLine(d)
+        Else
+            InsertCharAtCursor(d, ch)
+        End If
+    Next i
+End Sub
+
+' gClipboard sempre ganha quando ja tem algo copiado/recortado NESTA sessao
+' do msxIDE - so' consulta o clipboard real do Windows como fallback (nada
+' foi copiado no editor ainda, ex.: logo apos abrir o programa) pra pegar
+' o que tiver sido copiado em outro programa antes disso.
+Private Sub EditorPasteClipboard(ByRef d As Document)
+    Dim clip As String = gClipboard
+    If Len(clip) = 0 Then clip = ConsoleGetClipboardText()
+    If Len(clip) = 0 Then Exit Sub
+
+    UndoCheckpointFresh(d)
+    If HasSelection(d) <> 0 Then DeleteSelectionRange(d)
+    PasteTextAtCursor(d, clip)
+End Sub
+
+Private Sub EditorSelectAll(ByRef d As Document)
+    d.selAnchorX = 1
+    d.selAnchorY = 1
+    d.selActive = -1
+    d.cursorY = d.lineCount
+    d.cursorX = Len(d.lines(d.lineCount)) + 1
+End Sub
+
+' --- Navegacao por palavra/paragrafo/tela -----------------------------
+
+Private Sub MoveWordLeft(ByRef d As Document)
+    Dim y As Integer = d.cursorY
+    Dim x As Integer = d.cursorX
+    Dim guard As Integer = 0
+
+    Do
+        If x > 1 Then
+            If IsWordChar(Mid(d.lines(y), x - 1, 1)) = 0 Then
+                x -= 1
+            Else
+                Exit Do
+            End If
+        ElseIf y > 1 Then
+            y -= 1
+            x = Len(d.lines(y)) + 1
+        Else
+            Exit Do
+        End If
+        guard += 1
+    Loop While guard < 100000
+
+    guard = 0
+    Do While x > 1 And IsWordChar(Mid(d.lines(y), x - 1, 1)) <> 0 And guard < 100000
+        x -= 1
+        guard += 1
+    Loop
+
+    d.cursorY = y
+    d.cursorX = x
+End Sub
+
+Private Sub MoveWordRight(ByRef d As Document)
+    Dim y As Integer = d.cursorY
+    Dim x As Integer = d.cursorX
+    Dim guard As Integer = 0
+
+    Do
+        Dim lineLen As Integer = Len(d.lines(y))
+        If x <= lineLen Then
+            If IsWordChar(Mid(d.lines(y), x, 1)) <> 0 Then
+                x += 1
+            Else
+                Exit Do
+            End If
+        ElseIf y < d.lineCount Then
+            y += 1
+            x = 1
+        Else
+            Exit Do
+        End If
+        guard += 1
+    Loop While guard < 100000
+
+    guard = 0
+    Do
+        Dim lineLen2 As Integer = Len(d.lines(y))
+        If x <= lineLen2 Then
+            If IsWordChar(Mid(d.lines(y), x, 1)) <> 0 Then Exit Do
+            x += 1
+        ElseIf y < d.lineCount Then
+            y += 1
+            x = 1
+        Else
+            Exit Do
+        End If
+        guard += 1
+    Loop While guard < 100000
+
+    d.cursorY = y
+    d.cursorX = x
+End Sub
+
+' Ctrl+Seta cima: anda pro paragrafo anterior. Se o cursor ja esta' EM cima
+' de uma linha em branco, da' um passo alem dela primeiro (senao pressionar
+' de novo ficaria travado no mesmo lugar); dai' sobe pulando linhas com
+' conteudo ate' achar a proxima linha em branco (ou a linha 1).
+Private Sub MoveParagraphUp(ByRef d As Document)
+    Dim y As Integer = d.cursorY
+    If y > 1 And Len(Trim(d.lines(y))) = 0 Then y -= 1
+    While y > 1 And Len(Trim(d.lines(y))) <> 0
+        y -= 1
+    Wend
+    d.cursorY = y
+    d.cursorX = Clamp(d.cursorX, 1, Len(d.lines(y)) + 1)
+End Sub
+
+Private Sub MoveParagraphDown(ByRef d As Document)
+    Dim y As Integer = d.cursorY
+    If y < d.lineCount And Len(Trim(d.lines(y))) = 0 Then y += 1
+    While y < d.lineCount And Len(Trim(d.lines(y))) <> 0
+        y += 1
+    Wend
+    d.cursorY = y
+    d.cursorX = Clamp(d.cursorX, 1, Len(d.lines(y)) + 1)
+End Sub
+
+Private Sub MoveScreen(ByRef d As Document, ByVal deltaRows As Integer)
+    d.cursorY = Clamp(d.cursorY + deltaRows, 1, d.lineCount)
+    d.cursorX = Clamp(d.cursorX, 1, Len(d.lines(d.cursorY)) + 1)
+End Sub
+
+' --- Localizar/substituir -----------------------------------------------
+
+Private Function FindForwardNoWrap(ByRef d As Document, ByRef searchText As String, ByVal fromY As Integer, ByVal fromX As Integer, ByRef outY As Integer, ByRef outX As Integer) As Integer
+    If Len(searchText) = 0 Then Return 0
+    Dim needle As String = UCase(searchText)
+    Dim y As Integer
+    For y = fromY To d.lineCount
+        Dim hay As String = UCase(d.lines(y))
+        Dim startCol As Integer = 1
+        If y = fromY Then startCol = fromX
+        If startCol < 1 Then startCol = 1
+        If startCol <= Len(hay) Then
+            Dim matchPos As Integer = InStr(startCol, hay, needle)
+            If matchPos > 0 Then
+                outY = y
+                outX = matchPos
+                Return -1
+            End If
+        End If
+    Next y
+    Return 0
+End Function
+
+' Busca a partir do cursor, dando a volta pro topo do documento uma unica
+' vez se nao achar nada depois do cursor (2 varreduras retas, sem laco
+' ciclico - impossivel travar em loop infinito).
+Private Function EditorFindFromCursor(ByRef d As Document, ByRef searchText As String, ByRef outY As Integer, ByRef outX As Integer) As Integer
+    If Len(searchText) = 0 Then Return 0
+    If FindForwardNoWrap(d, searchText, d.cursorY, d.cursorX + 1, outY, outX) <> 0 Then Return -1
+    Return FindForwardNoWrap(d, searchText, 1, 1, outY, outX)
+End Function
+
+Private Sub SelectMatch(ByRef d As Document, ByVal atY As Integer, ByVal atX As Integer, ByVal matchLen As Integer)
+    d.selAnchorY = atY
+    d.selAnchorX = atX
+    d.cursorY = atY
+    d.cursorX = atX + matchLen
+    d.selActive = -1
+End Sub
+
+Private Sub OpenFindDialog(ByRef d As Document)
+    Dim canceled As Integer
+    Dim searchText As String = PromptPathDialog("Localizar", "Localizar:", gFindText, canceled)
+    If canceled <> 0 Or Len(searchText) = 0 Then Exit Sub
+    gFindText = searchText
+
+    Dim outY As Integer, outX As Integer
+    If EditorFindFromCursor(d, searchText, outY, outX) <> 0 Then
+        SelectMatch(d, outY, outX, Len(searchText))
+        EnsureCursorVisible(d)
+        ClampScroll(d)
+    Else
+        ShowInfoDialog("Localizar", Chr(34) & searchText & Chr(34) & " nao encontrado.", "")
+    End If
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
+End Sub
+
+' Sessao interativa de substituicao: varre do cursor ate' o fim do
+' documento (sem dar volta - pra recomecar do topo basta Ctrl+Home antes),
+' perguntando confirmacao a cada ocorrencia (S/N/T=Todas/Esc), igual o
+' classico "Change" do MS-DOS EDIT. Um Ctrl+Z desfaz a sessao inteira de
+' uma vez so' (checkpoint de undo aberto so' na primeira troca de verdade).
+Private Sub RunReplaceSession(ByRef d As Document, ByRef searchText As String, ByRef replaceText As String)
+    Dim curY As Integer = d.cursorY
+    Dim curX As Integer = d.cursorX
+    Dim replaceAll As Integer = 0
+    Dim didAny As Integer = 0
+    Dim matchesCount As Integer = 0
+
+    Do
+        Dim foundY As Integer, foundX As Integer
+        If FindForwardNoWrap(d, searchText, curY, curX, foundY, foundX) = 0 Then Exit Do
+
+        SelectMatch(d, foundY, foundX, Len(searchText))
+        EnsureCursorVisible(d)
+        ClampScroll(d)
+
+        Dim doReplace As Integer = 0
+        Dim stopSession As Integer = 0
+
+        If replaceAll <> 0 Then
+            doReplace = -1
+        Else
+            Dim answered As Integer = 0
+            Do While answered = 0
+                Dim inputEvent As Integer, inputKey As String
+                Dim inputMouseX As Integer, inputMouseY As Integer, inputMouseAction As Integer
+
+                ConsoleBeginFrame()
+                DrawDesktop()
+                DrawDocumentsFull()
+                DrawMenuBar(0)
+                Dim promptMsg As String = " Substituir esta ocorrencia? [S]im  [N]ao  [T]odas  Esc=cancelar "
+                ConsoleWriteText(1, uiH, Left(promptMsg & Space(uiW), uiW), 0, 14)
+                ConsoleFlush()
+                ConsoleEndFrame()
+
+                If ConsolePollInput(inputEvent, inputKey, inputMouseX, inputMouseY, inputMouseAction) = 0 Then
+                    Sleep 5, 1
+                    Continue Do
+                End If
+                If inputEvent <> MSX_INPUT_KEY Then Continue Do
+                inputKey = NormalizeKey(inputKey)
+
+                If Len(inputKey) = 1 Then
+                    Dim uc As String = UCase(inputKey)
+                    If uc = "S" Then doReplace = -1: answered = -1
+                    If uc = "N" Then doReplace = 0: answered = -1
+                    If uc = "T" Then doReplace = -1: replaceAll = -1: answered = -1
+                End If
+                If inputKey = Chr(27) Then stopSession = -1: answered = -1
+            Loop
+        End If
+
+        If stopSession <> 0 Then Exit Do
+
+        If doReplace <> 0 Then
+            If didAny = 0 Then
+                UndoCheckpointFresh(d)
+                didAny = -1
+            End If
+            DeleteSelectionRange(d)
+            PasteTextAtCursor(d, replaceText)
+            matchesCount += 1
+            curY = d.cursorY
+            curX = d.cursorX
+        Else
+            curY = foundY
+            curX = foundX + 1
+        End If
+    Loop
+
+    d.selActive = 0
+    FinalizeModalInputState()
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
+    ShowInfoDialog("Substituir", Trim(Str(matchesCount)) & " ocorrencia(s) substituida(s).", "")
+End Sub
+
+Private Sub OpenReplaceDialog(ByRef d As Document)
+    Dim canceled As Integer
+    Dim searchText As String = PromptPathDialog("Substituir", "Localizar:", gFindText, canceled)
+    If canceled <> 0 Or Len(searchText) = 0 Then Exit Sub
+    gFindText = searchText
+
+    Dim canceled2 As Integer
+    Dim replaceText As String = PromptPathDialog("Substituir", "Substituir por:", gReplaceText, canceled2)
+    If canceled2 <> 0 Then Exit Sub
+    gReplaceText = replaceText
+
+    RunReplaceSession(d, searchText, replaceText)
+End Sub
+
+' Insere caracteres especiais MSX (Configurar->Inserir->Caracteres
+' Especiais) direto no cursor, sem passar pelo teclado normal - o mesmo
+' conjunto do "Translate" do Basic Dignified Suite (badig_msx.py,
+' Parser.trans_char): 128 acentos/graficos (codigos 128-255, mapeamento
+' 1-pra-1 - byte inserido = byte final no .amx, sem tradutor nenhum do
+' lado do compilador porque o pipeline inteiro (editor/arquivo/compiler)
+' ja e' byte-a-byte, nunca passa por UTF-8) e 31 simbolos extras
+' (careta/naipes/blocos - CHR$(1) a CHR$(31) no MSX) que o Basic
+' Dignified NAO imprime como byte cru (nao sao imprimiveis de forma
+' confiavel via PRINT/string literal) - viram a letra equivalente
+' (A-Z,[,],\,^,_), exatamente a mesma troca de "seguranca" que o
+' c_replacements de badig_msx.py faz.
+Private Sub ShowMsxCharPickerDialog()
+    If activeDoc < 1 Or activeDoc > docCount Then Exit Sub
+    Dim ByRef d As Document = docs(activeDoc)
+    If d.isHelp <> 0 Then Exit Sub
+    If d.isMarkdown <> 0 And d.mdViewMode = 2 Then Exit Sub
+    If d.isPixelEditor <> 0 Or d.isMamuteTerm <> 0 Or d.isMamuteEdit <> 0 Then Exit Sub
+
+    Const gridCols = 16
+    Dim fallbackChars As String = "ABCDEFGHIJKLMNOPQRSTUVWXYZ[]" & Chr(92) & "^_"
+
+    Static selRow As Integer = 0
+    Static selCol As Integer = 0
+
+    Dim dialogW As Integer = 46
+    Dim dialogH As Integer = 21
+    Dim keepOpen As Integer = -1
+
+    Do While keepOpen <> 0
+        Dim dialogX As Integer = ((uiW - dialogW) \ 2) + 1
+        Dim dialogY As Integer = ((uiH - dialogH) \ 2) + 1
+
+        ConsoleBeginFrame()
+        DrawDesktop()
+        DrawDocumentsFull()
+        DrawMenuBar(MENU_VIEW_NONE)
+        DrawStatusBar()
+
+        ConsoleWriteText(dialogX, dialogY, Chr(201) & String(dialogW - 2, Chr(205)) & Chr(187), 15, 1)
+        Dim r As Integer
+        For r = 1 To dialogH - 2
+            ConsoleWriteText(dialogX, dialogY + r, Chr(186) & String(dialogW - 2, " ") & Chr(186), 15, 1)
+        Next r
+        ConsoleWriteText(dialogX, dialogY + dialogH - 1, Chr(200) & String(dialogW - 2, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(dialogX + 2, dialogY, " Caracteres Especiais MSX ", 0, 7, dialogW - 4)
+
+        Dim curY As Integer = dialogY + 2
+        ConsoleWriteText(dialogX + 2, curY, "Acentos/graficos MSX (codigos 128-255):", 15, 1)
+        curY += 1
+
+        Dim gy As Integer, gx As Integer
+        For gy = 0 To 7
+            Dim rowByte As Integer = 128 + gy * gridCols
+            ConsoleWriteText(dialogX + 2, curY, Right("  " & Trim(Str(rowByte)), 3) & ":", 15, 1)
+            For gx = 0 To gridCols - 1
+                Dim cellByte As Integer = rowByte + gx
+                Dim cellFg As UByte = 15, cellBg As UByte = 1
+                If gy = selRow And gx = selCol Then cellFg = 0: cellBg = 7
+                ConsoleSetCell(dialogX + 7 + gx * 2, curY, cellByte, cellFg, cellBg)
+            Next gx
+            curY += 1
+        Next gy
+
+        curY += 1
+        ConsoleWriteText(dialogX + 2, curY, "Simbolos especiais (CHR$ 1-31, saem como letra):", 15, 1)
+        curY += 1
+
+        For gy = 8 To 9
+            Dim symBase As Integer = (gy - 8) * gridCols
+            ConsoleWriteText(dialogX + 2, curY, "   :", 15, 1)
+            For gx = 0 To gridCols - 1
+                Dim symIdx As Integer = symBase + gx + 1
+                If symIdx <= 31 Then
+                    Dim cellFg2 As UByte = 15, cellBg2 As UByte = 1
+                    If gy = selRow And gx = selCol Then cellFg2 = 0: cellBg2 = 7
+                    ConsoleSetCell(dialogX + 7 + gx * 2, curY, symIdx, cellFg2, cellBg2)
+                End If
+            Next gx
+            curY += 1
+        Next gy
+
+        curY += 1
+        Dim statusMsg As String
+        If selRow <= 7 Then
+            Dim selByte As Integer = 128 + selRow * gridCols + selCol
+            statusMsg = "Enter insere o byte " & Trim(Str(selByte)) & " (&H" & Hex(selByte, 2) & ") no cursor"
+        Else
+            Dim selSym As Integer = (selRow - 8) * gridCols + selCol + 1
+            If selSym <= 31 Then
+                statusMsg = "Enter insere a letra '" & Mid(fallbackChars, selSym, 1) & "' (equivalente seguro deste simbolo)"
+            Else
+                statusMsg = "(vazio)"
+            End If
+        End If
+        ConsoleWriteText(dialogX + 2, curY, Left(statusMsg & Space(dialogW - 4), dialogW - 4), 14, 1)
+        curY += 1
+        ConsoleWriteText(dialogX + 2, curY, "Setas navegam | Enter insere | Esc fecha", 8, 1)
+
+        ConsoleFlush()
+        ConsoleEndFrame()
+
+        Dim inputEvent As Integer, inputKey As String
+        Dim inputMouseX As Integer, inputMouseY As Integer, inputMouseAction As Integer
+        If ConsolePollInput(inputEvent, inputKey, inputMouseX, inputMouseY, inputMouseAction) = 0 Then
+            Sleep 5, 1
+            Continue Do
+        End If
+        If inputEvent <> MSX_INPUT_KEY Then Continue Do
+        inputKey = NormalizeKey(inputKey)
+
+        If inputKey = Chr(27) Then
+            keepOpen = 0
+        ElseIf inputKey = Chr(13) Then
+            Dim insertText As String = ""
+            If selRow <= 7 Then
+                insertText = Chr(128 + selRow * gridCols + selCol)
+            Else
+                Dim selSym2 As Integer = (selRow - 8) * gridCols + selCol + 1
+                If selSym2 <= 31 Then insertText = Mid(fallbackChars, selSym2, 1)
+            End If
+            If Len(insertText) > 0 Then
+                UndoCheckpointFresh(d)
+                If HasSelection(d) <> 0 Then DeleteSelectionRange(d)
+                PasteTextAtCursor(d, insertText)
+            End If
+        ElseIf Len(inputKey) = 2 And Asc(Left(inputKey, 1)) = 0 Then
+            Select Case Asc(Right(inputKey, 1))
+                Case 75 ' Esquerda
+                    If selCol > 0 Then selCol -= 1
+                Case 77 ' Direita
+                    If selCol < gridCols - 1 Then selCol += 1
+                Case 72 ' Cima
+                    If selRow > 0 Then selRow -= 1
+                Case 80 ' Baixo
+                    If selRow < 9 Then selRow += 1
+            End Select
+            If selRow = 9 And selCol > 14 Then selCol = 14
+        End If
+    Loop
+
+    FinalizeModalInputState()
     forceFullRedraw = 1
     renderMode = RENDER_FULL
 End Sub
@@ -8003,7 +8944,17 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
         Exit Sub
     End If
 
+    ' editable = falso pra Ajuda/dicionario e pro preview Somente-leitura de
+    ' um documento .md (mdViewMode=2) - nada de selecao/clipboard/undo/
+    ' localizar/substituir nesses, igual a digitacao normal ja nao valia.
+    Dim editable As Integer = -1
+    If d.isHelp <> 0 Then editable = 0
+    If d.isMarkdown <> 0 And d.mdViewMode = 2 Then editable = 0
+
     If keyText = Chr(13) Then
+        Dim hadSelEnter As Integer = HasSelection(d)
+        UndoCheckpointFresh(d)
+        If hadSelEnter <> 0 Then DeleteSelectionRange(d)
         InsertNewLine(d)
         renderHint = RENDER_CLIENT
         Exit Sub
@@ -8012,12 +8963,35 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
     If d.isHelp <> 0 And keyText = Chr(8) Then Exit Sub
 
     If keyText = Chr(8) Then
-        If d.cursorX > 1 Then
-            renderHint = RENDER_LINE
-        Else
+        Dim hadSelBs As Integer = HasSelection(d)
+        If hadSelBs <> 0 Then
+            UndoCheckpointFresh(d)
+            DeleteSelectionRange(d)
             renderHint = RENDER_CLIENT
+        Else
+            UndoBeforeEdit(d, UNDO_KIND_BACKSPACE)
+            If d.cursorX > 1 Then
+                renderHint = RENDER_LINE
+            Else
+                renderHint = RENDER_CLIENT
+            End If
+            BackspaceAtCursor(d)
+            d.undoRunKind = UNDO_KIND_BACKSPACE
+            d.undoRunAtX = d.cursorX
+            d.undoRunAtY = d.cursorY
         End If
-        BackspaceAtCursor(d)
+        Exit Sub
+    End If
+
+    If keyText = Chr(9) Then
+        If d.isHelp <> 0 Then Exit Sub
+        Dim indentSize As Integer = ValInt(DbGetSetting("cfg.editor.indent_size", "4"))
+        If indentSize < 1 Then indentSize = 1
+        If indentSize > 16 Then indentSize = 16
+        UndoCheckpointFresh(d)
+        If HasSelection(d) <> 0 Then DeleteSelectionRange(d)
+        PasteTextAtCursor(d, Space(indentSize))
+        renderHint = RENDER_CLIENT
         Exit Sub
     End If
 
@@ -8025,40 +8999,110 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
         If d.isHelp <> 0 Then Exit Sub
         Dim c As Integer = Asc(keyText)
         If c >= 32 And c <= 126 Then
+            Dim hadSelCh As Integer = HasSelection(d)
+            If hadSelCh <> 0 Then
+                UndoCheckpointFresh(d)
+                DeleteSelectionRange(d)
+            Else
+                UndoBeforeEdit(d, UNDO_KIND_INSERT)
+            End If
             InsertCharAtCursor(d, keyText)
-            renderHint = RENDER_LINE
+            d.undoRunKind = UNDO_KIND_INSERT
+            d.undoRunAtX = d.cursorX
+            d.undoRunAtY = d.cursorY
+            renderHint = IIf(hadSelCh <> 0, RENDER_CLIENT, RENDER_LINE)
         End If
         Exit Sub
     End If
 
     If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
-        Select Case Asc(Right(keyText, 1))
+        Dim navCode As Integer = Asc(Right(keyText, 1))
+        Dim hadSel As Integer = HasSelection(d)
+
+        Select Case navCode
+            ' --- movimento simples (colapsa selecao, se houver) ---
             Case 75
-                MoveLeft(d)
+                SelClear(d) : MoveLeft(d)
             Case 77
-                MoveRight(d)
+                SelClear(d) : MoveRight(d)
             Case 72
-                MoveUp(d)
+                SelClear(d) : MoveUp(d)
             Case 80
-                MoveDown(d)
+                SelClear(d) : MoveDown(d)
             Case 71
-                d.cursorX = 1
+                SelClear(d) : d.cursorX = 1
             Case 79
-                d.cursorX = Len(d.lines(d.cursorY)) + 1
-            Case 73
-                d.cursorY = Clamp(d.cursorY - GetClientTextHeight(d), 1, d.lineCount)
-                d.cursorX = Clamp(d.cursorX, 1, Len(d.lines(d.cursorY)) + 1)
-            Case 81
-                d.cursorY = Clamp(d.cursorY + GetClientTextHeight(d), 1, d.lineCount)
-                d.cursorX = Clamp(d.cursorX, 1, Len(d.lines(d.cursorY)) + 1)
-            Case 83
-                If d.isHelp <> 0 Then Exit Select
-                If d.cursorX <= Len(d.lines(d.cursorY)) Then
-                    renderHint = RENDER_LINE
-                Else
+                SelClear(d) : d.cursorX = Len(d.lines(d.cursorY)) + 1
+            Case 73 ' PgUp - tela inteira
+                SelClear(d) : MoveScreen(d, -GetClientTextHeight(d))
+            Case 81 ' PgDn - tela inteira
+                SelClear(d) : MoveScreen(d, GetClientTextHeight(d))
+            Case 115 ' Ctrl+Seta esquerda - por palavra
+                SelClear(d) : MoveWordLeft(d)
+            Case 116 ' Ctrl+Seta direita - por palavra
+                SelClear(d) : MoveWordRight(d)
+            Case 119 ' Ctrl+Home - inicio do documento
+                SelClear(d) : d.cursorY = 1 : d.cursorX = 1
+            Case 117 ' Ctrl+End - fim do documento
+                SelClear(d) : d.cursorY = d.lineCount : d.cursorX = Len(d.lines(d.cursorY)) + 1
+            Case 132 ' Ctrl+PgUp - meia tela
+                SelClear(d) : MoveScreen(d, -(GetClientTextHeight(d) \ 2))
+            Case 118 ' Ctrl+PgDn - meia tela
+                SelClear(d) : MoveScreen(d, GetClientTextHeight(d) \ 2)
+            Case 150 ' Ctrl+Seta cima - por paragrafo
+                SelClear(d) : MoveParagraphUp(d)
+            Case 151 ' Ctrl+Seta baixo - por paragrafo
+                SelClear(d) : MoveParagraphDown(d)
+
+            ' --- selecao (Shift / Ctrl+Shift) ---
+            Case 152
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveLeft(d)
+            Case 153
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveRight(d)
+            Case 154
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveUp(d)
+            Case 155
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveDown(d)
+            Case 156
+                If editable <> 0 Then SelBeginOrKeep(d) : d.cursorX = 1
+            Case 157
+                If editable <> 0 Then SelBeginOrKeep(d) : d.cursorX = Len(d.lines(d.cursorY)) + 1
+            Case 158 ' Shift+PgUp
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveScreen(d, -GetClientTextHeight(d))
+            Case 159 ' Shift+PgDn
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveScreen(d, GetClientTextHeight(d))
+            Case 160 ' Ctrl+Shift+Esquerda
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveWordLeft(d)
+            Case 161 ' Ctrl+Shift+Direita
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveWordRight(d)
+            Case 162 ' Ctrl+Shift+Cima
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveParagraphUp(d)
+            Case 163 ' Ctrl+Shift+Baixo
+                If editable <> 0 Then SelBeginOrKeep(d) : MoveParagraphDown(d)
+            Case 164 ' Ctrl+Shift+Home
+                If editable <> 0 Then SelBeginOrKeep(d) : d.cursorY = 1 : d.cursorX = 1
+            Case 165 ' Ctrl+Shift+End
+                If editable <> 0 Then SelBeginOrKeep(d) : d.cursorY = d.lineCount : d.cursorX = Len(d.lines(d.cursorY)) + 1
+
+            Case 83 ' Delete
+                If d.isHelp <> 0 Then
+                    ' somente-leitura, nada a fazer
+                ElseIf HasSelection(d) <> 0 Then
+                    UndoCheckpointFresh(d)
+                    DeleteSelectionRange(d)
                     renderHint = RENDER_CLIENT
+                Else
+                    UndoBeforeEdit(d, UNDO_KIND_DELETE)
+                    If d.cursorX <= Len(d.lines(d.cursorY)) Then
+                        renderHint = RENDER_LINE
+                    Else
+                        renderHint = RENDER_CLIENT
+                    End If
+                    DeleteAtCursor(d)
+                    d.undoRunKind = UNDO_KIND_DELETE
+                    d.undoRunAtX = d.cursorX
+                    d.undoRunAtY = d.cursorY
                 End If
-                DeleteAtCursor(d)
             Case 64
                 If docCount > 1 Then
                     Dim nextDoc As Integer = activeDoc + 1
@@ -8081,7 +9125,44 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
                 CloseActiveDocument()
                 needFullRedraw = 1
                 renderHint = RENDER_FULL
+
+            ' --- Ctrl+<letra> (200 + posicao no alfabeto, A=0..Z=25) ---
+            Case 200 ' Ctrl+A - selecionar tudo
+                If editable <> 0 Then
+                    EditorSelectAll(d)
+                    renderHint = RENDER_CLIENT
+                End If
+            Case 202 ' Ctrl+C - copiar (sem selecao, copia a linha do cursor)
+                If editable <> 0 Then EditorCopySelection(d)
+            Case 205 ' Ctrl+F - localizar
+                If editable <> 0 Then OpenFindDialog(d)
+            Case 207 ' Ctrl+H - substituir
+                If editable <> 0 Then OpenReplaceDialog(d)
+            Case 221 ' Ctrl+V - colar
+                If editable <> 0 Then
+                    EditorPasteClipboard(d)
+                    renderHint = RENDER_CLIENT
+                End If
+            Case 223 ' Ctrl+X - recortar (sem selecao, recorta a linha do cursor)
+                If editable <> 0 Then
+                    EditorCutSelection(d)
+                    renderHint = RENDER_CLIENT
+                End If
+            Case 224 ' Ctrl+Y - refazer
+                If editable <> 0 Then
+                    EditorRedo(d)
+                    renderHint = RENDER_CLIENT
+                End If
+            Case 225 ' Ctrl+Z - desfazer
+                If editable <> 0 Then
+                    EditorUndo(d)
+                    renderHint = RENDER_CLIENT
+                End If
         End Select
+
+        If renderHint < RENDER_CLIENT Then
+            If hadSel <> 0 Or HasSelection(d) <> 0 Then renderHint = RENDER_CLIENT
+        End If
     End If
 End Sub
 
@@ -15837,7 +16918,7 @@ Sub EditorHandleKey(ByRef keyText As String, ByRef running As Integer, ByRef men
     End If
 
     ' Ctrl+L opens compile debug log directly, without going through menus.
-    If keyText = Chr(12) Then
+    If keyText = Chr(0) & Chr(211) Then
         OpenCompileLogDocument()
         menuOpen = 0
         forceFullRedraw = 1
@@ -15848,6 +16929,58 @@ Sub EditorHandleKey(ByRef keyText As String, ByRef running As Integer, ByRef men
     If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 68 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_NONE, MENU_VIEW_FILE, MENU_VIEW_NONE)
         forceFullRedraw = 1
+        Exit Sub
+    End If
+
+    ' Letras de acesso rapido (Alt+letra) pra cada menu do topo - mesmo
+    ' esquema das teclas de funcao acima (F1/F8/F9/F10), so' que alcancam
+    ' tambem Referencia e Mamute, que ate' aqui so' abriam com o mouse.
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 230 Then ' Alt+A - Arquivo
+        menuOpen = IIf(menuOpen = MENU_VIEW_FILE, MENU_VIEW_NONE, MENU_VIEW_FILE)
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 244 Then ' Alt+O - Configurar
+        menuOpen = IIf(menuOpen = MENU_VIEW_CONFIG, MENU_VIEW_NONE, MENU_VIEW_CONFIG)
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 232 Then ' Alt+C - Compilar
+        menuOpen = IIf(menuOpen = MENU_VIEW_COMPILE, MENU_VIEW_NONE, MENU_VIEW_COMPILE)
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 247 Then ' Alt+R - Referencia
+        menuOpen = IIf(menuOpen = MENU_VIEW_REFERENCE, MENU_VIEW_NONE, MENU_VIEW_REFERENCE)
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 242 Then ' Alt+M - Mamute
+        menuOpen = IIf(menuOpen = MENU_VIEW_MAMUTE, MENU_VIEW_NONE, MENU_VIEW_MAMUTE)
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 239 Then ' Alt+J - Ajuda
+        menuOpen = IIf(menuOpen = MENU_VIEW_HELP, MENU_VIEW_NONE, MENU_VIEW_HELP)
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 238 Then ' Alt+I - Inserir
+        menuOpen = IIf(menuOpen = MENU_VIEW_INSERT, MENU_VIEW_NONE, MENU_VIEW_INSERT)
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
         Exit Sub
     End If
 
@@ -15877,22 +17010,34 @@ Sub EditorHandleKey(ByRef keyText As String, ByRef running As Integer, ByRef men
             menuOpen = 0
             forceFullRedraw = 1
             renderMode = RENDER_FULL
+        ElseIf keyText = Chr(0) & Chr(75) Then ' Seta esquerda - menu anterior
+            menuOpen = NextMenuView(menuOpen, -1)
+            forceFullRedraw = 1
+            renderMode = RENDER_FULL
+        ElseIf keyText = Chr(0) & Chr(77) Then ' Seta direita - proximo menu
+            menuOpen = NextMenuView(menuOpen, 1)
+            forceFullRedraw = 1
+            renderMode = RENDER_FULL
+        ElseIf keyText = Chr(0) & Chr(72) Then ' Seta cima - item anterior
+            Dim itemCountUp As Integer = GetMenuItemCount(menuOpen)
+            If itemCountUp > 0 Then
+                menuHighlightIndex -= 1
+                If menuHighlightIndex < 1 Then menuHighlightIndex = itemCountUp
+            End If
+            forceFullRedraw = 1
+            renderMode = RENDER_FULL
+        ElseIf keyText = Chr(0) & Chr(80) Then ' Seta baixo - proximo item
+            Dim itemCountDn As Integer = GetMenuItemCount(menuOpen)
+            If itemCountDn > 0 Then
+                menuHighlightIndex += 1
+                If menuHighlightIndex > itemCountDn Then menuHighlightIndex = 1
+            End If
+            forceFullRedraw = 1
+            renderMode = RENDER_FULL
         Else
             Dim menuCmd As Integer = MenuCommandFromKey(menuOpen, keyText)
             If keyText = Chr(13) Then
-                If menuOpen = MENU_VIEW_HELP Then
-                    menuCmd = MENU_CMD_HELP_BASIC
-                ElseIf menuOpen = MENU_VIEW_CONFIG Then
-                    menuCmd = MENU_CMD_CFG_BADIG
-                ElseIf menuOpen = MENU_VIEW_COMPILE Then
-                    menuCmd = MENU_CMD_COMPILE_MSX
-                ElseIf menuOpen = MENU_VIEW_REFERENCE Then
-                    menuCmd = MENU_CMD_REF_REDBOOK
-                ElseIf menuOpen = MENU_VIEW_MAMUTE Then
-                    menuCmd = MENU_CMD_MAMUTE_OPEN
-                Else
-                    menuCmd = MENU_CMD_EXIT
-                End If
+                menuCmd = GetMenuCommandAtIndex(menuOpen, menuHighlightIndex)
             End If
             If menuCmd <> MENU_CMD_NONE Then
                 ExecuteMenuCommand(menuCmd, running, menuOpen)
@@ -16057,6 +17202,15 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
         Exit Sub
     End If
 
+    ' Clique na barra de menu (Inserir)
+    If mouseY = 1 And mouseX >= 60 And mouseX <= 67 Then
+        menuOpen = IIf(menuOpen = MENU_VIEW_INSERT, MENU_VIEW_NONE, MENU_VIEW_INSERT)
+        dragMode = DRAG_NONE
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
     If menuOpen <> 0 Then
         Dim menuCmd As Integer = MENU_CMD_NONE
         If menuOpen = MENU_VIEW_FILE Then
@@ -16105,6 +17259,8 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                         menuCmd = MENU_CMD_CFG_MAMUTE_MEM
                     Case 7
                         menuCmd = MENU_CMD_CFG_PRINTER
+                    Case 8
+                        menuCmd = MENU_CMD_CFG_EDITOR
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_COMPILE Then
@@ -16175,6 +17331,13 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_MAMUTE_OPEN
+                End Select
+            End If
+        ElseIf menuOpen = MENU_VIEW_INSERT Then
+            If mouseX >= 60 And mouseX <= 88 Then
+                Select Case mouseY
+                    Case 3
+                        menuCmd = MENU_CMD_INSERT_CHARMAP
                 End Select
             End If
         End If
@@ -18961,6 +20124,350 @@ Function EditorRunMamuteSmokeTest(ByRef report As String) As Integer
     report &= ", comandos XD/XF (dump SUPER-X com enderecamento estendido #slot-subslot/#V, formatos D/A/C/I/M: hexa+ascii classico, so ascii, matriz de pixels 16x16, so mnemonico, endereco+bytes+mnemonico)"
     report &= ", comando XA (listagem ASCII com o mesmo padrao INICIAL[,FINAL][,SAVE] do XD, independente do formato atual de XF)"
     report &= ", comando XI (listagem disassemblada endereco+bytes+mnemonico com o mesmo padrao INICIAL[,FINAL][,SAVE], independente do formato atual de XF)"
+    Return -1
+End Function
+
+' Smoke test headless do motor novo de edicao de texto (selecao, clipboard,
+' undo/redo, navegacao por palavra/paragrafo, localizar/substituir) - roda
+' via EditorHandleKey com teclas sinteticas, igual o smoke test de Ajuda.
+' Localizar/Substituir de verdade abrem dialogo modal (bloqueiam esperando
+' ConsolePollInput) - aqui testamos as primitivas por baixo (FindForwardNoWrap
+' etc.) diretamente, sem passar pelo dialogo.
+Function EditorRunTextEditSmokeTest(ByRef report As String) As Integer
+    report = ""
+    Dim running As Integer = 1
+    Dim menuOpen As Integer = 0
+
+    ' Guarda o que estava no clipboard de verdade do Windows ANTES de
+    ' qualquer coisa neste teste tocar nele, pra devolver no final - um
+    ' teste headless nao pode deixar sujeira permanente no clipboard de
+    ' quem esta' rodando o build.
+    Dim savedSysClipboard As String = ConsoleGetClipboardText()
+
+    EditorCreateUntitled()
+    If activeDoc < 1 Or activeDoc > docCount Then
+        report = "SMOKE EDIT FAIL: sem documento ativo"
+        Return 0
+    End If
+    Dim ByRef d As Document = docs(activeDoc)
+    d.lineCount = 1
+    d.lines(1) = ""
+    d.cursorX = 1 : d.cursorY = 1
+    d.selActive = 0
+    d.undoTop = 0 : d.redoTop = 0 : d.undoRunKind = 0
+
+    Dim txt As String = "hello world"
+    Dim i As Integer
+    For i = 1 To Len(txt)
+        EditorHandleKey(Mid(txt, i, 1), running, menuOpen)
+    Next i
+    If d.lines(1) <> "hello world" Or d.cursorX <> 12 Then
+        report = "SMOKE EDIT FAIL: digitacao produziu '" & d.lines(1) & "' (col " & Trim(Str(d.cursorX)) & ")"
+        Return 0
+    End If
+
+    EditorHandleKey(Chr(0) & Chr(71), running, menuOpen) ' Home
+    Dim k As Integer
+    For k = 1 To 5
+        EditorHandleKey(Chr(0) & Chr(153), running, menuOpen) ' Shift+Right
+    Next k
+    If HasSelection(d) = 0 Or GetSelectedText(d) <> "hello" Then
+        report = "SMOKE EDIT FAIL: selecao Shift+Right nao capturou 'hello' (achou '" & GetSelectedText(d) & "')"
+        Return 0
+    End If
+
+    EditorHandleKey(Chr(0) & Chr(202), running, menuOpen) ' Ctrl+C
+    If gClipboard <> "hello" Then
+        report = "SMOKE EDIT FAIL: Ctrl+C nao copiou 'hello' (clipboard='" & gClipboard & "')"
+        Return 0
+    End If
+    EditorHandleKey(Chr(0) & Chr(79), running, menuOpen) ' End
+    EditorHandleKey(Chr(0) & Chr(221), running, menuOpen) ' Ctrl+V
+    If d.lines(1) <> "hello worldhello" Then
+        report = "SMOKE EDIT FAIL: Ctrl+V nao colou no fim - '" & d.lines(1) & "'"
+        Return 0
+    End If
+
+    EditorHandleKey(Chr(0) & Chr(225), running, menuOpen) ' Ctrl+Z desfaz o colar
+    If d.lines(1) <> "hello world" Then
+        report = "SMOKE EDIT FAIL: Ctrl+Z apos colar deixou '" & d.lines(1) & "'"
+        Return 0
+    End If
+
+    EditorHandleKey(Chr(0) & Chr(224), running, menuOpen) ' Ctrl+Y refaz
+    If d.lines(1) <> "hello worldhello" Then
+        report = "SMOKE EDIT FAIL: Ctrl+Y nao restaurou o colar - '" & d.lines(1) & "'"
+        Return 0
+    End If
+    EditorHandleKey(Chr(0) & Chr(225), running, menuOpen) ' Ctrl+Z de novo, volta pro estado limpo
+
+    d.cursorX = 1 : d.selActive = 0
+    EditorHandleKey(Chr(0) & Chr(223), running, menuOpen) ' Ctrl+X sem selecao = recorta a linha
+    If d.lineCount <> 1 Or d.lines(1) <> "" Or gClipboard <> "hello world" & Chr(10) Then
+        report = "SMOKE EDIT FAIL: Ctrl+X sem selecao nao recortou a linha certa - '" & d.lines(1) & "'"
+        Return 0
+    End If
+    EditorHandleKey(Chr(0) & Chr(225), running, menuOpen) ' Ctrl+Z desfaz o recorte
+    If d.lines(1) <> "hello world" Then
+        report = "SMOKE EDIT FAIL: Ctrl+Z apos Ctrl+X nao restaurou a linha - '" & d.lines(1) & "'"
+        Return 0
+    End If
+
+    d.cursorX = 1 : d.cursorY = 1
+    MoveWordRight(d)
+    If d.cursorX <> 7 Then
+        report = "SMOKE EDIT FAIL: MoveWordRight parou na coluna " & Trim(Str(d.cursorX)) & " (esperado 7)"
+        Return 0
+    End If
+    MoveWordLeft(d)
+    If d.cursorX <> 1 Then
+        report = "SMOKE EDIT FAIL: MoveWordLeft parou na coluna " & Trim(Str(d.cursorX)) & " (esperado 1)"
+        Return 0
+    End If
+
+    d.lineCount = 3
+    d.lines(1) = "paragrafo um"
+    d.lines(2) = ""
+    d.lines(3) = "paragrafo dois"
+    d.cursorY = 3 : d.cursorX = 1
+    MoveParagraphUp(d)
+    If d.cursorY <> 2 Then
+        report = "SMOKE EDIT FAIL: MoveParagraphUp parou na linha " & Trim(Str(d.cursorY)) & " (esperado 2)"
+        Return 0
+    End If
+    MoveParagraphDown(d)
+    If d.cursorY <> 3 Then
+        report = "SMOKE EDIT FAIL: MoveParagraphDown parou na linha " & Trim(Str(d.cursorY)) & " (esperado 3)"
+        Return 0
+    End If
+
+    d.lineCount = 1
+    d.lines(1) = "DIM A(10): PRINT A(1)"
+    d.cursorX = 1 : d.cursorY = 1 : d.selActive = 0
+    Dim foundY As Integer, foundX As Integer
+    If FindForwardNoWrap(d, "print", 1, 1, foundY, foundX) = 0 Or foundX <> 12 Then
+        report = "SMOKE EDIT FAIL: FindForwardNoWrap nao achou 'print' na coluna certa (achou X=" & Trim(Str(foundX)) & ")"
+        Return 0
+    End If
+
+    SelectMatch(d, foundY, foundX, Len("print"))
+    DeleteSelectionRange(d)
+    PasteTextAtCursor(d, "PRINT")
+    If d.lines(1) <> "DIM A(10): PRINT A(1)" Then
+        report = "SMOKE EDIT FAIL: substituicao manual produziu '" & d.lines(1) & "'"
+        Return 0
+    End If
+
+    ' --- selecao/exclusao/colagem multi-linha ---
+    d.lineCount = 3
+    d.lines(1) = "10 PRINT A"
+    d.lines(2) = "20 PRINT B"
+    d.lines(3) = "30 PRINT C"
+    d.cursorY = 1 : d.cursorX = 4 : d.selActive = 0
+    d.selAnchorY = 1 : d.selAnchorX = 4 : d.selActive = -1
+    d.cursorY = 3 : d.cursorX = 4
+    If GetSelectedText(d) <> "PRINT A" & Chr(10) & "20 PRINT B" & Chr(10) & "30 " Then
+        report = "SMOKE EDIT FAIL: selecao multi-linha capturou '" & GetSelectedText(d) & "'"
+        Return 0
+    End If
+    DeleteSelectionRange(d)
+    If d.lineCount <> 1 Or d.lines(1) <> "10 PRINT C" Or d.cursorX <> 4 Or d.cursorY <> 1 Then
+        report = "SMOKE EDIT FAIL: DeleteSelectionRange multi-linha deixou '" & d.lines(1) & "' (lineCount=" & Trim(Str(d.lineCount)) & ", col " & Trim(Str(d.cursorX)) & ")"
+        Return 0
+    End If
+
+    d.lineCount = 1
+    d.lines(1) = "AB"
+    d.cursorY = 1 : d.cursorX = 2 : d.selActive = 0
+    PasteTextAtCursor(d, "1" & Chr(10) & "2" & Chr(10) & "3")
+    If d.lineCount <> 3 Or d.lines(1) <> "A1" Or d.lines(2) <> "2" Or d.lines(3) <> "3B" Then
+        report = "SMOKE EDIT FAIL: PasteTextAtCursor multi-linha deu '" & d.lines(1) & "'|'" & d.lines(2) & "'|'" & d.lines(3) & "' (lineCount=" & Trim(Str(d.lineCount)) & ")"
+        Return 0
+    End If
+    If d.cursorY <> 3 Or d.cursorX <> 2 Then
+        report = "SMOKE EDIT FAIL: cursor pos-colagem multi-linha = lin " & Trim(Str(d.cursorY)) & " col " & Trim(Str(d.cursorX))
+        Return 0
+    End If
+
+    ' --- clipboard real do Windows (Ctrl+C precisa chegar no clipboard do
+    ' SO, nao so' numa string interna do processo - era exatamente o bug
+    ' relatado: colar fora do msxIDE trazia o que tinha no Windows antes) ---
+    d.lineCount = 1
+    d.lines(1) = "CLIPBOARD ROUNDTRIP TEST"
+    d.cursorY = 1 : d.cursorX = 1 : d.selActive = 0
+    EditorHandleKey(Chr(0) & Chr(202), running, menuOpen) ' Ctrl+C (linha inteira, sem selecao)
+    Dim sysClip As String = ConsoleGetClipboardText()
+    If sysClip <> "CLIPBOARD ROUNDTRIP TEST" & Chr(10) Then
+        report = "SMOKE EDIT FAIL: clipboard do Windows nao recebeu o texto copiado (leu '" & sysClip & "')"
+        Return 0
+    End If
+
+    ' Regressao especifica do bug relatado: copiar A, depois copiar B (sem
+    ' nada externo mexer no clipboard no meio) e colar tinha que dar B, nao
+    ' A de novo - "clipboard atrasado um passo".
+    d.lines(1) = "PRIMEIRA LINHA COPIADA"
+    d.cursorY = 1 : d.cursorX = 1
+    EditorHandleKey(Chr(0) & Chr(202), running, menuOpen) ' Ctrl+C - copia A
+    d.lines(1) = "SEGUNDA LINHA COPIADA"
+    EditorHandleKey(Chr(0) & Chr(202), running, menuOpen) ' Ctrl+C - copia B
+    d.lines(1) = ""
+    d.cursorX = 1
+    EditorHandleKey(Chr(0) & Chr(221), running, menuOpen) ' Ctrl+V - tem que colar B, nao A
+    If d.lines(1) <> "SEGUNDA LINHA COPIADA" Then
+        report = "SMOKE EDIT FAIL: colar apos duas copias seguidas trouxe a linha errada - '" & d.lines(1) & "' (clipboard atrasado?)"
+        Return 0
+    End If
+
+    ' So' restaura se havia texto de verdade antes - EmptyClipboard ja teria
+    ' derrubado qualquer outro formato (imagem, arquivo) assim que o
+    ' primeiro Ctrl+C do teste rodou, entao nao ha' como recuperar isso de
+    ' qualquer jeito; so' evita sobrescrever com uma string vazia por cima.
+    If Len(savedSysClipboard) > 0 Then ConsoleSetClipboardText(savedSysClipboard)
+
+    CloseDocument(activeDoc)
+
+    ' --- navegacao de menu: Alt+letra abre, Cima/Baixo navegam os itens
+    ' (com volta), Esquerda/Direita trocam de menu no topo ---
+    Dim menuOpenNav As Integer = 0
+    EditorHandleKey(Chr(0) & Chr(230), running, menuOpenNav) ' Alt+A - Arquivo
+    If menuOpenNav <> MENU_VIEW_FILE Then
+        report = "SMOKE EDIT FAIL: Alt+A nao abriu o menu Arquivo (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
+        Return 0
+    End If
+    DrawMenuBar(menuOpenNav) ' um frame real dispararia isso - forca aqui o reset do destaque pro item 1
+    If menuHighlightIndex <> 1 Then
+        report = "SMOKE EDIT FAIL: destaque inicial do menu Arquivo deveria ser 1 (veio " & Trim(Str(menuHighlightIndex)) & ")"
+        Return 0
+    End If
+
+    EditorHandleKey(Chr(0) & Chr(80), running, menuOpenNav) ' Baixo
+    EditorHandleKey(Chr(0) & Chr(80), running, menuOpenNav) ' Baixo
+    If menuHighlightIndex <> 3 Then
+        report = "SMOKE EDIT FAIL: 2x Seta baixo no menu Arquivo deveria chegar no item 3 (veio " & Trim(Str(menuHighlightIndex)) & ")"
+        Return 0
+    End If
+
+    EditorHandleKey(Chr(0) & Chr(72), running, menuOpenNav) ' Cima
+    EditorHandleKey(Chr(0) & Chr(72), running, menuOpenNav) ' Cima
+    EditorHandleKey(Chr(0) & Chr(72), running, menuOpenNav) ' Cima - do item 1 deve dar a volta pro ultimo
+    If menuHighlightIndex <> GetMenuItemCount(MENU_VIEW_FILE) Then
+        report = "SMOKE EDIT FAIL: Seta cima nao deu a volta pro ultimo item do menu Arquivo (veio " & Trim(Str(menuHighlightIndex)) & ", esperado " & Trim(Str(GetMenuItemCount(MENU_VIEW_FILE))) & ")"
+        Return 0
+    End If
+
+    EditorHandleKey(Chr(0) & Chr(77), running, menuOpenNav) ' Direita - troca pro menu Configurar
+    If menuOpenNav <> MENU_VIEW_CONFIG Then
+        report = "SMOKE EDIT FAIL: Seta direita nao trocou pro menu Configurar (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
+        Return 0
+    End If
+    DrawMenuBar(menuOpenNav)
+    If menuHighlightIndex <> 1 Then
+        report = "SMOKE EDIT FAIL: destaque nao voltou pro item 1 ao trocar de menu (veio " & Trim(Str(menuHighlightIndex)) & ")"
+        Return 0
+    End If
+
+    If GetMenuCommandAtIndex(MENU_VIEW_COMPILE, 1) <> MENU_CMD_COMPILE_MSX Then
+        report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Compilar, 1) deveria ser MENU_CMD_COMPILE_MSX"
+        Return 0
+    End If
+    If GetMenuItemCount(MENU_VIEW_REFERENCE) <> 10 Then
+        report = "SMOKE EDIT FAIL: GetMenuItemCount(Referencia) deveria ser 10 (veio " & Trim(Str(GetMenuItemCount(MENU_VIEW_REFERENCE))) & ")"
+        Return 0
+    End If
+    If GetMenuItemCount(MENU_VIEW_CONFIG) <> 6 Then
+        report = "SMOKE EDIT FAIL: GetMenuItemCount(Configurar) deveria ser 6, com o item Editor (veio " & Trim(Str(GetMenuItemCount(MENU_VIEW_CONFIG))) & ")"
+        Return 0
+    End If
+    If GetMenuCommandAtIndex(MENU_VIEW_CONFIG, 6) <> MENU_CMD_CFG_EDITOR Then
+        report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Configurar, 6) deveria ser MENU_CMD_CFG_EDITOR"
+        Return 0
+    End If
+    If GetMenuItemCount(MENU_VIEW_INSERT) <> 1 Then
+        report = "SMOKE EDIT FAIL: GetMenuItemCount(Inserir) deveria ser 1 (veio " & Trim(Str(GetMenuItemCount(MENU_VIEW_INSERT))) & ")"
+        Return 0
+    End If
+    If GetMenuCommandAtIndex(MENU_VIEW_INSERT, 1) <> MENU_CMD_INSERT_CHARMAP Then
+        report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Inserir, 1) deveria ser MENU_CMD_INSERT_CHARMAP"
+        Return 0
+    End If
+    If NextMenuView(MENU_VIEW_HELP, 1) <> MENU_VIEW_INSERT Then
+        report = "SMOKE EDIT FAIL: Seta direita a partir de Ajuda deveria chegar em Inserir (veio " & Trim(Str(NextMenuView(MENU_VIEW_HELP, 1))) & ")"
+        Return 0
+    End If
+    If NextMenuView(MENU_VIEW_INSERT, 1) <> MENU_VIEW_FILE Then
+        report = "SMOKE EDIT FAIL: Seta direita a partir de Inserir deveria dar a volta pro Arquivo (veio " & Trim(Str(NextMenuView(MENU_VIEW_INSERT, 1))) & ")"
+        Return 0
+    End If
+
+    ' Alt+C abre Compilar e Alt+O abre Configurar (trocado de Alt+P/Alt+C
+    ' a pedido - ver historico de conversa).
+    menuOpenNav = MENU_VIEW_NONE
+    EditorHandleKey(Chr(0) & Chr(232), running, menuOpenNav) ' Alt+C - Compilar
+    If menuOpenNav <> MENU_VIEW_COMPILE Then
+        report = "SMOKE EDIT FAIL: Alt+C deveria abrir o menu Compilar (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
+        Return 0
+    End If
+    EditorHandleKey(Chr(0) & Chr(232), running, menuOpenNav) ' Alt+C de novo fecha
+    If menuOpenNav <> MENU_VIEW_NONE Then
+        report = "SMOKE EDIT FAIL: Alt+C de novo deveria fechar o menu Compilar (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
+        Return 0
+    End If
+    EditorHandleKey(Chr(0) & Chr(244), running, menuOpenNav) ' Alt+O - Configurar
+    If menuOpenNav <> MENU_VIEW_CONFIG Then
+        report = "SMOKE EDIT FAIL: Alt+O deveria abrir o menu Configurar (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
+        Return 0
+    End If
+
+    menuOpenNav = 0
+    DrawMenuBar(menuOpenNav) ' fecha e reseta o destaque, nao deixa estado vazado pro resto do processo
+
+    ' Tab insere cfg.editor.indent_size espacos (configuravel em Configurar
+    ' -> Editor, default 4) - guarda/restaura o valor real do usuario no
+    ' msxide.db pra este teste nao deixar sujeira permanente. Precisa de um
+    ' documento novo porque o de cima ja' foi fechado (CloseDocument logo
+    ' acima) - "d" la' de cima nao aponta mais pro documento ativo agora.
+    Dim savedIndentSetting As String = DbGetSetting("cfg.editor.indent_size", "4")
+    DbSetSetting("cfg.editor.indent_size", "3")
+    EditorCreateUntitled()
+    If activeDoc < 1 Or activeDoc > docCount Then
+        DbSetSetting("cfg.editor.indent_size", savedIndentSetting)
+        report = "SMOKE EDIT FAIL: sem documento ativo pro teste de Tab"
+        Return 0
+    End If
+    Dim ByRef dTab As Document = docs(activeDoc)
+    dTab.lines(1) = ""
+    dTab.lineCount = 1
+    dTab.cursorX = 1 : dTab.cursorY = 1
+    dTab.selActive = 0
+    EditorHandleKey(Chr(9), running, menuOpen)
+    If dTab.lines(1) <> "   " Or dTab.cursorX <> 4 Then
+        DbSetSetting("cfg.editor.indent_size", savedIndentSetting)
+        report = "SMOKE EDIT FAIL: Tab deveria inserir 3 espacos (cfg.editor.indent_size=3) - linha='" & dTab.lines(1) & "' col=" & Trim(Str(dTab.cursorX))
+        Return 0
+    End If
+    DbSetSetting("cfg.editor.indent_size", savedIndentSetting)
+
+    ' Caracteres especiais MSX (Inserir->Caracteres Especiais): confere so'
+    ' o mecanismo de insercao que o dialogo usa (PasteTextAtCursor com o
+    ' byte/letra ja calculados) - o dialogo em si e' um loop modal proprio
+    ' (ConsolePollInput direto), sem injecao de tecla como EditorHandleKey,
+    ' entao nao da' pra dirigir ele neste smoke headless.
+    dTab.lines(1) = ""
+    dTab.cursorX = 1 : dTab.cursorY = 1
+    PasteTextAtCursor(dTab, Chr(200)) ' secao 1: byte 128-255 vai direto
+    If dTab.lines(1) <> Chr(200) Or dTab.cursorX <> 2 Then
+        report = "SMOKE EDIT FAIL: insercao de caractere especial (byte 200) nao funcionou - linha tem " & Trim(Str(Len(dTab.lines(1)))) & " byte(s)"
+        Return 0
+    End If
+    dTab.lines(1) = ""
+    dTab.cursorX = 1
+    PasteTextAtCursor(dTab, "C") ' secao 2: simbolo 3 (coracao) vira a letra C
+    If dTab.lines(1) <> "C" Then
+        report = "SMOKE EDIT FAIL: insercao do fallback de simbolo especial nao funcionou - linha='" & dTab.lines(1) & "'"
+        Return 0
+    End If
+
+    report = "SMOKE EDIT OK: digitar, selecao Shift+seta, copiar/colar (Ctrl+C/V), recortar linha (Ctrl+X), desfazer/refazer (Ctrl+Z/Y), navegacao por palavra (Ctrl+seta) e paragrafo, localizar/substituir, selecao/colagem multi-linha, clipboard real do Windows, navegacao de menu (Alt+letra/setas/Enter, Alt+C=Compilar, Alt+O=Configurar), Tab configuravel via Configurar->Editor (Indent Size), item Editor no menu Configurar, menu Inserir->Caracteres Especiais MSX"
     Return -1
 End Function
 

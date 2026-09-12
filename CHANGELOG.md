@@ -2,6 +2,67 @@
 
 Todas as mudanças notáveis do msxIDE são registradas aqui. Formato livre, em português, por versão.
 
+## [0.5.0] — "MAMUTE.MAP" — 2026-09-11
+
+O mamute aprende a abreviar: o Basic Dignified ganha a conversão de variáveis de nome longo pra nome
+curto (a peça que faltava do dialeto — o compilador nativo simplesmente não tinha nada disso até hoje),
+mais um bom punhado de acertos no editor de texto e no próprio compilador. Nome da versão é um trocadilho
+duplo: `.MAP` é o arquivo clássico que relaciona símbolo com endereço num compilador/linker de verdade —
+exatamente o que a tabela nome-longo→nome-curto faz — e também é o nome do aplicativo Character Map do
+Windows, a inspiração direta da nova grade de caracteres especiais MSX.
+
+### Adicionado
+
+- **Variáveis de nome longo → curto no Basic Dignified**: portada a funcionalidade mais complexa do
+  dialeto (`BASIC_DIGNIFIED.md`, "Long named variables"), até então 100% ausente do compilador nativo.
+  Nomes com 3+ letras/números/underscore (case-insensitive) são automaticamente trocados por um par de
+  letras, atribuído em ordem **descendente de `ZZ` até `AA`** (nunca uma letra só nem letra+número) — o
+  mesmo nome longo sempre vira o mesmo curto independente do sufixo de tipo (`variable1` e `variable1$`
+  viram `zz` e `zz$`). `DECLARE nome:curto` força um mapeamento na mão; `DECLARE nome1,nome2` reserva
+  (um curto direto se tiver 1-2 letras, ou "nunca encurtar esse nome" se tiver 3+); `~nome` mantém o
+  nome por extenso em **todas** as ocorrências do arquivo, não só na marcada; variáveis de 1-2 letras
+  usadas direto no código nunca são tocadas. Tokenizer novo que varre cada linha reconhecendo
+  identificadores mas nunca entra dentro de string literal nem depois de `REM`/`'`/`DATA` (senão um
+  comentário em inglês virava sopa de variáveis trocadas). Namespace por arquivo, reaproveitando o
+  mesmo mecanismo que os labels `{nome}` já usavam para `INCLUDE`s.
+- **`Inserir -> Caracteres Especiais MSX`** (`Alt+I`, depois `C`): grade navegável por setas com os
+  caracteres especiais do conjunto MSX — mesmo conjunto que o "Translate" do Basic Dignified Suite
+  reconhece (`badig_msx.py`, `Parser.trans_char`). Acentos/gráficos (códigos 128-255) são inseridos
+  como o byte exato, que sai idêntico no `.amx` gerado sem nenhuma tradução no compilador (o pipeline
+  inteiro é byte a byte, nunca passa por UTF-8). Símbolos especiais (`CHR$(1)` a `CHR$(31)` — carinha,
+  naipes, blocos) não são imprimíveis de forma confiável via `PRINT`/string literal no MSX BASIC
+  clássico, então viram a **letra equivalente** (`A`-`Z`, `[`, `]`, `\`, `^`, `_`), o mesmo fallback de
+  segurança que o Basic Dignified Suite usa. `Enter` insere sem fechar o diálogo (dá pra inserir vários
+  seguidos), `Esc` fecha. Sétimo item na barra de menus.
+- **`Tab` configurável**: insere a quantidade de espaços definida em `Configurar -> Editor -> Indent
+  Size` (padrão 4, novo item no menu Configurar) em vez de não fazer nada.
+- **`Shift+Delete`/`Shift+Insert`/`Ctrl+Insert`**: o trio clássico de recortar/colar/copiar dos editores
+  MS-DOS de antes do `Ctrl+X`/`Ctrl+V`/`Ctrl+C` (QEdit, Norton Editor, Brief...) — mapeados pro mesmo
+  código interno dos atalhos modernos, então funcionam identicamente sem duplicar lógica nenhuma no
+  editor.
+- **Basic Dignified: continuidade de linha com `:`**: recurso já documentado (`BASIC_DIGNIFIED.md`,
+  "Line separation") mas nunca implementado — uma linha terminada em `:` agora se junta com a próxima
+  (e uma linha começada em `:` se junta com a anterior) antes de virar uma linha numerada, exatamente
+  como a documentação sempre prometeu. `SCREEN 0:` seguido de `WIDTH 40` agora vira uma linha só
+  (`10 SCREEN 0:WIDTH 40`) em vez de duas.
+
+### Corrigido
+
+- **`Strip Spaces` só colapsava espaços duplicados**, nunca removia de fato — agora remove *todos* os
+  espaços fora de string literal (inclusive colados no `:`), como a própria documentação sempre disse
+  ("all non essential spaces from the code can be removed").
+- **Ordem do pipeline de formatação do Basic Dignified**: `Strip Spaces` rodava *antes* da conversão de
+  `PRINT`/`?` e `THEN`/`GOTO`, que dependem de espaço ao redor da palavra-chave pra reconhecê-la com
+  segurança — com as duas opções ligadas ao mesmo tempo, o strip quebrava silenciosamente as outras
+  duas. Ordem agora é Convert PRINT → Strip THEN GOTO → Strip Spaces → Capitalize.
+- **`Alt+C` agora abre Compilar e `Alt+O` abre Configurar** (antes `Alt+P` e `Alt+C`, respectivamente).
+
+### Créditos desta versão
+
+Ver a seção "Agradecimentos" em [README.md](README.md#agradecimentos).
+
+---
+
 ## [0.4.0] — "MAMUTE.FNT" — 2026-09-08
 
 O mamute aprende a desenhar suas próprias letras: dois editores visuais novos dentro do msxIDE — um

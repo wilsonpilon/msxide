@@ -76,3 +76,45 @@
 09-02-2026 15:07:16 [compile] asm loader added to msx00.dmx label=asmsx00 usr=1
 09-02-2026 15:07:21 [compile] asm run emu rc=0 cmd=d:\msx\openmsx\openmsx.exe -machine Boosted_MSX2_EN -diska E:\msxide\disk\ASMSX00.dsk
 09-02-2026 15:07:22 [compile] asm success msg2=Gerado: E:\msxide\asmsx00.bin | Disco: E:\msxide\disk\ASMSX00.dsk | openMSX iniciado | Incluido em msx00.dmx: {asmsx00} DEFUSR1
+09-11-2026 15:30:50 [compile] start mode=1 file=msx00.dmx
+09-11-2026 15:30:50 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 15:30:50 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 15:30:50 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 16:32:43 [compile] start mode=1 file=msx00.dmx
+09-11-2026 16:32:43 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 16:32:43 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 16:32:43 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 16:35:43 [compile] start mode=1 file=msx00.dmx
+09-11-2026 16:35:43 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 16:35:43 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 16:35:43 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 16:36:24 [compile] start mode=1 file=msx00.dmx
+09-11-2026 16:36:24 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 16:36:24 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 16:36:24 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 20:46:41 [compile] start mode=1 file=msx00.dmx
+09-11-2026 20:46:41 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 20:46:41 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 20:46:41 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 20:48:40 [compile] start mode=1 file=msx00.dmx
+09-11-2026 20:48:40 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 20:48:40 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 20:48:40 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 21:03:51 [compile] start mode=1 file=msx00.dmx
+09-11-2026 21:03:51 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 21:03:51 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 21:03:51 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 21:04:57 [compile] start mode=4 file=msx00.amx
+09-11-2026 21:04:57 [compile] resolved src=C:\dos\msxide\msx00.amx ext=.amx
+09-11-2026 21:04:57 [compile] modeLabel=Compilar e Executar rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 21:10:21 [compile] run emu rc=0 cmd=c:\msx\openmsx\openmsx.exe -diska C:\dos\msxide\disk\MSX00.dsk
+09-11-2026 21:10:21 [compile] success msg1=OK: Compilar e Executar msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx | Disco: C:\dos\msxide\disk\MSX00.dsk | openMSX iniciado
+09-11-2026 21:11:11 [compile] start mode=1 file=msx00.dmx
+09-11-2026 21:11:11 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 21:11:11 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 21:11:11 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx
+09-11-2026 21:11:15 [compile] start mode=4 file=msx00.dmx
+09-11-2026 21:11:15 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-11-2026 21:11:15 [compile] modeLabel=Compilar e Executar rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-11-2026 21:11:47 [compile] run emu rc=0 cmd=c:\msx\openmsx\openmsx.exe -diska C:\dos\msxide\disk\MSX00.dsk
+09-11-2026 21:11:47 [compile] success msg1=OK: Compilar e Executar msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx | Disco: C:\dos\msxide\disk\MSX00.dsk | openMSX iniciado

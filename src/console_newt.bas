@@ -374,3 +374,23 @@ End Sub
 Function ConsoleUtf8ToActiveCp(ByRef txt As String) As String
     Return txt
 End Function
+
+' Integracao com a area de transferencia do sistema (X11/Wayland) ainda nao
+' implementada neste backend - Ctrl+C/X/V do editor continuam funcionando
+' normalmente entre documentos do proprio msxIDE (clipboard interno), so'
+' nao chegam a sincronizar com outros programas do terminal.
+Sub ConsoleSetClipboardText(ByRef text As String)
+End Sub
+
+Function ConsoleGetClipboardText() As String
+    Return ""
+End Function
+
+' TranslateKeyEvent deste backend trabalha em cima de sequencias ANSI de
+' terminal, nao de KEY_EVENT_RECORD do Windows Console API - o smoke test
+' sintetico (pensado pra validar Ctrl/Alt+letra via dwControlKeyState) so'
+' faz sentido pro backend win.
+Function ConsoleRunKeyTranslationSmokeTest(ByRef report As String) As Integer
+    report = "SMOKE KEYS: nao aplicavel ao backend newt (nao usa Windows Console API)"
+    Return -1
+End Function
