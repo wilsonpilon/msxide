@@ -1,2 +1,2 @@
-Const MSXIDE_VERSION_STR As String = "0.5.0"
+Const MSXIDE_VERSION_STR As String = "0.5.32"
 Const MSXIDE_RELEASE_CODENAME As String = "MAMUTE.MAP"

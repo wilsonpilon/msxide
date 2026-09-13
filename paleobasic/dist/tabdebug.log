@@ -97,3 +97,21 @@
 06:40:46.000  SetActiveTab(0)  DocsCount=1  ActiveBefore=-1
 06:40:46.004  RedrawTabBar  W=1000 H=36 StartDrawingOk=-218032197 DocsCount=1 ActiveTabPosition=0
 06:40:46.011  RedrawTabBar  W=1000 H=36 StartDrawingOk=-117368901 DocsCount=1 ActiveTabPosition=0
+11:20:46.470  AddDocumentTab entrada  Path=''  Mode=DMX  DocsCountAntes=0
+11:20:46.482  AddDocumentTab saida  NewPosition=0  Sci=1532670979792  DocsCountDepois=1
+11:20:46.486  RedrawTabBar  W=1000 H=36 StartDrawingOk=1493242203 DocsCount=1 ActiveTabPosition=-1
+11:20:46.487  SetActiveTab(0)  DocsCount=1  ActiveBefore=-1
+11:20:46.488  RedrawTabBar  W=1000 H=36 StartDrawingOk=-922677179 DocsCount=1 ActiveTabPosition=0
+11:20:46.491  RedrawTabBar  W=1000 H=36 StartDrawingOk=-805236667 DocsCount=1 ActiveTabPosition=0
+13:47:10.503  AddDocumentTab entrada  Path=''  Mode=DMX  DocsCountAntes=0
+13:47:10.510  AddDocumentTab saida  NewPosition=0  Sci=1421852946128  DocsCountDepois=1
+13:47:10.510  RedrawTabBar  W=1000 H=36 StartDrawingOk=-1274997927 DocsCount=1 ActiveTabPosition=-1
+13:47:10.511  SetActiveTab(0)  DocsCount=1  ActiveBefore=-1
+13:47:10.512  RedrawTabBar  W=1000 H=36 StartDrawingOk=-1174334274 DocsCount=1 ActiveTabPosition=0
+13:47:10.513  RedrawTabBar  W=1000 H=36 StartDrawingOk=-1073670978 DocsCount=1 ActiveTabPosition=0
+13:56:23.499  AddDocumentTab entrada  Path=''  Mode=DMX  DocsCountAntes=0
+13:56:23.507  AddDocumentTab saida  NewPosition=0  Sci=2147132512960  DocsCountDepois=1
+13:56:23.508  RedrawTabBar  W=1000 H=36 StartDrawingOk=-1023339350 DocsCount=1 ActiveTabPosition=-1
+13:56:23.508  SetActiveTab(0)  DocsCount=1  ActiveBefore=-1
+13:56:23.510  RedrawTabBar  W=1000 H=36 StartDrawingOk=-1258220259 DocsCount=1 ActiveTabPosition=0
+13:56:23.511  RedrawTabBar  W=1000 H=36 StartDrawingOk=-1140779747 DocsCount=1 ActiveTabPosition=0

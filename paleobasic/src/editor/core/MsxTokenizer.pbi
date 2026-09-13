@@ -72,6 +72,16 @@ Global Tok_HasError.b
 Global Tok_ErrorMsg.s
 Global Tok_ErrorLine.i
 
+; Relatorio do lexer (BadigCfg\LexerReport, sincronizado por
+; Dig_SyncConfigFromBadigCfg() em BadigEditor.pb) - dump por-linha dos bytes
+; tokenizados que Tok_Tokenize ja calcula e hoje descarta a cada iteracao.
+; E o equivalente nativo mais proximo de "saida do lexer" (ver nota sobre a
+; adaptacao no topo de DignifiedPreprocessor.pbi/Dig_ParserReportEnabled),
+; ja que este tokenizador de bytes MSX-BASIC e o unico estagio de
+; "lexer/tokens" que o pipeline nativo realmente tem.
+Global Tok_LexerReportEnabled.b = #False
+Global Tok_LexerReportText.s
+
 ;- ------------------------------------------------------------
 ;- Inicializacao
 ;- ------------------------------------------------------------
@@ -169,6 +179,7 @@ Procedure Tok_Fail(LineNum.i, Msg.s)
     Tok_HasError = #True
     Tok_ErrorMsg = Msg
     Tok_ErrorLine = LineNum
+    BadigLog_Add(#BadigLog_Error, LineNum, Msg)
   EndIf
 EndProcedure
 
@@ -668,7 +679,7 @@ EndProcedure
 
 Procedure.s Tok_Tokenize(SourceText.s)
   Protected text.s, lineCount.i, li.i
-  Protected lineOrder.i = 0, lineAddress.i = #Tok_Base
+  Protected lineOrder.i = 0, lineAddress.i = #Tok_Base, linesEmitted.i = 0
   Protected out.s = "ff"
   Protected raw.s, trimmed.s, lineNumStr.s, body.s, bodyHex.s
   Protected digStart.i, digEnd.i
@@ -678,6 +689,8 @@ Procedure.s Tok_Tokenize(SourceText.s)
   Tok_HasError = #False
   Tok_ErrorMsg = ""
   Tok_ErrorLine = 0
+  Tok_LexerReportText = ""
+  BadigLog_Add(#BadigLog_Header, 0, "Tokenizacao iniciada.")
 
   text = ReplaceString(SourceText, Chr(13) + Chr(10), Chr(10))
   text = ReplaceString(text, Chr(13), Chr(10))
@@ -733,6 +746,12 @@ Procedure.s Tok_Tokenize(SourceText.s)
       Break
     EndIf
 
+    linesEmitted + 1
+    If Tok_LexerReportEnabled
+      If Tok_LexerReportText <> "" : Tok_LexerReportText + Chr(13) + Chr(10) : EndIf
+      Tok_LexerReportText + "Linha " + Str(lineNumber) + ": " + bodyHex
+    EndIf
+
     Protected lineCompiled.s = Tok_Word16LE(lineNumber) + bodyHex
     lineAddress = lineAddress + (Len(lineCompiled) + 6) / 2
     lineCompiled = Tok_Word16LE(lineAddress) + lineCompiled + "00"
@@ -744,6 +763,7 @@ Procedure.s Tok_Tokenize(SourceText.s)
   EndIf
 
   out + "0000"
+  BadigLog_Add(#BadigLog_Info, 0, "Tokenizacao concluida: " + Str(linesEmitted) + " linha(s).")
   ProcedureReturn out
 EndProcedure
 

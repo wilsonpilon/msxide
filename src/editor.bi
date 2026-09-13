@@ -47,6 +47,7 @@ Type Document
     spriteColors(1 To MAX_LINES) As String
     helpTitle As String
     helpWrapWidth As Integer
+    diskBaselineText As String ' ultimo conteudo lido/gravado em disco - ver EditorCheckExternalChanges
     lineCount As Integer
     lines(1 To MAX_LINES) As String
     cursorX As Integer
@@ -86,5 +87,6 @@ Declare Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
 Declare Function EditorRunTextEditSmokeTest(ByRef report As String) As Integer
 Declare Function EditorRunMamuteSmokeTest(ByRef report As String) As Integer
 Declare Function EditorRunMamuteDiag(ByRef report As String) As Integer
+Declare Function EditorCheckExternalChanges() As Integer
 
 #endif

@@ -26,6 +26,7 @@
 EnableExplicit
 OpenConsole()
 
+XIncludeFile "..\core\BadigLog.pbi"
 XIncludeFile "..\core\DignifiedPreprocessor.pbi"
 XIncludeFile "..\core\MsxTokenizer.pbi"
 

@@ -1,7 +1,7 @@
 {
   "Compiler": "fbc64.exe",
-  "Version": "0.5.0",
-  "LastSourceHash": "35CD8DFE4E0E77ABA59A79122E2760C2F028A59E5F662DA46262057AFE67D326",
+  "Backend": "win",
   "Basic": "C:\\Basic\\",
-  "Backend": "win"
+  "LastSourceHash": "8EB69EB8E063230E3C6B82961017C9FDC094E705B7CBF1E9B152791F8B312DAB",
+  "Version": "0.5.32"
 }

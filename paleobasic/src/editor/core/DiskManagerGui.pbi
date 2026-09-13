@@ -232,7 +232,8 @@ Procedure DiskMgr_OpenWindow(ParentWindow, InitialPath.s = "")
             EndIf
 
             If Confirmed
-              Protected Picked.s = OpenFileRequester("Escolher ou criar disco MSX", TargetPath, #File_Pattern_Disk, 0)
+              Protected Picked.s = FileBrowser_Show(Win, #FileBrowser_Open, "Escolher ou criar disco MSX",
+                                                    GetPathPart(TargetPath), GetFilePart(TargetPath), "*.dsk")
               If Picked <> ""
                 If DiskReady
                   MSXDisk::CloseDisk()
@@ -421,7 +422,8 @@ Procedure DiskMgr_OpenWindow(ParentWindow, InitialPath.s = "")
 
           Case G_SaveAs
             If DiskReady
-              Protected SaveAsPath.s = SaveFileRequester("Salvar disco como...", GetPathPart(TargetPath), #File_Pattern_Disk, 0)
+              Protected SaveAsPath.s = FileBrowser_Show(Win, #FileBrowser_Save, "Salvar disco como...",
+                                                        GetPathPart(TargetPath), GetFilePart(TargetPath), "*.dsk")
               If SaveAsPath <> ""
                 MSXDisk::CloseDisk()
                 If CopyFile(TempPath, SaveAsPath)
@@ -437,7 +439,8 @@ Procedure DiskMgr_OpenWindow(ParentWindow, InitialPath.s = "")
 
           Case G_Duplicate
             If DiskReady
-              Protected DupPath.s = SaveFileRequester("Duplicar disco como...", GetPathPart(TargetPath), #File_Pattern_Disk, 0)
+              Protected DupPath.s = FileBrowser_Show(Win, #FileBrowser_Save, "Duplicar disco como...",
+                                                     GetPathPart(TargetPath), GetFilePart(TargetPath), "*.dsk")
               If DupPath <> ""
                 MSXDisk::CloseDisk()
                 If CopyFile(TempPath, DupPath)

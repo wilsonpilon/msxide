@@ -191,6 +191,8 @@ EndProcedure
 ; qualquer arquivo de janela/dialogo (todos usam a Macro ThemedButton() pra
 ; nao ficar com chrome nativo do Windows - ver ThemedButtons.pbi).
 XIncludeFile "core/ThemedButtons.pbi"
+XIncludeFile "core/BadigLog.pbi"
+XIncludeFile "core/BadigOutputGui.pbi"
 
 XIncludeFile "core/MsxTokenizer.pbi"
 XIncludeFile "core/DignifiedPreprocessor.pbi"
@@ -207,6 +209,7 @@ XIncludeFile "core/ExternalToolDownload.pbi"
 XIncludeFile "core/FontDownloader.pbi"
 XIncludeFile "core/CharMapGui.pbi"
 XIncludeFile "core/MSXDisk.pbi"
+XIncludeFile "core/FileBrowserGui.pbi"
 XIncludeFile "core/DiskManagerGui.pbi"
 XIncludeFile "emulators/OpenMSXBridge.pbi"
 XIncludeFile "emulators/OpenMSXConsoleGui.pbi"
@@ -585,6 +588,12 @@ Enumeration MenuItems
   #Menu_RenumberToBas
   #Menu_DignifiedToAscii
   #Menu_DignifiedToTokenized
+  #Menu_ViewBadigLog
+  #Menu_ViewLineReport
+  #Menu_ViewLabelReport
+  #Menu_ViewVarReport
+  #Menu_ViewLexerReport
+  #Menu_ViewParserReport
   #Menu_CloseTab
   #Menu_Exit
   #Menu_Find
@@ -686,13 +695,6 @@ EndEnumeration
 #App_SplashW    = 600  ; splash na abertura (paleobasic.png, 3:2) - ver App_ShowSplash/App_CloseSplash
 #App_SplashH    = 400
 #App_SplashMinMs = 2200
-#File_Pattern     = "MSX-BASIC Dignified (*.dmx)|*.dmx|MSX Basic ASCII (*.amx)|*.amx|Todos os arquivos (*.*)|*.*"
-#File_Pattern_ASM = "Z80 Assembly (*.asm)|*.asm|Todos os arquivos (*.*)|*.*"
-#File_Pattern_MD  = "Markdown (*.md)|*.md|Todos os arquivos (*.*)|*.*"
-#File_Pattern_Project = "Projeto MSX (*.msxproject)|*.msxproject|Todos os arquivos (*.*)|*.*"
-#File_Pattern_Open = "Todos os suportados (*.dmx;*.amx;*.asm;*.md)|*.dmx;*.amx;*.asm;*.md|" +
-                     "MSX-BASIC Dignified (*.dmx)|*.dmx|MSX Basic ASCII (*.amx)|*.amx|" +
-                     "Z80 Assembly (*.asm)|*.asm|Markdown (*.md)|*.md|Todos os arquivos (*.*)|*.*"
 
 ; Versao/build normalmente injetadas via build.ps1 (/CONSTANT App_Version=...,
 ; -Version/-BuildDate) - fallback aqui so para compilar direto pela IDE do
@@ -1034,6 +1036,7 @@ Declare   SaveAsAsciiFromDignified()
 Declare   SaveAsTokenizedFromDignified()
 Declare   RunOnOpenMSX(BaseName.s, DmxText.s, AsciiText.s, HexOut.s, IncludeNestorBasic.b = #False)
 Declare   Dig_SyncConfigFromBadigCfg()
+Declare.b Tok_ShowErrorIfAny()
 Declare   ResizeInterface()
 
 ;- ------------------------------------------------------------
@@ -2707,7 +2710,7 @@ Procedure.b OpenFileIntoTab(Path.s)
 EndProcedure
 
 Procedure OpenDocumentDialog()
-  Protected Path.s = OpenFileRequester("Abrir arquivo", "", #File_Pattern_Open, 0)
+  Protected Path.s = FileBrowser_Show(#MainWindow, #FileBrowser_Open, "Abrir arquivo", "", "", "*.*")
   If Path = ""
     ProcedureReturn
   EndIf
@@ -2722,11 +2725,11 @@ Procedure.b SaveDocument(SaveAs.b = #False)
   EndIf
 
   Protected Path.s = Docs()\Path
-  Protected Pattern.s = #File_Pattern
+  Protected Pattern.s = "*.dmx"
   If Docs()\Mode = "ASM"
-    Pattern = #File_Pattern_ASM
+    Pattern = "*.asm"
   ElseIf Docs()\Mode = "MD"
-    Pattern = #File_Pattern_MD
+    Pattern = "*.md"
   EndIf
 
   If SaveAs Or Path = ""
@@ -2734,7 +2737,8 @@ Procedure.b SaveDocument(SaveAs.b = #False)
     If Suggestion = ""
       Suggestion = Docs()\UntitledName
     EndIf
-    Protected NewPath.s = SaveFileRequester("Salvar como", Suggestion, Pattern, 0)
+    Protected NewPath.s = FileBrowser_Show(#MainWindow, #FileBrowser_Save, "Salvar como",
+                                           GetPathPart(Suggestion), GetFilePart(Suggestion), Pattern)
     If NewPath = ""
       ProcedureReturn #False
     EndIf
@@ -3376,7 +3380,8 @@ Procedure.b SaveProject(SaveAsFlag.b = #False)
     Suggestion = ProjectDB::GetPath()
   EndIf
 
-  Protected SavePath.s = SaveFileRequester("Salvar projeto como...", Suggestion, #File_Pattern_Project, 0)
+  Protected SavePath.s = FileBrowser_Show(#MainWindow, #FileBrowser_Save, "Salvar projeto como...",
+                                          GetPathPart(Suggestion), GetFilePart(Suggestion), "*.msxproject")
   If SavePath = ""
     ProcedureReturn #False
   EndIf
@@ -3554,12 +3559,10 @@ Procedure SaveAsTokenizedNative()
     ProcedureReturn
   EndIf
 
+  Dig_SyncConfigFromBadigCfg() : BadigLog_Reset()
   Protected HexOut.s = Tok_Tokenize(SourceText)
 
-  If Tok_HasError
-    MessageRequester("Erro ao tokenizar",
-                     "Linha " + Str(Tok_ErrorLine) + ": " + Tok_ErrorMsg,
-                     #PB_MessageRequester_Ok | #PB_MessageRequester_Error)
+  If Tok_ShowErrorIfAny()
     ProcedureReturn
   EndIf
 
@@ -3607,11 +3610,9 @@ Procedure SaveAsRenumberedBas()
     ProcedureReturn
   EndIf
 
+  Dig_SyncConfigFromBadigCfg() : BadigLog_Reset()
   Protected RenumberedAscii.s = Tok_RenumberAscii(SourceText)
-  If Tok_HasError
-    MessageRequester("Erro ao renumerar",
-                     "Linha " + Str(Tok_ErrorLine) + ": " + Tok_ErrorMsg,
-                     #PB_MessageRequester_Ok | #PB_MessageRequester_Error)
+  If Tok_ShowErrorIfAny()
     ProcedureReturn
   EndIf
 
@@ -3630,10 +3631,7 @@ Procedure SaveAsRenumberedBas()
 
   If LCase(GetExtensionPart(SavePath)) = "bmx"
     Protected HexOut.s = Tok_Tokenize(RenumberedAscii)
-    If Tok_HasError
-      MessageRequester("Erro ao tokenizar",
-                       "Linha " + Str(Tok_ErrorLine) + ": " + Tok_ErrorMsg,
-                       #PB_MessageRequester_Ok | #PB_MessageRequester_Error)
+    If Tok_ShowErrorIfAny()
       ProcedureReturn
     EndIf
     If Not Tok_SaveHexAsBinary(HexOut, SavePath)
@@ -3719,11 +3717,9 @@ Procedure RenumberActiveTabInPlace()
     ProcedureReturn
   EndIf
 
+  Dig_SyncConfigFromBadigCfg() : BadigLog_Reset()
   Protected RenumberedAscii.s = Tok_RenumberAscii(SourceText, NewStart, NewStep, OldLineFrom)
-  If Tok_HasError
-    MessageRequester("Erro ao renumerar",
-                     "Linha " + Str(Tok_ErrorLine) + ": " + Tok_ErrorMsg,
-                     #PB_MessageRequester_Ok | #PB_MessageRequester_Error)
+  If Tok_ShowErrorIfAny()
     ProcedureReturn
   EndIf
 
@@ -3744,6 +3740,15 @@ Procedure Dig_SyncConfigFromBadigCfg()
   Dig_Translate = BadigCfg\Translate
   Dig_ConvertPrintCfg = BadigCfg\ConvertPrint
   Dig_StripThenGotoCfg = BadigCfg\StripThenGoto
+
+  Dig_VerboseLevel = BadigCfg\VerboseLevel
+  If Dig_VerboseLevel < 0 : Dig_VerboseLevel = 0 : EndIf
+  If Dig_VerboseLevel > 5 : Dig_VerboseLevel = 5 : EndIf
+  Dig_LineReportEnabled = BadigCfg\LineReport
+  Dig_LabelReportEnabled = BadigCfg\LabelReport
+  Dig_VarReportEnabled = BadigCfg\VarReport
+  Dig_ParserReportEnabled = BadigCfg\ParserReport
+  Tok_LexerReportEnabled = BadigCfg\LexerReport
 EndProcedure
 
 ; Roda o pre-processador Dignified nativo (DignifiedPreprocessor.pbi) sobre o
@@ -3767,6 +3772,7 @@ Procedure.s RunDignifiedPreprocessor()
   EndIf
 
   Dig_SyncConfigFromBadigCfg()
+  BadigLog_Reset()
   Protected SourceText.s = ReadSciText(Docs()\SciGadget)
   Protected BasePath.s = ""
   If Docs()\Path <> ""
@@ -3780,21 +3786,49 @@ Procedure.s RunDignifiedPreprocessor()
   Protected AsciiOut.s = Dig_Preprocess(SourceText, BasePath, IsMsxBas2Rom)
 
   Protected HadError.b = Dig_HasError
-  Protected ErrLine.i = Dig_ErrorLine
-  Protected ErrMsg.s = Dig_ErrorMsg
 
   If UsingProjectOverride
     BadigCfg = BadigCfgSnapshot
   EndIf
 
   If HadError
-    MessageRequester("Erro no pre-processador Dignified",
-                     "Linha " + Str(ErrLine) + ": " + ErrMsg,
-                     #PB_MessageRequester_Ok | #PB_MessageRequester_Error)
+    BadigOutput_Show(#MainWindow, "Erro no pre-processador Dignified",
+                     BadigLog_Render(Dig_VerboseLevel, #True))
     ProcedureReturn ""
   EndIf
 
   ProcedureReturn AsciiOut
+EndProcedure
+
+; Mostra o erro do tokenizador nativo (Tok_HasError/Tok_ErrorMsg/
+; Tok_ErrorLine, MsxTokenizer.pbi) na janela de saida com rolagem, no lugar
+; do MessageRequester de uma linha - mesmo padrao usado pelo erro do
+; pre-processador em RunDignifiedPreprocessor() acima. Usado pelos 3 pontos
+; que chamam Tok_Tokenize() direto (SaveAsTokenizedFromDignified,
+; RunBasicFromActiveTab, RunNestorBasicFromActiveTab).
+Procedure.b Tok_ShowErrorIfAny()
+  If Not Tok_HasError
+    ProcedureReturn #False
+  EndIf
+  BadigOutput_Show(#MainWindow, "Erro ao tokenizar", BadigLog_Render(Dig_VerboseLevel, #True))
+  ProcedureReturn #True
+EndProcedure
+
+; Itens de menu "Basic Dignified: Ver relatorio..." (Arquivo) - cada
+; relatorio so existe (fica preenchido dentro de Dig_Preprocess()/
+; Tok_Tokenize()) se o respectivo checkbox estiver ligado em Configurar ->
+; Basic Dignified... FlagOn e o mesmo booleano lido de BadigCfg, ReportText
+; o global Dig_*ReportText/Tok_LexerReportText correspondente (preenchido
+; pela ultima conversao/tokenizacao rodada nesta sessao).
+Procedure BadigView_ShowReport(FlagOn.b, ReportText.s, Title.s)
+  If Not FlagOn
+    MessageRequester(Title,
+      "Esta opcao esta desativada. Ative em Configurar -> Basic Dignified... e rode uma conversao " +
+      "(Arquivo -> Dignified -> ASCII/tokenizado, ou Executar -> BASIC) primeiro.",
+      #PB_MessageRequester_Ok | #PB_MessageRequester_Info)
+    ProcedureReturn
+  EndIf
+  BadigOutput_Show(#MainWindow, Title, ReportText)
 EndProcedure
 
 ; Converte o Dignified da aba atual para MSX-BASIC ASCII classico (nativo,
@@ -3854,10 +3888,7 @@ Procedure SaveAsTokenizedFromDignified()
   EndIf
 
   Protected HexOut.s = Tok_Tokenize(AsciiOut)
-  If Tok_HasError
-    MessageRequester("Erro ao tokenizar",
-                     "Linha " + Str(Tok_ErrorLine) + ": " + Tok_ErrorMsg,
-                     #PB_MessageRequester_Ok | #PB_MessageRequester_Error)
+  If Tok_ShowErrorIfAny()
     ProcedureReturn
   EndIf
 
@@ -3884,6 +3915,15 @@ Procedure SaveAsTokenizedFromDignified()
 
   MessageRequester("Tokenizado gerado", "Salvo em:" + Chr(10) + SavePath,
                    #PB_MessageRequester_Ok | #PB_MessageRequester_Info)
+
+  ; BadigCfg\PrintReport ("Exibir relatorios em vez de salvar") - o pipeline
+  ; nativo nunca salvou relatorio em arquivo, entao reaproveitamos o
+  ; booleano com um sentido equivalente pra GUI: abrir a janela de log/
+  ; relatorios automaticamente apos uma conversao com sucesso, sem precisar
+  ; ir ao menu "Basic Dignified: Ver..." depois.
+  If BadigCfg\PrintReport
+    BadigOutput_Show(#MainWindow, "Basic Dignified: log da conversao", BadigLog_Render(Dig_VerboseLevel))
+  EndIf
 
   If BadigCfg\EmRun
     Protected DmxSource.s = ReadSciText(Docs()\SciGadget)
@@ -3917,6 +3957,7 @@ Procedure RunBasicFromActiveTab()
 
   Protected AsciiOut.s
   If LooksLikeClassicAscii(ReadSciText(Docs()\SciGadget))
+    BadigLog_Reset() ; RunDignifiedPreprocessor() (que faria isso) e pulado neste caminho
     AsciiOut = ReadSciText(Docs()\SciGadget)
   Else
     AsciiOut = RunDignifiedPreprocessor()
@@ -3926,10 +3967,7 @@ Procedure RunBasicFromActiveTab()
   EndIf
 
   Protected HexOut.s = Tok_Tokenize(AsciiOut)
-  If Tok_HasError
-    MessageRequester("Erro ao tokenizar",
-                     "Linha " + Str(Tok_ErrorLine) + ": " + Tok_ErrorMsg,
-                     #PB_MessageRequester_Ok | #PB_MessageRequester_Error)
+  If Tok_ShowErrorIfAny()
     ProcedureReturn
   EndIf
 
@@ -3964,6 +4002,7 @@ Procedure RunNestorBasicFromActiveTab()
 
   Protected AsciiOut.s
   If LooksLikeClassicAscii(ReadSciText(Docs()\SciGadget))
+    BadigLog_Reset() ; RunDignifiedPreprocessor() (que faria isso) e pulado neste caminho
     AsciiOut = ReadSciText(Docs()\SciGadget)
   Else
     AsciiOut = RunDignifiedPreprocessor()
@@ -3973,10 +4012,7 @@ Procedure RunNestorBasicFromActiveTab()
   EndIf
 
   Protected HexOut.s = Tok_Tokenize(AsciiOut)
-  If Tok_HasError
-    MessageRequester("Erro ao tokenizar",
-                     "Linha " + Str(Tok_ErrorLine) + ": " + Tok_ErrorMsg,
-                     #PB_MessageRequester_Ok | #PB_MessageRequester_Error)
+  If Tok_ShowErrorIfAny()
     ProcedureReturn
   EndIf
 
@@ -4541,6 +4577,13 @@ CreateMenu(#MainMenu, WindowID(#MainWindow))
     MenuItem(#Menu_DignifiedToAscii, "Dignified -> ASCII nativo (.amx)...")
     MenuItem(#Menu_DignifiedToTokenized, "Dignified -> tokenizado nativo (.bmx)...")
     MenuBar()
+    MenuItem(#Menu_ViewBadigLog,     "Basic Dignified: Ver log da ultima conversao...")
+    MenuItem(#Menu_ViewLineReport,   "Basic Dignified: Relatorio de linhas...")
+    MenuItem(#Menu_ViewLabelReport,  "Basic Dignified: Relatorio de rotulos...")
+    MenuItem(#Menu_ViewVarReport,    "Basic Dignified: Relatorio de variaveis...")
+    MenuItem(#Menu_ViewLexerReport,  "Basic Dignified: Relatorio do tokenizador (lexer)...")
+    MenuItem(#Menu_ViewParserReport, "Basic Dignified: Relatorio de estrutura (parser)...")
+    MenuBar()
     MenuItem(#Menu_TokenizeNative, "ASCII classico ja aberto -> tokenizado nativo (.bmx)...")
     MenuItem(#Menu_RenumberToBas, "ASCII classico ja aberto -> renumerar e criar .BAS...")
     MenuBar()
@@ -4732,7 +4775,7 @@ Repeat
 
         Case #Menu_NewProject
           If OfferSaveProject()
-            Define NewProjectPath.s = SaveFileRequester("Novo projeto MSX", "", #File_Pattern_Project, 0)
+            Define NewProjectPath.s = FileBrowser_Show(#MainWindow, #FileBrowser_Save, "Novo projeto MSX", "", "", "*.msxproject")
             If NewProjectPath <> ""
               NewProjectPath = EnsureExtension(NewProjectPath, "msxproject")
               If Not ProjectDB::CreateNew(NewProjectPath)
@@ -4745,7 +4788,7 @@ Repeat
 
         Case #Menu_OpenProject
           If OfferSaveProject()
-            Define OpenProjectPath.s = OpenFileRequester("Abrir projeto MSX", "", #File_Pattern_Project, 0)
+            Define OpenProjectPath.s = FileBrowser_Show(#MainWindow, #FileBrowser_Open, "Abrir projeto MSX", "", "", "*.msxproject")
             If OpenProjectPath <> ""
               If Not ProjectDB::OpenExisting(OpenProjectPath)
                 MessageRequester("Erro ao abrir projeto",
@@ -4789,6 +4832,24 @@ Repeat
 
         Case #Menu_DignifiedToTokenized
           SaveAsTokenizedFromDignified()
+
+        Case #Menu_ViewBadigLog
+          BadigOutput_Show(#MainWindow, "Basic Dignified: log", BadigLog_Render(Dig_VerboseLevel))
+
+        Case #Menu_ViewLineReport
+          BadigView_ShowReport(BadigCfg\LineReport, Dig_LineReportText, "Basic Dignified: relatorio de linhas")
+
+        Case #Menu_ViewLabelReport
+          BadigView_ShowReport(BadigCfg\LabelReport, Dig_LabelReportText, "Basic Dignified: relatorio de rotulos")
+
+        Case #Menu_ViewVarReport
+          BadigView_ShowReport(BadigCfg\VarReport, Dig_VarReportText, "Basic Dignified: relatorio de variaveis")
+
+        Case #Menu_ViewLexerReport
+          BadigView_ShowReport(BadigCfg\LexerReport, Tok_LexerReportText, "Basic Dignified: relatorio do lexer")
+
+        Case #Menu_ViewParserReport
+          BadigView_ShowReport(BadigCfg\ParserReport, Dig_ParserReportText, "Basic Dignified: relatorio do parser")
 
         Case #Menu_CloseTab
           CloseTab(ActiveTabPosition)

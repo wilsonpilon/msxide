@@ -131,3 +131,44 @@
 09-11-2026 21:48:11 [compile] modeLabel=Compilar e Executar rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
 09-11-2026 21:49:01 [compile] run emu rc=0 cmd=c:\msx\openmsx\openmsx.exe -diska C:\dos\msxide\disk\MSX00.dsk
 09-11-2026 21:49:01 [compile] success msg1=OK: Compilar e Executar msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx | Disco: C:\dos\msxide\disk\MSX00.dsk | openMSX iniciado
+09-12-2026 10:41:15 [compile] start mode=1 file=ajuste.dmx
+09-12-2026 10:41:15 [compile] resolved src=C:\dos\msxide\ajuste.dmx ext=.dmx
+09-12-2026 10:41:16 [compile] modeLabel=MSX-Basic rc=0 err=Ha loop labels sem fechamento. amxOut=C:\dos\msxide\ajuste.amx bmxOut=
+09-12-2026 10:41:16 [compile] fail shown msg2=Ha loop labels sem fechamento.
+09-12-2026 10:43:05 [compile] start mode=1 file=ajuste.dmx
+09-12-2026 10:43:05 [compile] resolved src=C:\dos\msxide\ajuste.dmx ext=.dmx
+09-12-2026 10:43:05 [compile] modeLabel=MSX-Basic rc=0 err=Ha loop labels sem fechamento. amxOut=C:\dos\msxide\ajuste.amx bmxOut=
+09-12-2026 10:43:05 [compile] fail shown msg2=Ha loop labels sem fechamento.
+09-12-2026 11:28:05 [compile] start mode=1 file=ajuste.dmx
+09-12-2026 11:28:05 [compile] resolved src=C:\dos\msxide\ajuste.dmx ext=.dmx
+09-12-2026 11:28:05 [compile] modeLabel=MSX-Basic rc=0 err=Ha loop labels sem fechamento. amxOut=C:\dos\msxide\ajuste.amx bmxOut=
+09-12-2026 11:28:05 [compile] fail shown msg2=Ha loop labels sem fechamento.
+09-12-2026 11:30:25 [compile] start mode=1 file=ajuste.dmx
+09-12-2026 11:30:25 [compile] resolved src=C:\dos\msxide\ajuste.dmx ext=.dmx
+09-12-2026 11:30:25 [compile] modeLabel=MSX-Basic rc=0 err=Ha loop labels sem fechamento. amxOut=C:\dos\msxide\ajuste.amx bmxOut=
+09-12-2026 11:30:25 [compile] fail shown msg2=Ha loop labels sem fechamento.
+09-12-2026 11:56:55 [compile] start mode=1 file=ajuste.dmx
+09-12-2026 11:56:55 [compile] resolved src=C:\dos\msxide\ajuste.dmx ext=.dmx
+09-12-2026 11:56:55 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\ajuste.amx bmxOut=C:\dos\msxide\ajuste.bmx
+09-12-2026 11:56:55 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\ajuste.amx e C:\dos\msxide\ajuste.bmx
+09-12-2026 17:32:56 [compile] start mode=1 file=C:\dos\msxide\ajuste.dmx
+09-12-2026 17:32:56 [compile] resolved src=C:\dos\msxide\ajuste.dmx ext=.dmx
+09-12-2026 17:32:56 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\ajuste.amx bmxOut=C:\dos\msxide\ajuste.bmx
+09-12-2026 17:32:56 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\ajuste.amx e C:\dos\msxide\ajuste.bmx
+09-12-2026 17:33:06 [compile] start mode=4 file=C:\dos\msxide\ajuste.dmx
+09-12-2026 17:33:06 [compile] resolved src=C:\dos\msxide\ajuste.dmx ext=.dmx
+09-12-2026 17:33:06 [compile] modeLabel=Compilar e Executar rc=-1 err= amxOut=C:\dos\msxide\ajuste.amx bmxOut=C:\dos\msxide\ajuste.bmx
+09-12-2026 17:37:01 [compile] run emu rc=0 cmd=c:\msx\openmsx\openmsx.exe -diska C:\dos\msxide\disk\AJUSTE.dsk
+09-12-2026 17:37:01 [compile] success msg1=OK: Compilar e Executar msg2=Gerados: C:\dos\msxide\ajuste.amx e C:\dos\msxide\ajuste.bmx | Disco: C:\dos\msxide\disk\AJUSTE.dsk | openMSX iniciado
+09-12-2026 18:56:39 [compile] start mode=1 file=C:\dos\msxide\ajuste.dmx
+09-12-2026 18:56:39 [compile] resolved src=C:\dos\msxide\ajuste.dmx ext=.dmx
+09-12-2026 18:56:40 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\ajuste.amx bmxOut=C:\dos\msxide\ajuste.bmx
+09-12-2026 18:56:40 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\ajuste.amx e C:\dos\msxide\ajuste.bmx
+09-12-2026 21:21:07 [compile] start mode=1 file=C:\dos\msxide\ajuste.dmx
+09-12-2026 21:21:07 [compile] resolved src=C:\dos\msxide\ajuste.dmx ext=.dmx
+09-12-2026 21:21:07 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\ajuste.amx bmxOut=C:\dos\msxide\ajuste.bmx
+09-12-2026 21:21:07 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\ajuste.amx e C:\dos\msxide\ajuste.bmx
+09-12-2026 21:44:43 [compile] start mode=1 file=msx00.dmx
+09-12-2026 21:44:43 [compile] resolved src=C:\dos\msxide\msx00.dmx ext=.dmx
+09-12-2026 21:44:43 [compile] modeLabel=MSX-Basic rc=-1 err= amxOut=C:\dos\msxide\msx00.amx bmxOut=C:\dos\msxide\msx00.bmx
+09-12-2026 21:44:43 [compile] success msg1=OK: MSX-Basic msg2=Gerados: C:\dos\msxide\msx00.amx e C:\dos\msxide\msx00.bmx

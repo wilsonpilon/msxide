@@ -73,6 +73,14 @@ If runBadigSmoke <> 0 Then
         badigSmokeOk = CompilerRunVariableSmokeTest(badigSmokeReport)
         Print badigSmokeReport
     End If
+    If badigSmokeOk <> 0 Then
+        badigSmokeOk = CompilerRunFuncSmokeTest(badigSmokeReport)
+        Print badigSmokeReport
+    End If
+    If badigSmokeOk <> 0 Then
+        badigSmokeOk = CompilerRunNBasicSmokeTest(badigSmokeReport)
+        Print badigSmokeReport
+    End If
     DbShutdown()
     If Dir(badigSmokeDbPath) <> "" Then Kill badigSmokeDbPath
     If badigSmokeOk <> 0 Then
@@ -177,6 +185,11 @@ Do While running <> 0
         End If
         needsRedraw = 1
     Else
+        ' "Monitora" o arquivo do documento ativo (pedido do usuario,
+        ' 2026-09-12) - EditorCheckExternalChanges tem seu proprio throttle
+        ' interno (no maximo 1x a cada 2s), entao chamar isto toda volta
+        ' ociosa do loop e' barato (a maioria das chamadas nao faz nada).
+        If EditorCheckExternalChanges() <> 0 Then needsRedraw = 1
         Sleep 5, 1
     End If
 Loop

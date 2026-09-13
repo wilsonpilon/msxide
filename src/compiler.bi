@@ -12,5 +12,7 @@ Declare Function CompilerBuildAsmIncFile(ByRef binPath As String, ByRef srcAsmPa
 Declare Function CompilerRunJoinSmokeTest(ByRef report As String) As Integer
 Declare Function CompilerRunFormatSmokeTest(ByRef report As String) As Integer
 Declare Function CompilerRunVariableSmokeTest(ByRef report As String) As Integer
+Declare Function CompilerRunNBasicSmokeTest(ByRef report As String) As Integer
+Declare Function CompilerRunFuncSmokeTest(ByRef report As String) As Integer
 
 #endif

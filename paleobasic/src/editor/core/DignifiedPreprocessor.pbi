@@ -28,13 +28,19 @@
 ;    INCLUDE (recursivo, namespace de label/loop/funcao isolado
 ;    por arquivo via Dig_ProcessSource/Dig_CurrentPrefix, ver
 ;    docs/SPEC.md modulo 3g) e remtags (##BB:arguments=/
-;    export_file=/help=, so no arquivo principal).
+;    export_file=/help=, so no arquivo principal), verbosidade (0-5, ver
+;    BadigLog.pbi) e relatorios de linha/rotulo/variavel/parser (-lnr/-lbr/
+;    -var/-par - Dig_Line/Label/Var/ParserReportText, expostos pelos itens
+;    de menu "Basic Dignified: Ver relatorio..." em BadigEditor.pb; o
+;    relatorio do lexer, -lex, fica em MsxTokenizer.pbi/Tok_LexerReportText,
+;    ja que o port nativo nao tem lexer/parser formais separados do
+;    proprio tokenizador - ver comentario junto de Dig_ParserReportEnabled
+;    abaixo para a adaptacao exata).
 ;    Configuravel via BadigCfg (editor/BadigSettings.pbi) atraves
 ;    de Dig_SyncConfigFromBadigCfg() em BadigEditor.pb, ou
 ;    diretamente via os globals Dig_* abaixo (usado por
 ;    editor/tools/DigTestCli.pb, que roda com os defaults fixos).
-;    NAO implementado: relatorios (-lbr/-lnr/-var/-lex/-par, sem
-;    consumidor na IDE), strip_spaces (reinterpretado: remove so
+;    NAO implementado: strip_spaces (reinterpretado: remove so
 ;    espacos que nao ficam entre duas palavras, para nao colar
 ;    identificadores/keywords - nao e byte-a-byte identico ao
 ;    original).
@@ -57,6 +63,24 @@ Global Dig_CapitalizeAll.b = #False
 Global Dig_ConvertPrintCfg.s = ""      ; "" = nao converter, "?" ou "P" (forma final desejada)
 Global Dig_StripThenGotoCfg.s = ""     ; "" = nao remover, "T" ou "G"
 Global Dig_Translate.b = #False
+
+; Verbosidade (0-5, ver BadigLog.pbi) + habilitacao dos relatorios - ambos
+; sincronizados a partir de BadigCfg por Dig_SyncConfigFromBadigCfg() em
+; BadigEditor.pb, mesmo idioma dos campos acima. O texto de cada relatorio
+; fica pronto em Dig_*ReportText apos uma chamada de Dig_Preprocess (mesmo
+; em erro, parcial) para consumo pelos itens de menu "Basic Dignified: Ver
+; relatorio..." (BadigEditor.pb) - ver nota "NAO implementado" no topo deste
+; arquivo, que este bloco resolve.
+Global Dig_VerboseLevel.i = 3
+Global Dig_LineReportEnabled.b = #False
+Global Dig_LabelReportEnabled.b = #False
+Global Dig_VarReportEnabled.b = #False
+Global Dig_ParserReportEnabled.b = #False
+
+Global Dig_LineReportText.s
+Global Dig_LabelReportText.s
+Global Dig_VarReportText.s
+Global Dig_ParserReportText.s
 
 Global Dig_HasError.b
 Global Dig_ErrorMsg.s
@@ -105,6 +129,7 @@ Procedure Dig_Fail(LineNum.i, Msg.s)
     Dig_HasError = #True
     Dig_ErrorMsg = Msg
     Dig_ErrorLine = LineNum
+    BadigLog_Add(#BadigLog_Error, LineNum, Msg)
   EndIf
 EndProcedure
 
@@ -2698,6 +2723,12 @@ Procedure.s Dig_Preprocess(SourceText.s, BasePath.s = "", IsMsxBas2Rom.b = #Fals
   Dig_ExportFileOverride = ""
   Dig_RemtagHelpRequested = #False
 
+  Dig_LineReportText = ""
+  Dig_LabelReportText = ""
+  Dig_VarReportText = ""
+  Dig_ParserReportText = ""
+  BadigLog_Add(#BadigLog_Header, 0, "Pre-processamento Dignified iniciado.")
+
   Protected NewList logLines.DigLogLine()
   Dig_ProcessSource(SourceText, "", Dig_BasePath, #True, logLines())
   If Dig_HasError : ProcedureReturn "" : EndIf
@@ -2782,6 +2813,31 @@ Procedure.s Dig_Preprocess(SourceText.s, BasePath.s = "", IsMsxBas2Rom.b = #Fals
     lineNum + Dig_LineStep
   Next
 
+  ; relatorio de rotulos / relatorio de linhas (Configurar -> Basic Dignified,
+  ; ver menu "Basic Dignified: Ver relatorio..." em BadigEditor.pb) - a
+  ; numeracao final (finalLines()\LineNumber) e a correspondencia com a linha
+  ; fonte (finalLines()\SrcLine) ja estao prontas neste ponto.
+  If Dig_LabelReportEnabled
+    ForEach finalLines()
+      If finalLines()\LabelNames <> "" And Not finalLines()\IsResourceDirective
+        Protected nLblRpt.i = CountString(finalLines()\LabelNames, ";") + 1, kRpt.i
+        For kRpt = 1 To nLblRpt
+          If Dig_LabelReportText <> "" : Dig_LabelReportText + Chr(13) + Chr(10) : EndIf
+          Dig_LabelReportText + StringField(finalLines()\LabelNames, kRpt, ";") + " -> linha " + Str(finalLines()\LineNumber)
+        Next
+      EndIf
+    Next
+  EndIf
+
+  If Dig_LineReportEnabled
+    ForEach finalLines()
+      If Not finalLines()\IsResourceDirective
+        If Dig_LineReportText <> "" : Dig_LineReportText + Chr(13) + Chr(10) : EndIf
+        Dig_LineReportText + "Linha fonte " + Str(finalLines()\SrcLine) + " -> linha gerada " + Str(finalLines()\LineNumber)
+      EndIf
+    Next
+  EndIf
+
   ; pre-scan: localiza cada marcador de "volta de loop" (B) para saber em que
   ; linha o "}" de fechamento acabou (o alvo do EXIT e a linha seguinte a essa)
   ClearMap(Dig_LoopExit())
@@ -2797,6 +2853,53 @@ Procedure.s Dig_Preprocess(SourceText.s, BasePath.s = "", IsMsxBas2Rom.b = #Fals
       bScanPos = bClose + 1
     ForEver
   Next
+
+  ; relatorio de parser (Configurar -> Basic Dignified) - o port nativo nao
+  ; tem parser/AST formal (pipeline de string/linha, ver nota no topo deste
+  ; arquivo), entao o equivalente adaptado e um dump das referencias
+  ; estruturais (label/jump/gosub/loop) que o passo de resolucao de
+  ; marcadores abaixo tambem calcula - feito aqui, antes, so pra leitura
+  ; (nao consome nem altera finalLines()\Text).
+  If Dig_ParserReportEnabled
+    ForEach finalLines()
+      Protected rptScanPos.i = 1
+      Repeat
+        Protected rptMarkPos.i = FindString(finalLines()\Text, #Dig_Mark, rptScanPos)
+        If rptMarkPos = 0 : Break : EndIf
+        Protected rptClosePos.i = FindString(finalLines()\Text, #Dig_Mark, rptMarkPos + 1)
+        If rptClosePos = 0 : Break : EndIf
+        Protected rptCode.s = Mid(finalLines()\Text, rptMarkPos + 1, rptClosePos - rptMarkPos - 1)
+        Protected rptKind.s = Left(rptCode, 1)
+        Protected rptRef.s = Mid(rptCode, 2)
+        Protected rptDesc.s = ""
+        Select rptKind
+          Case "S"
+            rptDesc = "auto-referencia (numero da propria linha)"
+          Case "J"
+            If FindMapElement(Dig_LabelLine(), rptRef)
+              rptDesc = "salto -> " + rptRef + " (linha " + Str(Dig_LabelLine()) + ")"
+            EndIf
+          Case "B"
+            If FindMapElement(Dig_LabelLine(), rptRef)
+              rptDesc = "abertura de loop -> " + rptRef + " (linha " + Str(Dig_LabelLine()) + ")"
+            EndIf
+          Case "G"
+            If FindMapElement(Dig_LabelLine(), rptRef)
+              rptDesc = "chamada de funcao -> " + rptRef + " (linha " + Str(Dig_LabelLine()) + ")"
+            EndIf
+          Case "X"
+            If FindMapElement(Dig_LoopExit(), rptRef)
+              rptDesc = "saida de loop -> " + rptRef + " (linha " + Str(Dig_LoopExit()) + ")"
+            EndIf
+        EndSelect
+        If rptDesc <> ""
+          If Dig_ParserReportText <> "" : Dig_ParserReportText + Chr(13) + Chr(10) : EndIf
+          Dig_ParserReportText + "Linha " + Str(finalLines()\LineNumber) + ": " + rptDesc
+        EndIf
+        rptScanPos = rptClosePos + 1
+      ForEver
+    Next
+  EndIf
 
   ; resolve marcadores Chr(2)...Chr(2)
   Protected out.s = ""
@@ -2882,6 +2985,20 @@ Procedure.s Dig_Preprocess(SourceText.s, BasePath.s = "", IsMsxBas2Rom.b = #Fals
 
     out + finalLine + Chr(13) + Chr(10)
   Next
+
+  ; relatorio de variaveis - Dig_Declares() (nome longo minusculo -> nome
+  ; curto) ja esta totalmente populado desde Dig_ProcessSource, no comeco
+  ; desta funcao.
+  If Dig_VarReportEnabled
+    ForEach Dig_Declares()
+      If Dig_VarReportText <> "" : Dig_VarReportText + Chr(13) + Chr(10) : EndIf
+      Dig_VarReportText + MapKey(Dig_Declares()) + " -> " + Dig_Declares()
+    Next
+  EndIf
+
+  BadigLog_Add(#BadigLog_Info, 0, Str(ListSize(finalLines())) + " linha(s) geradas, " +
+               Str(MapSize(Dig_LabelLine())) + " rotulo(s), " +
+               Str(MapSize(Dig_Declares())) + " variavel(is) reduzida(s).")
 
   ProcedureReturn out
 EndProcedure

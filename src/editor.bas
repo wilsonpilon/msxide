@@ -38,6 +38,11 @@ Const MENU_CMD_SAVE = 3
 Const MENU_CMD_SAVE_AS = 4
 Const MENU_CMD_CLOSE = 5
 Const MENU_CMD_EXIT = 6
+' MENU_CMD_PROJECT_* moraram no menu Arquivo ate' 2026-09-12 (item extra
+' junto de Novo/Abrir/Salvar/Fechar/Exit) - agora tem menu proprio no topo
+' (MENU_VIEW_PROJECT), pedido explicito do usuario ("todas as opcoes de
+' projeto em um menu principal chamado Projeto, e nao mais em arquivos").
+' Numeros mantidos sem mudanca (nada mais depende do valor em si).
 Const MENU_CMD_PROJECT_NEW = 8
 Const MENU_CMD_PROJECT_OPEN = 9
 Const MENU_CMD_PROJECT_SAVE = 10
@@ -77,6 +82,8 @@ Const MENU_CMD_NEW_FONT = 46
 Const MENU_CMD_NEW_SPRITE = 47
 Const MENU_CMD_CFG_EDITOR = 48
 Const MENU_CMD_INSERT_CHARMAP = 49
+Const MENU_CMD_INSERT_COLOR = 50
+Const MENU_CMD_REF_MSXIDE_DMX = 51
 
 Const MENU_VIEW_NONE = 0
 Const MENU_VIEW_FILE = 1
@@ -86,6 +93,7 @@ Const MENU_VIEW_COMPILE = 4
 Const MENU_VIEW_REFERENCE = 5
 Const MENU_VIEW_MAMUTE = 6
 Const MENU_VIEW_INSERT = 7
+Const MENU_VIEW_PROJECT = 8
 
 Const HELP_THEME_CLASSIC = 1
 Const HELP_THEME_EDITORIAL = 2
@@ -104,6 +112,22 @@ Dim Shared perfFillSamples(1 To MAX_PERF_FRAMES) As UInteger
 ' navegado com Seta cima/baixo, confirmado com Enter. Zerado automaticamente
 ' sempre que o menu aberto muda (ver o Static dentro de DrawMenuBar).
 Dim Shared menuHighlightIndex As Integer = 1
+
+' Autocompletar tipo IntelliSense (Configurar -> MSX Basic -> Autocomplete
+' Min Chars, 2026-09-12) - quadrinho com sugestoes do dicionario MSX BASIC
+' enquanto o usuario digita. Global (nao por documento) porque so' um
+' documento pode estar em foco/edicao por vez, mesmo espirito de
+' menuHighlightIndex acima. Ver AutocompleteRefresh/DrawAutocompletePopup.
+Dim Shared acActive As Integer = 0
+Dim Shared acDocIndex As Integer = 0
+Dim Shared acWordStartX As Integer = 1
+Dim Shared acWordStartY As Integer = 1
+Dim Shared acSelected As Integer = 1
+Dim Shared acCandidates() As String
+Dim Shared acCandidateCount As Integer = 0
+Dim Shared acDictWords() As String
+Dim Shared acDictWordCount As Integer = 0
+Dim Shared acDictLoaded As Integer = 0
 
 Dim Shared dragMode As Integer
 Dim Shared dragOffsetX As Integer
@@ -291,6 +315,13 @@ Declare Sub BuildMarkdownHelpBuffer(ByRef filePath As String, ByVal wrapWidth As
 Declare Sub EnsureHelpRerender(ByRef d As Document)
 Declare Sub ShowConfigForm(ByRef titleText As String, ByRef configGroup As String)
 Declare Sub ShowMsxCharPickerDialog()
+Declare Sub ShowMsxColorInsertDialog()
+Declare Function MsxColorConstantName(ByVal msxColor As Integer) As String
+Declare Sub OpenReferenceLibraryFile()
+Declare Function GetExtLower(ByRef path As String) As String
+Declare Function NormalizePathForDisplay(ByRef pathValue As String) As String
+Declare Sub UndoCheckpointFresh(ByRef d As Document)
+Declare Function ResolveMsxDictTitleForKeyword(ByRef target As String) As String
 Declare Function PromptConfigExitAction(ByRef titleText As String) As Integer
 Declare Sub CompileActiveDocument(ByVal compileMode As Integer)
 Declare Sub ShowInfoDialog(ByRef titleText As String, ByRef msg1 As String, ByRef msg2 As String = "")
@@ -1066,7 +1097,12 @@ Private Function CollectMsxManualTopics(entries() As MsxManualTopicEntry, ByRef 
     Return IIf(entryCount > 0, -1, 0)
 End Function
 
-Private Function FindMsxDictCallText(ByRef keyword As String, ByRef callText As String, ByRef errMsg As String) As Integer
+' Busca o titulo EXATO (ver ResolveMsxDictTitleForKeyword mais abaixo pra
+' quando o titulo de verdade e' um verbete composto, tipo "GOSUB-RETURN")
+' nos dois arquivos de dados do dicionario. Extraido do antigo corpo de
+' FindMsxDictCallText pra poder tentar de novo com um titulo resolvido
+' sem duplicar a busca nos dois arquivos.
+Private Function TryFindMsxDictCallTextExact(ByRef exactTitle As String, ByRef callText As String, ByRef errMsg As String) As Integer
     errMsg = ""
     callText = ""
 
@@ -1074,9 +1110,8 @@ Private Function FindMsxDictCallText(ByRef keyword As String, ByRef callText As 
     paths(1) = MSX_DICT_DATA_PATH
     paths(2) = MSX_DICT_DATA_PATH_2P
 
-    Dim target As String = UCase(Trim(keyword))
-    Dim findExpr1 As String = "MSXDict_Add(" & Chr(34) & target & Chr(34)
-    Dim findExpr2 As String = "MSXDict_Add2Plus(" & Chr(34) & target & Chr(34)
+    Dim findExpr1 As String = "MSXDict_Add(" & Chr(34) & exactTitle & Chr(34)
+    Dim findExpr2 As String = "MSXDict_Add2Plus(" & Chr(34) & exactTitle & Chr(34)
 
     Dim pidx As Integer
     For pidx = 1 To 2
@@ -1100,10 +1135,30 @@ Private Function FindMsxDictCallText(ByRef keyword As String, ByRef callText As 
 
         If startPos > 0 Then
             If ExtractPbCallTextFromSource(src, startPos, callText) <> 0 Then Return -1
-            errMsg = "Bloco incompleto no dicionario para: " & keyword
+            errMsg = "Bloco incompleto no dicionario para: " & exactTitle
             Return 0
         End If
     Next pidx
+
+    errMsg = "Comando nao encontrado no dicionario: " & exactTitle
+    Return 0
+End Function
+
+Private Function FindMsxDictCallText(ByRef keyword As String, ByRef callText As String, ByRef errMsg As String) As Integer
+    Dim target As String = UCase(Trim(keyword))
+
+    If TryFindMsxDictCallTextExact(target, callText, errMsg) <> 0 Then Return -1
+
+    ' Sem match exato - o comando pode existir so' dentro de um verbete
+    ' composto do dicionario da Ajuda ("GOSUB-RETURN", "FOR-NEXT",
+    ' "IF-THEN-ELSE", "ON-GOSUB", etc. - ver mesmo achado do autocompletar,
+    ' 2026-09-12: Shift+F1 em cima de GOSUB/RETURN/FOR/NEXT/IF/THEN/ELSE
+    ' mostrava "comando nao encontrado" porque o dicionario nao tem um
+    ' verbete proprio "GOSUB" ou "RETURN" sozinhos, so' o par junto).
+    Dim resolvedTitle As String = ResolveMsxDictTitleForKeyword(target)
+    If Len(resolvedTitle) > 0 And resolvedTitle <> target Then
+        If TryFindMsxDictCallTextExact(resolvedTitle, callText, errMsg) <> 0 Then Return -1
+    End If
 
     errMsg = "Comando nao encontrado no dicionario: " & keyword
     Return 0
@@ -1201,6 +1256,365 @@ Private Function CollectMsxDictKeywords(items() As String, ByRef itemCount As In
 
     Return IIf(itemCount > 0, -1, 0)
 End Function
+
+' Acha o TITULO BRUTO de verdade do dicionario (ver MsxBasicDictData.pbi/
+' MsxBasic2PlusDictData.pbi) que documenta "target" - normalmente e' o
+' proprio target (comando com verbete proprio, ex.: "PRINT"), mas alguns
+' comandos so' existem dentro de um verbete composto por hifen que junta
+' um par/trio pra fins de documentacao ("GOSUB-RETURN", "FOR-NEXT",
+' "IF-THEN-ELSE", "ON-GOSUB", "ON-GOTO", "ON INTERVAL-GOSUB") - usado por
+' FindMsxDictCallText (Shift+F1) quando a busca exata pelo target sozinho
+' nao acha nada. Prefere um verbete onde target e' a PRIMEIRA parte (o
+' comando "principal" do par, ex.: "GOSUB" em "GOSUB-RETURN") - so' aceita
+' um match mais atras (ex.: "RETURN" tambem em "GOSUB-RETURN") se nenhum
+' verbete tiver target como primeira parte.
+Private Function ResolveMsxDictTitleForKeyword(ByRef target As String) As String
+    Dim targetU As String = UCase(Trim(target))
+    If Len(targetU) = 0 Then Return ""
+
+    Dim rawWords() As String
+    Dim rawCount As Integer
+    Dim errMsg As String
+    If CollectMsxDictKeywords(rawWords(), rawCount, errMsg) = 0 Then Return ""
+
+    Dim fallbackMatch As String = ""
+    Dim i As Integer
+    For i = 1 To rawCount
+        Dim title As String = rawWords(i)
+        If InStr(title, "-") = 0 Then Continue For ' sem hifen, so' bate por match exato (ja tentado antes)
+
+        Dim startPos As Integer = 1
+        Dim titleLen As Integer = Len(title)
+        Dim isFirstPart As Integer = -1
+        Do
+            Dim hPos As Integer = InStr(startPos, title, "-")
+            Dim part As String
+            If hPos > 0 Then
+                part = Mid(title, startPos, hPos - startPos)
+            Else
+                part = Mid(title, startPos)
+            End If
+            part = Trim(part)
+            Dim pPos As Integer = InStr(part, "(")
+            If pPos > 0 Then part = Trim(Left(part, pPos - 1))
+
+            If UCase(part) = targetU Then
+                If isFirstPart <> 0 Then
+                    Return title
+                ElseIf Len(fallbackMatch) = 0 Then
+                    fallbackMatch = title
+                End If
+            End If
+
+            isFirstPart = 0
+            If hPos = 0 Then Exit Do
+            startPos = hPos + 1
+        Loop While startPos <= titleLen
+    Next i
+
+    Return fallbackMatch
+End Function
+
+' Carrega o dicionario MSX BASIC (CollectMsxDictKeywords, acima) uma unica
+' vez por sessao - usado como fonte de sugestoes do autocompletar. Falha
+' silenciosa (acDictWordCount fica 0, autocompletar so' nao sugere nada)
+' em vez de travar a digitacao se os arquivos de dados nao existirem.
+' O dicionario MSX BASIC (CollectMsxDictKeywords) foi feito pro indice da
+' Ajuda, onde um "verbete" pode juntar varios comandos relacionados num so'
+' titulo pra fins de documentacao - ex.: "GOSUB-RETURN" (par de comandos),
+' "FOR-NEXT", "IF-THEN-ELSE", "KEY ON/OFF" (formas alternativas), "SCREEN
+' (MSX2+)" (nota de variante de um comando que ja existe sem sufixo), ou
+' ate' "CIRCLE, DRAW, LINE, PAINT, POINT, PRESET e PSET (MSX2+)" (nota que
+' cobre 7 comandos de uma vez). Nenhum desses titulos e' codigo BASIC de
+' verdade pra inserir - achado real (2026-09-12): digitar "GOS" sugeria
+' "GOSUB-RETURN" em vez de so' "GOSUB". Esta funcao devolve so' o comando
+' de verdade (ou "" se o verbete nao representa UM comando so', tipo o
+' exemplo do CIRCLE/DRAW/etc. - nesse caso o autocompletar so' descarta,
+' ja que os comandos individuais devem ter seu proprio verbete a parte).
+Private Function NormalizeAutocompleteKeyword(ByRef rawTitle As String) As String
+    Dim t As String = Trim(rawTitle)
+
+    ' Sufixo entre parenteses = nota/variante ("(MSX2+)", "(n)") - o
+    ' comando de verdade e' so' o que vem antes.
+    Dim pPos As Integer = InStr(t, "(")
+    If pPos > 0 Then t = Trim(Left(t, pPos - 1))
+
+    ' Barra = notacao de formas alternativas ("KEY ON/OFF" -> KEY,
+    ' "SPRITE ON/OFF/STOP" -> SPRITE) - corta a partir da palavra que tem
+    ' a barra, fica so' com o que vem antes dela.
+    Dim slashPos As Integer = InStr(t, "/")
+    If slashPos > 0 Then
+        Dim cutPos As Integer = InStrRev(t, " ", slashPos)
+        If cutPos > 0 Then
+            t = Trim(Left(t, cutPos - 1))
+        Else
+            t = ""
+        End If
+    End If
+
+    ' Verbete que junta varios comandos numa lista com virgula (ex.: nota
+    ' do CIRCLE/DRAW/LINE/... pro MSX2+) nao e' UM comando - descarta.
+    If InStr(t, ",") > 0 Then Return ""
+
+    Return t
+End Function
+
+' Verbetes que juntam um par/trio de comandos com hifen so' pra fins de
+' documentacao ("GOSUB-RETURN", "FOR-NEXT", "IF-THEN-ELSE", "ON-GOSUB",
+' "ON INTERVAL-GOSUB") nao sao UM comando - cada pedaco entre hifens e' o
+' SEU PROPRIO comando de verdade. Achado real (2026-09-12): sem separar
+' isto, digitar "GOS" so' sugeria "GOSUB-RETURN" inteiro (errado - o
+' comando e' so' "GOSUB") e RETURN/NEXT/THEN/ELSE nunca apareciam
+' sozinhos, porque so' existem dentro desses titulos compostos no
+' dicionario (nao tem verbete proprio "RETURN", por exemplo).
+Private Sub SplitAutocompleteKeyword(ByRef rawTitle As String, outWords() As String, ByRef outCount As Integer)
+    outCount = 0
+    Dim startPos As Integer = 1
+    Dim rawLen As Integer = Len(rawTitle)
+    Do
+        Dim hPos As Integer = InStr(startPos, rawTitle, "-")
+        Dim part As String
+        If hPos > 0 Then
+            part = Mid(rawTitle, startPos, hPos - startPos)
+        Else
+            part = Mid(rawTitle, startPos)
+        End If
+
+        Dim kw As String = NormalizeAutocompleteKeyword(part)
+        If Len(kw) > 0 Then
+            outCount += 1
+            If outCount = 1 Then
+                ReDim outWords(1 To 1)
+            Else
+                ReDim Preserve outWords(1 To outCount)
+            End If
+            outWords(outCount) = kw
+        End If
+
+        If hPos = 0 Then Exit Do
+        startPos = hPos + 1
+    Loop While startPos <= rawLen
+End Sub
+
+Private Sub AutocompleteEnsureDictLoaded()
+    If acDictLoaded <> 0 Then Exit Sub
+    acDictLoaded = -1
+
+    Dim rawWords() As String
+    Dim rawCount As Integer
+    Dim errMsg As String
+    acDictWordCount = 0
+    If CollectMsxDictKeywords(rawWords(), rawCount, errMsg) = 0 Then Exit Sub
+
+    Dim splitWords() As String
+    Dim splitCount As Integer
+    Dim i As Integer, k As Integer
+    For i = 1 To rawCount
+        SplitAutocompleteKeyword(rawWords(i), splitWords(), splitCount)
+        For k = 1 To splitCount
+            Dim kw As String = splitWords(k)
+            Dim exists As Integer = 0
+            Dim j As Integer
+            For j = 1 To acDictWordCount
+                If acDictWords(j) = kw Then
+                    exists = -1
+                    Exit For
+                End If
+            Next j
+            If exists = 0 Then
+                acDictWordCount += 1
+                If acDictWordCount = 1 Then
+                    ReDim acDictWords(1 To 1)
+                Else
+                    ReDim Preserve acDictWords(1 To acDictWordCount)
+                End If
+                acDictWords(acDictWordCount) = kw
+            End If
+        Next k
+    Next i
+
+    ' Reordena - normalizar pode ter mudado a ordem alfabetica original
+    ' (ex.: "GOSUB-RETURN" virou "GOSUB", que precisa voltar pra antes de
+    ' "GOTO").
+    If acDictWordCount > 1 Then
+        Dim a As Integer, b As Integer
+        For a = 1 To acDictWordCount - 1
+            For b = a + 1 To acDictWordCount
+                If acDictWords(b) < acDictWords(a) Then
+                    Dim tmp As String = acDictWords(a)
+                    acDictWords(a) = acDictWords(b)
+                    acDictWords(b) = tmp
+                End If
+            Next b
+        Next a
+    End If
+End Sub
+
+Private Sub AutocompleteClose()
+    acActive = 0
+    acCandidateCount = 0
+End Sub
+
+' Recalcula (ou fecha) o quadrinho de autocompletar a partir da palavra que
+' termina bem no cursor - chamada depois de digitar ou apagar um caractere
+' num documento de texto editavel normal (nao Ajuda/preview Markdown/editor
+' de pixel/terminal Mamute). Configuravel em Configurar -> MSX Basic ->
+' Autocomplete Min Chars (cfg.msxbasic.autocomplete.min_chars, default 3).
+Private Sub AutocompleteRefresh(ByRef d As Document)
+    If d.isHelp <> 0 Or d.isMarkdown <> 0 Or d.isMamuteTerm <> 0 Or d.isMamuteEdit <> 0 Or d.isPixelEditor <> 0 Then
+        AutocompleteClose()
+        Exit Sub
+    End If
+
+    If d.cursorY < 1 Or d.cursorY > d.lineCount Then
+        AutocompleteClose()
+        Exit Sub
+    End If
+
+    Dim minChars As Integer = ValInt(DbGetSetting("cfg.msxbasic.autocomplete.min_chars", "3"))
+    If minChars < 1 Then minChars = 1
+
+    Dim lineText As String = d.lines(d.cursorY)
+    Dim endP As Integer = d.cursorX - 1 ' ultimo caractere ja digitado, logo antes do cursor
+
+    Dim startP As Integer = endP
+    While startP > 0
+        Dim ch As String = Mid(lineText, startP, 1)
+        If IsWordChar(ch) = 0 And ch <> "$" Then Exit While
+        startP -= 1
+    Wend
+    startP += 1 ' agora aponta pro 1o caractere da palavra sendo digitada
+
+    Dim wordLen As Integer = endP - startP + 1
+    If wordLen < minChars Then
+        AutocompleteClose()
+        Exit Sub
+    End If
+
+    Dim wordUpper As String = UCase(Mid(lineText, startP, wordLen))
+
+    AutocompleteEnsureDictLoaded()
+
+    ' Configurar -> MSX Basic -> Autocomplete Case: em que caixa a sugestao
+    ' aparece/e' inserida (o dicionario em si fica guardado sempre em
+    ' maiusculas, so' pra comparar o prefixo sem diferenciar caixa).
+    Dim caseUpper As Integer = 0
+    If LCase(DbGetSetting("cfg.msxbasic.autocomplete.case", "lower")) = "upper" Then caseUpper = -1
+
+    Const MAX_AC_MATCHES = 30
+    Dim matchCount As Integer = 0
+    Dim i As Integer
+    For i = 1 To acDictWordCount
+        If Left(acDictWords(i), wordLen) = wordUpper And acDictWords(i) <> wordUpper Then
+            matchCount += 1
+            If matchCount = 1 Then
+                ReDim acCandidates(1 To 1)
+            Else
+                ReDim Preserve acCandidates(1 To matchCount)
+            End If
+            acCandidates(matchCount) = IIf(caseUpper <> 0, acDictWords(i), LCase(acDictWords(i)))
+            If matchCount >= MAX_AC_MATCHES Then Exit For
+        End If
+    Next i
+
+    If matchCount = 0 Then
+        AutocompleteClose()
+        Exit Sub
+    End If
+
+    acCandidateCount = matchCount
+    acSelected = 1
+    acActive = -1
+    acDocIndex = activeDoc
+    acWordStartX = startP
+    acWordStartY = d.cursorY
+End Sub
+
+' Confirma a sugestao em destaque (Tab/Enter com o quadrinho aberto) -
+' substitui o prefixo digitado (de acWordStartX ate' o cursor) pela palavra
+' completa escolhida e fecha o quadrinho.
+Private Sub AutocompleteConfirm(ByRef d As Document)
+    If acCandidateCount = 0 Or acSelected < 1 Or acSelected > acCandidateCount Then
+        AutocompleteClose()
+        Exit Sub
+    End If
+    If acWordStartY <> d.cursorY Or acWordStartY < 1 Or acWordStartY > d.lineCount Then
+        AutocompleteClose()
+        Exit Sub
+    End If
+
+    Dim lineText As String = d.lines(acWordStartY)
+    Dim wordLen As Integer = d.cursorX - acWordStartX
+    If wordLen < 1 Or acWordStartX < 1 Or acWordStartX + wordLen - 1 > Len(lineText) Then
+        AutocompleteClose()
+        Exit Sub
+    End If
+
+    Dim completion As String = acCandidates(acSelected)
+
+    UndoCheckpointFresh(d)
+    d.lines(acWordStartY) = Left(lineText, acWordStartX - 1) & completion & Mid(lineText, acWordStartX + wordLen)
+    d.cursorX = acWordStartX + Len(completion)
+    AutocompleteClose()
+End Sub
+
+' Desenha o quadrinho de sugestoes por cima do documento ativo, logo abaixo
+' (ou acima, se nao couber embaixo) da palavra sendo digitada - estilo
+' visual igual ao menu suspenso (DrawMenuItemRow: item normal preto-no-
+' cinza, destacado branco-no-azul).
+Private Sub DrawAutocompletePopup()
+    If acActive = 0 Then Exit Sub
+    If acDocIndex < 1 Or acDocIndex > docCount Or acDocIndex <> activeDoc Then Exit Sub
+    Dim ByRef d As Document = docs(acDocIndex)
+
+    Dim clientW As Integer = GetClientTextWidth(d)
+    Dim clientH As Integer = GetClientTextHeight(d)
+    Dim cx As Integer = acWordStartX - d.scrollX
+    Dim cy As Integer = acWordStartY - d.scrollY
+    If cx < 1 Or cx > clientW Or cy < 1 Or cy > clientH Then Exit Sub ' palavra fora da area visivel
+
+    Dim boxW As Integer = 4
+    Dim i As Integer
+    For i = 1 To acCandidateCount
+        If Len(acCandidates(i)) + 2 > boxW Then boxW = Len(acCandidates(i)) + 2
+    Next i
+    If boxW > 28 Then boxW = 28
+
+    Dim visibleRows As Integer = acCandidateCount
+    If visibleRows > 8 Then visibleRows = 8
+
+    ' Fica dentro da area de texto da PROPRIA janela do documento (nao so'
+    ' da tela toda) - importante pra RENDER_CLIENT (DrawDocumentClient)
+    ' sempre conseguir apagar/redesenhar por cima de onde o quadrinho
+    ' esteve, mesmo quando ele fecha ou encolhe.
+    Dim rowRel As Integer = cy + 1 ' uma linha abaixo do texto sendo digitado
+    If rowRel + visibleRows - 1 > clientH Then
+        rowRel = cy - visibleRows ' nao coube embaixo - mostra acima da linha
+        If rowRel < 1 Then rowRel = 1
+    End If
+
+    Dim colRel As Integer = cx
+    If colRel + boxW - 1 > clientW Then colRel = clientW - boxW + 1
+    If colRel < 1 Then colRel = 1
+
+    Dim screenX As Integer = d.winX + colRel
+    Dim screenY As Integer = d.winY + rowRel
+
+    Dim topIdx As Integer = 0
+    If acSelected > visibleRows Then topIdx = acSelected - visibleRows
+    If topIdx > acCandidateCount - visibleRows Then topIdx = acCandidateCount - visibleRows
+    If topIdx < 0 Then topIdx = 0
+
+    Dim r As Integer
+    For r = 0 To visibleRows - 1
+        Dim itemIdx As Integer = topIdx + r + 1
+        Dim itemFg As UByte = 0, itemBg As UByte = 7
+        If itemIdx = acSelected Then itemFg = 15 : itemBg = 1
+        Dim itemText As String = ""
+        If itemIdx <= acCandidateCount Then itemText = " " & acCandidates(itemIdx)
+        ConsoleWriteText(screenX, screenY + r, Left(itemText & Space(boxW), boxW), itemFg, itemBg)
+    Next r
+End Sub
 
 Private Function GetKeywordAtCursor(ByRef d As Document) As String
     If d.cursorY < 1 Or d.cursorY > d.lineCount Then Return ""
@@ -2686,6 +3100,14 @@ End Sub
 
 Private Sub BringDocumentToFront(ByVal docIndex As Integer)
     If docIndex < 1 Or docIndex > docCount Then Exit Sub
+
+    ' Troca de aba fecha o quadrinho de autocompletar (ver acDocIndex) -
+    ' alem de a sugestao nao fazer mais sentido fora do documento onde foi
+    ' calculada, esta funcao pode REORGANIZAR docs() logo abaixo (desloca
+    ' indices pra trazer docIndex pro topo), o que invalidaria um
+    ' acDocIndex guardado de antes sem isso.
+    AutocompleteClose()
+
     If docIndex = docCount Then
         activeDoc = docCount
         Exit Sub
@@ -2928,6 +3350,44 @@ Private Sub InitBlankDocument(ByRef d As Document, ByRef docTitle As String)
     d.normalH = 8
 End Sub
 
+' Junta lines(1..lineCount) num unico texto (Chr(10) entre linhas, sem
+' quebra no final) - usado tanto pra comparar com o que esta' em disco
+' (EditorCheckExternalChanges) quanto ja' era o formato de OpenConfigDocument
+' pra gravar no banco. Centralizado aqui pra nao duplicar o loop de novo.
+Private Function JoinDocumentLines(ByRef d As Document) As String
+    Dim outText As String = ""
+    Dim i As Integer
+    For i = 1 To d.lineCount
+        outText &= d.lines(i)
+        If i < d.lineCount Then outText &= Chr(10)
+    Next i
+    Return outText
+End Function
+
+' Le um arquivo de texto do disco pra um array de linhas independente do
+' Document (usado por EditorCheckExternalChanges pra comparar o disco
+' ATUAL contra o que o documento aberto tinha da ultima vez, sem mexer no
+' documento ate' decidir o que fazer). Mesmo jeito de ler linha-a-linha do
+' LoadFromDisk logo abaixo, propositalmente duplicado (LoadFromDisk grava
+' direto num Document; aqui precisa ficar num array solto).
+Private Function ReadFileLinesRaw(ByRef path As String, outLines() As String, ByRef outCount As Integer) As Integer
+    outCount = 0
+    Dim ff As Integer = FreeFile
+    If Open(path For Input As #ff) <> 0 Then Return 0
+
+    Dim lineText As String
+    While Not Eof(ff)
+        Line Input #ff, lineText
+        If outCount < MAX_LINES Then
+            outCount += 1
+            ReDim Preserve outLines(1 To outCount)
+            outLines(outCount) = lineText
+        End If
+    Wend
+    Close #ff
+    Return -1
+End Function
+
 Private Sub LoadFromDisk(ByRef d As Document, ByRef path As String)
     Dim ff As Integer = FreeFile
     Dim lineText As String
@@ -2950,6 +3410,8 @@ Private Sub LoadFromDisk(ByRef d As Document, ByRef path As String)
         d.lineCount = 1
         d.lines(1) = ""
     End If
+
+    d.diskBaselineText = JoinDocumentLines(d)
 End Sub
 
 Private Sub DrawBox(ByVal x As Integer, ByVal y As Integer, ByVal w As Integer, ByVal h As Integer, ByRef title As String, ByVal isActive As Integer)
@@ -3036,36 +3498,38 @@ End Sub
 ' Ordem esquerda->direita igual a' barra de menu na tela - usada pra Seta
 ' esquerda/direita andar entre os menus do topo com o suspenso aberto.
 Private Function NextMenuView(ByVal current As Integer, ByVal stepDir As Integer) As Integer
-    Dim order(1 To 7) As Integer
+    Dim order(1 To 8) As Integer
     order(1) = MENU_VIEW_FILE
-    order(2) = MENU_VIEW_CONFIG
-    order(3) = MENU_VIEW_COMPILE
-    order(4) = MENU_VIEW_REFERENCE
-    order(5) = MENU_VIEW_MAMUTE
-    order(6) = MENU_VIEW_HELP
-    order(7) = MENU_VIEW_INSERT
+    order(2) = MENU_VIEW_PROJECT
+    order(3) = MENU_VIEW_CONFIG
+    order(4) = MENU_VIEW_COMPILE
+    order(5) = MENU_VIEW_REFERENCE
+    order(6) = MENU_VIEW_MAMUTE
+    order(7) = MENU_VIEW_HELP
+    order(8) = MENU_VIEW_INSERT
 
     Dim idx As Integer = 1
     Dim i As Integer
-    For i = 1 To 7
+    For i = 1 To 8
         If order(i) = current Then idx = i
     Next i
 
     idx += stepDir
-    If idx < 1 Then idx = 7
-    If idx > 7 Then idx = 1
+    If idx < 1 Then idx = 8
+    If idx > 8 Then idx = 1
     Return order(idx)
 End Function
 
 Private Function GetMenuItemCount(ByVal menuView As Integer) As Integer
     Select Case menuView
-        Case MENU_VIEW_FILE : Return 14
+        Case MENU_VIEW_FILE : Return 10
+        Case MENU_VIEW_PROJECT : Return 4
         Case MENU_VIEW_CONFIG : Return 6
         Case MENU_VIEW_COMPILE : Return 5
         Case MENU_VIEW_HELP : Return 9
-        Case MENU_VIEW_REFERENCE : Return 10
+        Case MENU_VIEW_REFERENCE : Return 11
         Case MENU_VIEW_MAMUTE : Return 1
-        Case MENU_VIEW_INSERT : Return 1
+        Case MENU_VIEW_INSERT : Return 2
     End Select
     Return 0
 End Function
@@ -3087,10 +3551,13 @@ Private Function GetMenuCommandAtIndex(ByVal menuView As Integer, ByVal idx As I
                 Case 8 : Return MENU_CMD_SAVE_AS
                 Case 9 : Return MENU_CMD_CLOSE
                 Case 10 : Return MENU_CMD_EXIT
-                Case 11 : Return MENU_CMD_PROJECT_NEW
-                Case 12 : Return MENU_CMD_PROJECT_OPEN
-                Case 13 : Return MENU_CMD_PROJECT_SAVE
-                Case 14 : Return MENU_CMD_PROJECT_CLOSE
+            End Select
+        Case MENU_VIEW_PROJECT
+            Select Case idx
+                Case 1 : Return MENU_CMD_PROJECT_NEW
+                Case 2 : Return MENU_CMD_PROJECT_OPEN
+                Case 3 : Return MENU_CMD_PROJECT_SAVE
+                Case 4 : Return MENU_CMD_PROJECT_CLOSE
             End Select
         Case MENU_VIEW_CONFIG
             Select Case idx
@@ -3133,11 +3600,15 @@ Private Function GetMenuCommandAtIndex(ByVal menuView As Integer, ByVal idx As I
                 Case 8 : Return MENU_CMD_REF_SEETRACKER
                 Case 9 : Return MENU_CMD_REF_OPENMSX
                 Case 10 : Return MENU_CMD_REF_MSXBAS2ROM
+                Case 11 : Return MENU_CMD_REF_MSXIDE_DMX
             End Select
         Case MENU_VIEW_MAMUTE
             If idx = 1 Then Return MENU_CMD_MAMUTE_OPEN
         Case MENU_VIEW_INSERT
-            If idx = 1 Then Return MENU_CMD_INSERT_CHARMAP
+            Select Case idx
+                Case 1 : Return MENU_CMD_INSERT_CHARMAP
+                Case 2 : Return MENU_CMD_INSERT_COLOR
+            End Select
     End Select
     Return MENU_CMD_NONE
 End Function
@@ -3175,40 +3646,46 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
         ConsoleWriteText(2, 1, "Arquivo", 15, 1)
     End If
 
-    If menuOpen = MENU_VIEW_CONFIG Then
-        ConsoleWriteText(11, 1, "Configurar", 0, 7)
+    If menuOpen = MENU_VIEW_PROJECT Then
+        ConsoleWriteText(11, 1, "Projeto", 0, 7)
     Else
-        ConsoleWriteText(11, 1, "Configurar", 15, 1)
+        ConsoleWriteText(11, 1, "Projeto", 15, 1)
+    End If
+
+    If menuOpen = MENU_VIEW_CONFIG Then
+        ConsoleWriteText(20, 1, "Configurar", 0, 7)
+    Else
+        ConsoleWriteText(20, 1, "Configurar", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_COMPILE Then
-        ConsoleWriteText(23, 1, "Compilar", 0, 7)
+        ConsoleWriteText(32, 1, "Compilar", 0, 7)
     Else
-        ConsoleWriteText(23, 1, "Compilar", 15, 1)
+        ConsoleWriteText(32, 1, "Compilar", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_REFERENCE Then
-        ConsoleWriteText(33, 1, "Referencia", 0, 7)
+        ConsoleWriteText(42, 1, "Referencia", 0, 7)
     Else
-        ConsoleWriteText(33, 1, "Referencia", 15, 1)
+        ConsoleWriteText(42, 1, "Referencia", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_MAMUTE Then
-        ConsoleWriteText(45, 1, "Mamute", 0, 7)
+        ConsoleWriteText(54, 1, "Mamute", 0, 7)
     Else
-        ConsoleWriteText(45, 1, "Mamute", 15, 1)
+        ConsoleWriteText(54, 1, "Mamute", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_HELP Then
-        ConsoleWriteText(53, 1, "Ajuda", 0, 7)
+        ConsoleWriteText(62, 1, "Ajuda", 0, 7)
     Else
-        ConsoleWriteText(53, 1, "Ajuda", 15, 1)
+        ConsoleWriteText(62, 1, "Ajuda", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_INSERT Then
-        ConsoleWriteText(60, 1, "Inserir", 0, 7)
+        ConsoleWriteText(69, 1, "Inserir", 0, 7)
     Else
-        ConsoleWriteText(60, 1, "Inserir", 15, 1)
+        ConsoleWriteText(69, 1, "Inserir", 15, 1)
     End If
 
     If menuOpen = MENU_VIEW_FILE Then
@@ -3223,62 +3700,66 @@ Private Sub DrawMenuBar(ByVal menuOpen As Integer)
         DrawMenuItemRow(2, 10, " A Salvar Como                  ", 8, menuHighlightIndex)
         DrawMenuItemRow(2, 11, " F Fechar                  F5   ", 9, menuHighlightIndex)
         DrawMenuItemRow(2, 12, " X Exit                         ", 10, menuHighlightIndex)
-        ConsoleWriteText(2, 13, Chr(186) & "                                " & Chr(186), 0, 7)
-        DrawMenuItemRow(2, 14, " P Novo Projeto                 ", 11, menuHighlightIndex)
-        DrawMenuItemRow(2, 15, " J Abrir Projeto...             ", 12, menuHighlightIndex)
-        DrawMenuItemRow(2, 16, " K Salvar Projeto               ", 13, menuHighlightIndex)
-        DrawMenuItemRow(2, 17, " W Fechar Projeto               ", 14, menuHighlightIndex)
-        ConsoleWriteText(2, 18, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
-    ElseIf menuOpen = MENU_VIEW_CONFIG Then
+        ConsoleWriteText(2, 13, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
+    ElseIf menuOpen = MENU_VIEW_PROJECT Then
         ConsoleWriteText(11, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
-        DrawMenuItemRow(11, 3, " B Basic Dignified               ", 1, menuHighlightIndex)
-        DrawMenuItemRow(11, 4, " M MSX Basic                     ", 2, menuHighlightIndex)
-        DrawMenuItemRow(11, 5, " E Emulador                      ", 3, menuHighlightIndex)
-        DrawMenuItemRow(11, 6, Left(" A Mamute (Memoria)" & Space(32), 32), 4, menuHighlightIndex)
-        DrawMenuItemRow(11, 7, Left(" I Impressora" & Space(32), 32), 5, menuHighlightIndex)
-        DrawMenuItemRow(11, 8, Left(" D Editor" & Space(32), 32), 6, menuHighlightIndex)
-        ConsoleWriteText(11, 9, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
+        DrawMenuItemRow(11, 3, " P Novo Projeto                 ", 1, menuHighlightIndex)
+        DrawMenuItemRow(11, 4, " J Abrir Projeto...             ", 2, menuHighlightIndex)
+        DrawMenuItemRow(11, 5, " K Salvar Projeto               ", 3, menuHighlightIndex)
+        DrawMenuItemRow(11, 6, " W Fechar Projeto               ", 4, menuHighlightIndex)
+        ConsoleWriteText(11, 7, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
+    ElseIf menuOpen = MENU_VIEW_CONFIG Then
+        ConsoleWriteText(20, 2, Chr(201) & String(32, Chr(205)) & Chr(187), 15, 1)
+        DrawMenuItemRow(20, 3, " B Basic Dignified               ", 1, menuHighlightIndex)
+        DrawMenuItemRow(20, 4, " M MSX Basic                     ", 2, menuHighlightIndex)
+        DrawMenuItemRow(20, 5, " E Emulador                      ", 3, menuHighlightIndex)
+        DrawMenuItemRow(20, 6, Left(" A Mamute (Memoria)" & Space(32), 32), 4, menuHighlightIndex)
+        DrawMenuItemRow(20, 7, Left(" I Impressora" & Space(32), 32), 5, menuHighlightIndex)
+        DrawMenuItemRow(20, 8, Left(" D Editor" & Space(32), 32), 6, menuHighlightIndex)
+        ConsoleWriteText(20, 9, Chr(200) & String(32, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_COMPILE Then
-        ConsoleWriteText(23, 2, Chr(201) & String(42, Chr(205)) & Chr(187), 15, 1)
-        DrawMenuItemRow(23, 3, " M MSX-Basic (gera .amx + .bmx)             ", 1, menuHighlightIndex)
-        DrawMenuItemRow(23, 4, " D Basic Dignified (gera .amx)              ", 2, menuHighlightIndex)
-        DrawMenuItemRow(23, 5, " A Tokenizar AMX atual (forca modo classico)", 3, menuHighlightIndex)
-        DrawMenuItemRow(23, 6, " E Compilar + Executar no emulador          ", 4, menuHighlightIndex)
-        DrawMenuItemRow(23, 7, " L Abrir log de compilacao                  ", 5, menuHighlightIndex)
-        ConsoleWriteText(23, 8, Chr(200) & String(42, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(32, 2, Chr(201) & String(42, Chr(205)) & Chr(187), 15, 1)
+        DrawMenuItemRow(32, 3, " M MSX-Basic (gera .amx + .bmx)             ", 1, menuHighlightIndex)
+        DrawMenuItemRow(32, 4, " D Basic Dignified (gera .amx)              ", 2, menuHighlightIndex)
+        DrawMenuItemRow(32, 5, " A Tokenizar AMX atual (forca modo classico)", 3, menuHighlightIndex)
+        DrawMenuItemRow(32, 6, " E Compilar + Executar no emulador          ", 4, menuHighlightIndex)
+        DrawMenuItemRow(32, 7, " L Abrir log de compilacao                  ", 5, menuHighlightIndex)
+        ConsoleWriteText(32, 8, Chr(200) & String(42, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_HELP Then
-        ConsoleWriteText(53, 2, Chr(201) & String(34, Chr(205)) & Chr(187), 15, 1)
-        DrawMenuItemRow(53, 3, " B Basic Dignified                  ", 1, menuHighlightIndex)
-        DrawMenuItemRow(53, 4, " D Dignified                        ", 2, menuHighlightIndex)
-        DrawMenuItemRow(53, 5, " T BaToken                          ", 3, menuHighlightIndex)
-        DrawMenuItemRow(53, 6, " A asMSX                            ", 4, menuHighlightIndex)
-        DrawMenuItemRow(53, 7, " M MSX BASIC Dictionary             ", 5, menuHighlightIndex)
-        DrawMenuItemRow(53, 8, " E Editor                           ", 6, menuHighlightIndex)
-        DrawMenuItemRow(53, 9, " N Mamute Assembler                 ", 7, menuHighlightIndex)
-        DrawMenuItemRow(53, 10, " K Markdown                         ", 8, menuHighlightIndex)
-        DrawMenuItemRow(53, 11, IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    "), 9, menuHighlightIndex)
-        ConsoleWriteText(53, 12, Chr(200) & String(34, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(62, 2, Chr(201) & String(34, Chr(205)) & Chr(187), 15, 1)
+        DrawMenuItemRow(62, 3, " B Basic Dignified                  ", 1, menuHighlightIndex)
+        DrawMenuItemRow(62, 4, " D Dignified                        ", 2, menuHighlightIndex)
+        DrawMenuItemRow(62, 5, " T BaToken                          ", 3, menuHighlightIndex)
+        DrawMenuItemRow(62, 6, " A asMSX                            ", 4, menuHighlightIndex)
+        DrawMenuItemRow(62, 7, " M MSX BASIC Dictionary             ", 5, menuHighlightIndex)
+        DrawMenuItemRow(62, 8, " E Editor                           ", 6, menuHighlightIndex)
+        DrawMenuItemRow(62, 9, " N Mamute Assembler                 ", 7, menuHighlightIndex)
+        DrawMenuItemRow(62, 10, " K Markdown                         ", 8, menuHighlightIndex)
+        DrawMenuItemRow(62, 11, IIf(helpTheme = HELP_THEME_EDITORIAL, " C Tema: Editorial                  ", " C Tema: Classic                    "), 9, menuHighlightIndex)
+        ConsoleWriteText(62, 12, Chr(200) & String(34, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_REFERENCE Then
-        ConsoleWriteText(33, 2, Chr(201) & String(40, Chr(205)) & Chr(187), 15, 1)
-        DrawMenuItemRow(33, 3, Left(" R The MSX Red Book" & Space(40), 40), 1, menuHighlightIndex)
-        DrawMenuItemRow(33, 4, Left(" N Nestor Basic" & Space(40), 40), 2, menuHighlightIndex)
-        DrawMenuItemRow(33, 5, Left(" T MSX2 Technical Handbook" & Space(40), 40), 3, menuHighlightIndex)
-        DrawMenuItemRow(33, 6, Left(" M Manuais MSX" & Space(40), 40), 4, menuHighlightIndex)
-        DrawMenuItemRow(33, 7, Left(" C BIOS Chamadas" & Space(40), 40), 5, menuHighlightIndex)
-        DrawMenuItemRow(33, 8, Left(" W BIOS Hardware" & Space(40), 40), 6, menuHighlightIndex)
-        DrawMenuItemRow(33, 9, Left(" D BIOS Documentacao" & Space(40), 40), 7, menuHighlightIndex)
-        DrawMenuItemRow(33, 10, Left(" S SEE Tracker" & Space(40), 40), 8, menuHighlightIndex)
-        DrawMenuItemRow(33, 11, Left(" O openMSX" & Space(40), 40), 9, menuHighlightIndex)
-        DrawMenuItemRow(33, 12, Left(" X MSXBAS2ROM" & Space(40), 40), 10, menuHighlightIndex)
-        ConsoleWriteText(33, 13, Chr(200) & String(40, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(42, 2, Chr(201) & String(40, Chr(205)) & Chr(187), 15, 1)
+        DrawMenuItemRow(42, 3, Left(" R The MSX Red Book" & Space(40), 40), 1, menuHighlightIndex)
+        DrawMenuItemRow(42, 4, Left(" N Nestor Basic" & Space(40), 40), 2, menuHighlightIndex)
+        DrawMenuItemRow(42, 5, Left(" T MSX2 Technical Handbook" & Space(40), 40), 3, menuHighlightIndex)
+        DrawMenuItemRow(42, 6, Left(" M Manuais MSX" & Space(40), 40), 4, menuHighlightIndex)
+        DrawMenuItemRow(42, 7, Left(" C BIOS Chamadas" & Space(40), 40), 5, menuHighlightIndex)
+        DrawMenuItemRow(42, 8, Left(" W BIOS Hardware" & Space(40), 40), 6, menuHighlightIndex)
+        DrawMenuItemRow(42, 9, Left(" D BIOS Documentacao" & Space(40), 40), 7, menuHighlightIndex)
+        DrawMenuItemRow(42, 10, Left(" S SEE Tracker" & Space(40), 40), 8, menuHighlightIndex)
+        DrawMenuItemRow(42, 11, Left(" O openMSX" & Space(40), 40), 9, menuHighlightIndex)
+        DrawMenuItemRow(42, 12, Left(" X MSXBAS2ROM" & Space(40), 40), 10, menuHighlightIndex)
+        DrawMenuItemRow(42, 13, Left(" L msxide.dmx (biblioteca M_)" & Space(40), 40), 11, menuHighlightIndex)
+        ConsoleWriteText(42, 14, Chr(200) & String(40, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_MAMUTE Then
-        ConsoleWriteText(45, 2, Chr(201) & String(30, Chr(205)) & Chr(187), 15, 1)
-        DrawMenuItemRow(45, 3, Left(" A Abrir Mamute Assembler" & Space(30), 30), 1, menuHighlightIndex)
-        ConsoleWriteText(45, 4, Chr(200) & String(30, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(54, 2, Chr(201) & String(30, Chr(205)) & Chr(187), 15, 1)
+        DrawMenuItemRow(54, 3, Left(" A Abrir Mamute Assembler" & Space(30), 30), 1, menuHighlightIndex)
+        ConsoleWriteText(54, 4, Chr(200) & String(30, Chr(205)) & Chr(188), 15, 1)
     ElseIf menuOpen = MENU_VIEW_INSERT Then
-        ConsoleWriteText(60, 2, Chr(201) & String(28, Chr(205)) & Chr(187), 15, 1)
-        DrawMenuItemRow(60, 3, Left(" C Caracteres Especiais MSX" & Space(28), 28), 1, menuHighlightIndex)
-        ConsoleWriteText(60, 4, Chr(200) & String(28, Chr(205)) & Chr(188), 15, 1)
+        ConsoleWriteText(69, 2, Chr(201) & String(28, Chr(205)) & Chr(187), 15, 1)
+        DrawMenuItemRow(69, 3, Left(" C Caracteres Especiais MSX" & Space(28), 28), 1, menuHighlightIndex)
+        DrawMenuItemRow(69, 4, Left(" O Cor MSX (16 cores MSX1)" & Space(28), 28), 2, menuHighlightIndex)
+        ConsoleWriteText(69, 5, Chr(200) & String(28, Chr(205)) & Chr(188), 15, 1)
     End If
 End Sub
 
@@ -3568,6 +4049,180 @@ Private Sub DeleteAtCursor(ByRef d As Document)
     End If
 End Sub
 
+' Verifica se alguma linha do documento ja' tem "include" apontando pro
+' msxide.dmx (por nome de arquivo, ignorando o caminho/pasta na frente -
+' "msxide.dmx", "./msxide.dmx", "C:\dos\msxide\msxide.dmx" contam igual).
+' Generico: verifica se ja' existe "include <nomeArquivo>" em alguma linha
+' do documento (por nome de arquivo, ignorando o caminho/pasta na frente -
+' "nbasic.dmx", "./nbasic.dmx", "C:\dos\msxide\nbasic.dmx" contam igual).
+' Extraido de DocumentHasMsxideInclude (2026-09-12) pra reaproveitar com
+' nbasic.dmx (2026-09-13) sem duplicar a logica de novo.
+Private Function DocumentHasIncludeOf(ByRef d As Document, ByRef targetFileName As String) As Integer
+    Dim targetLower As String = LCase(targetFileName)
+    Dim i As Integer
+    For i = 1 To d.lineCount
+        Dim t As String = LTrim(d.lines(i))
+        If UCase(Left(t, 7)) = "INCLUDE" Then
+            Dim p1 As Integer = InStr(t, Chr(34))
+            Dim p2 As Integer = InStr(p1 + 1, t, Chr(34))
+            If p1 > 0 And p2 > p1 Then
+                Dim incPath As String = Mid(t, p1 + 1, p2 - p1 - 1)
+                Dim incName As String = Mid(incPath, Len(PathDirOf(incPath)) + 1)
+                If LCase(incName) = targetLower Then Return -1
+            End If
+        End If
+    Next i
+    Return 0
+End Function
+
+Private Function DocumentHasMsxideInclude(ByRef d As Document) As Integer
+    Return DocumentHasIncludeOf(d, "msxide.dmx")
+End Function
+
+' Generico: acrescenta "include <nomeArquivo>" como a linha "atPos"
+' (1-based) do documento, empurrando o resto pra baixo - extraido de
+' InsertMsxideIncludeLine (2026-09-12) pra reaproveitar com nbasic.dmx
+' (2026-09-13, ver InsertNBasicIncludeLine) sem duplicar a logica de
+' insercao/ajuste de cursor de novo.
+Private Sub InsertIncludeLineAt(ByRef d As Document, ByRef targetFileName As String, ByVal atPos As Integer)
+    If d.lineCount >= MAX_LINES Then Exit Sub ' sem espaco sobrando - desiste em silencio
+    If atPos < 1 Then atPos = 1
+    If atPos > d.lineCount + 1 Then atPos = d.lineCount + 1
+
+    Dim i As Integer
+    For i = d.lineCount To atPos Step -1
+        d.lines(i + 1) = d.lines(i)
+    Next i
+    d.lines(atPos) = "include " & Chr(34) & targetFileName & Chr(34)
+    d.lineCount += 1
+
+    ' O cursor/selecao/scroll acompanham a linha que "desceu" um lugar (se
+    ' a insercao foi antes dela), pra a tela nao pular de posicao visual
+    ' sem aviso so' porque o usuario apertou Salvar.
+    If d.cursorY >= atPos Then d.cursorY += 1
+    If d.selActive <> 0 And d.selAnchorY >= atPos Then d.selAnchorY += 1
+    If d.scrollY >= atPos - 1 Then d.scrollY += 1
+End Sub
+
+' Acrescenta "include "msxide.dmx"" como a PRIMEIRA linha do documento -
+' pedido do usuario (2026-09-12): quem usa M_cyan/M_dark_red/etc. (ver
+' Inserir->Cor MSX) esquece facil de incluir a biblioteca que define essas
+' constantes, entao o proprio editor garante isso sozinho, sem precisar
+' pedir permissao toda vez. So' chamada depois de confirmar (chamador)
+' que o documento ainda nao tem o include e que nao e' o proprio
+' msxide.dmx (incluir a si mesmo nao faz sentido).
+Private Sub InsertMsxideIncludeLine(ByRef d As Document)
+    InsertIncludeLineAt(d, "msxide.dmx", 1)
+End Sub
+
+Private Function DocumentHasNBasicInclude(ByRef d As Document) As Integer
+    Return DocumentHasIncludeOf(d, "nbasic.dmx")
+End Function
+
+' Verdadeiro se o documento ja' tem a rotina de carga do NestorBASIC (o
+' rotulo {NBasicLoad} - ver InsertNBasicLoaderBlock) em alguma linha, pra
+' nunca inserir uma segunda copia (2 rotulos {inicio}/{NBasicLoad} iguais
+' seria erro de compilacao).
+Private Function DocumentHasNBasicLoader(ByRef d As Document) As Integer
+    Dim i As Integer
+    For i = 1 To d.lineCount
+        If InStr(LTrim(d.lines(i)), "{NBasicLoad}") > 0 Then Return -1
+    Next i
+    Return 0
+End Function
+
+' Rotina de carga do NestorBASIC (bload "nbasic.bin",r + checagem de erro)
+' - mesmo texto/rotulos do "Novo Nestor Basic" do paleobasic (consultado a
+' pedido do usuario, 2026-09-13), so' que sem colar a biblioteca de
+' apelidos junto (isso agora e' nbasic.dmx, incluido separado - ver
+' InsertNBasicIncludeAndLoader). IMPORTANTE (achado do paleobasic, vale
+' igual aqui): bload "...",r mexe na pilha do BASIC, entao o carregador
+' usa GOTO/rotulo, NUNCA func/ret (que viraria GOSUB/RETURN e o RETURN
+' nao saberia mais pra onde voltar) - msxIDE tambem nao tem func/ret
+' ainda, entao isso nem seria uma opcao por enquanto de qualquer jeito.
+' So' faz sentido inserida numa aba NOVA/vazia (chamador garante isso) -
+' {inicio} precisa ser o primeiro rotulo de verdade do programa.
+Private Sub InsertNBasicLoaderBlock(ByRef d As Document, ByVal atPos As Integer)
+    Const NB_LOADER_LINE_COUNT = 20
+    Dim blockLines(1 To NB_LOADER_LINE_COUNT) As String
+    blockLines(1) = "{inicio}"
+    blockLines(2) = "defint p"
+    blockLines(3) = "dim p(15)"
+    blockLines(4) = "dim f$(1)"
+    blockLines(5) = ""
+    blockLines(6) = "goto {NBasicLoad}"
+    blockLines(7) = "{VoltaNBasicLoad}"
+    blockLines(8) = ""
+    blockLines(9) = "end"
+    blockLines(10) = ""
+    blockLines(11) = "{NBasicLoad}"
+    blockLines(12) = "bload " & Chr(34) & "nbasic.bin" & Chr(34) & ",r"
+    blockLines(13) = "if p(0) >= 5 then goto {VoltaNBasicLoad}"
+    blockLines(14) = "print " & Chr(34) & "Erro ao carregar o NestorBASIC: " & Chr(34) & ";"
+    blockLines(15) = "if p(0) = 0 then print " & Chr(34) & "computador sem RAM mapeada (minimo 128K)." & Chr(34)
+    blockLines(16) = "if p(0) = 1 then print " & Chr(34) & "erro de disco ao ler nbasic.bin." & Chr(34)
+    blockLines(17) = "if p(0) = 2 then print " & Chr(34) & "sem segmentos livres no mapper primario (DOS 2)." & Chr(34)
+    blockLines(18) = "if p(0) = 3 then print " & Chr(34) & "o NestorBASIC ja estava instalado." & Chr(34)
+    blockLines(19) = "if p(0) = 4 then print " & Chr(34) & "erro nao definido nesta versao." & Chr(34)
+    blockLines(20) = "end"
+
+    If d.lineCount + NB_LOADER_LINE_COUNT > MAX_LINES Then Exit Sub ' sem espaco sobrando - desiste em silencio
+    If atPos < 1 Then atPos = 1
+    If atPos > d.lineCount + 1 Then atPos = d.lineCount + 1
+
+    Dim i As Integer
+    For i = d.lineCount To atPos Step -1
+        d.lines(i + NB_LOADER_LINE_COUNT) = d.lines(i)
+    Next i
+    For i = 1 To NB_LOADER_LINE_COUNT
+        d.lines(atPos + i - 1) = blockLines(i)
+    Next i
+    d.lineCount += NB_LOADER_LINE_COUNT
+
+    If d.cursorY >= atPos Then d.cursorY += NB_LOADER_LINE_COUNT
+    If d.selActive <> 0 And d.selAnchorY >= atPos Then d.selAnchorY += NB_LOADER_LINE_COUNT
+    If d.scrollY >= atPos - 1 Then d.scrollY += NB_LOADER_LINE_COUNT
+End Sub
+
+' Copia nbasic.bin pra raiz do msxIDE (onde o "bload "nbasic.bin",r" do
+' carregador vai procurar - ver InsertNBasicLoaderBlock) se ainda nao
+' esta' la'. Procura em NBASIC\ (pasta de referencia trazida pelo
+' usuario, 2026-09-13, com toda a documentacao/fonte do NestorBASIC ao
+' lado). Se nao achar em nenhum lugar, desiste em silencio - o usuario
+' ainda pode compilar/testar sem o NestorBASIC de verdade instalado, so'
+' o BLOAD que vai falhar em runtime (o carregador ja' avisa isso).
+Private Sub EnsureNBasicBinAtRoot()
+    Dim destPath As String = "nbasic.bin"
+    If Dir(destPath) <> "" Then Exit Sub ' ja existe, nada a fazer
+
+    Dim candidates(1 To 2) As String
+    candidates(1) = "NBASIC" & Chr(92) & "NBASIC.BIN"
+    candidates(2) = "NBASIC" & Chr(92) & "nbasic.bin"
+
+    Dim i As Integer
+    For i = 1 To 2
+        If Dir(candidates(i)) <> "" Then
+            Dim ff As Integer = FreeFile
+            If Open(candidates(i) For Binary Access Read As #ff) = 0 Then
+                Dim sizeBytes As LongInt = Lof(ff)
+                If sizeBytes > 0 Then
+                    Dim rawBytes As String = Space(sizeBytes)
+                    Get #ff, , rawBytes
+                    Close #ff
+                    Dim ffOut As Integer = FreeFile
+                    If Open(destPath For Binary Access Write As #ffOut) = 0 Then
+                        Put #ffOut, 1, rawBytes
+                        Close #ffOut
+                    End If
+                Else
+                    Close #ff
+                End If
+                Exit Sub
+            End If
+        End If
+    Next i
+End Sub
+
 Private Sub SaveDocumentToDisk(ByRef d As Document)
     If d.isHelp <> 0 Then Exit Sub
 
@@ -3680,6 +4335,46 @@ Private Sub SaveDocumentToDisk(ByRef d As Document)
         Exit Sub
     End If
 
+    ' Garante "include msxide.dmx"/"include nbasic.dmx" em todo .dmx que
+    ' ainda nao tem (menos no proprio arquivo) ANTES de gravar - assim quem
+    ' usa M_cyan/M_white/etc. (msxide.dmx) ou NBasic (nbasic.dmx, so' se
+    ' marcado em Configurar -> MSX Basic) nunca esquece de incluir a
+    ' biblioteca (ver InsertMsxideIncludeLine/InsertNBasicIncludeAndLoader
+    ' acima). CompileActiveDocument ja' chama SaveActiveDocumentToDisk antes
+    ' de compilar, entao isto cobre "ao salvar" e "ao compilar pela primeira
+    ' vez" com o mesmo gancho, sem duplicar a logica em dois lugares.
+    If GetExtLower(d.filePath) = ".dmx" Then
+        ' "Vazio" e' checado ANTES de qualquer include entrar - so' faz
+        ' sentido inserir a rotina de carga do NestorBASIC (rotulos
+        ' {inicio}/{NBasicLoad}) numa aba realmente nova, nunca no meio de
+        ' um programa que ja' existe (risco de duplicar {inicio}). "topPos"
+        ' acompanha onde a PROXIMA insercao no topo deve entrar, pra
+        ' msxide.dmx/nbasic.dmx/rotina de carga ficarem empilhados na ordem
+        ' certa (nunca uma pulando por cima da anterior) quando mais de uma
+        ' se aplica na mesma gravacao.
+        Dim wasEmptyBeforeIncludes As Integer = 0
+        If d.lineCount = 1 And Trim(d.lines(1)) = "" Then wasEmptyBeforeIncludes = -1
+        Dim dmxFileName As String = LCase(Mid(d.filePath, Len(PathDirOf(d.filePath)) + 1))
+        Dim topPos As Integer = 1
+
+        If dmxFileName <> "msxide.dmx" And DocumentHasMsxideInclude(d) = 0 Then
+            InsertIncludeLineAt(d, "msxide.dmx", topPos)
+            topPos += 1
+        End If
+
+        If dmxFileName <> "nbasic.dmx" And LCase(DbGetSetting("cfg.msxbasic.nbasic.enabled", "False")) = "true" Then
+            If DocumentHasNBasicInclude(d) = 0 Then
+                InsertIncludeLineAt(d, "nbasic.dmx", topPos)
+                topPos += 1
+            End If
+            If wasEmptyBeforeIncludes <> 0 And DocumentHasNBasicLoader(d) = 0 Then
+                InsertNBasicLoaderBlock(d, topPos)
+                topPos += 20
+            End If
+            EnsureNBasicBinAtRoot()
+        End If
+    End If
+
     Dim ff As Integer = FreeFile
 
     If Open(d.filePath For Output As #ff) <> 0 Then Exit Sub
@@ -3690,6 +4385,8 @@ Private Sub SaveDocumentToDisk(ByRef d As Document)
     Next i
 
     Close #ff
+
+    d.diskBaselineText = JoinDocumentLines(d)
 End Sub
 
 Private Sub SaveActiveDocumentToDisk()
@@ -3700,6 +4397,208 @@ Private Sub FinalizeModalInputState()
     dragMode = DRAG_NONE
     ConsoleResetInputState()
 End Sub
+
+' Pergunta simples Sim/Nao (S/N/setas+Enter/Esc=Nao) - usada por
+' EditorCheckExternalChanges quando o arquivo aberto mudou em disco por
+' fora do editor (2026-09-12, pedido do usuario: "monitorar o arquivo... e
+' perguntar se o usuario quer recarregar").
+Private Function PromptYesNo(ByRef titleText As String, ByRef msg1 As String, ByRef msg2 As String) As Integer
+    Dim dialogW As Integer = Clamp(uiW - 16, 46, 84)
+    Dim dialogH As Integer = 8
+    Dim dialogX As Integer = ((uiW - dialogW) \ 2) + 1
+    Dim dialogY As Integer = ((uiH - dialogH) \ 2) + 1
+    Dim selected As Integer = 0 ' 0=Sim, 1=Nao
+    Dim result As Integer = 0
+
+    Do
+        ConsoleBeginFrame()
+        DrawDesktop()
+        DrawDocumentsFull()
+        DrawMenuBar(MENU_VIEW_NONE)
+        DrawStatusBar()
+
+        ConsoleWriteText(dialogX, dialogY, Chr(201) & String(dialogW - 2, Chr(205)) & Chr(187), 15, 1)
+        Dim i As Integer
+        For i = 1 To dialogH - 2
+            ConsoleWriteText(dialogX, dialogY + i, Chr(186) & String(dialogW - 2, " ") & Chr(186), 15, 1)
+        Next i
+        ConsoleWriteText(dialogX, dialogY + dialogH - 1, Chr(200) & String(dialogW - 2, Chr(205)) & Chr(188), 15, 1)
+
+        ConsoleWriteText(dialogX + 2, dialogY, " " & titleText & " ", 0, 7, dialogW - 4)
+        ConsoleWriteText(dialogX + 2, dialogY + 2, msg1, 15, 1, dialogW - 4)
+        ConsoleWriteText(dialogX + 2, dialogY + 3, msg2, 15, 1, dialogW - 4)
+
+        Dim yesFg As UByte = IIf(selected = 0, 0, 14)
+        Dim yesBg As UByte = IIf(selected = 0, 7, 1)
+        Dim noFg As UByte = IIf(selected = 1, 0, 12)
+        Dim noBg As UByte = IIf(selected = 1, 7, 1)
+        ConsoleWriteText(dialogX + 2, dialogY + 5, "S Sim, recarregar", yesFg, yesBg)
+        ConsoleWriteText(dialogX + 24, dialogY + 5, "N Nao, ignorar", noFg, noBg)
+        ConsoleWriteText(dialogX + 2, dialogY + 6, "Setas escolhem | Enter confirma | Esc = Nao", 8, 1, dialogW - 4)
+
+        ConsoleSetCursor(1, 1, 0)
+        ConsoleFlush()
+        ConsoleEndFrame()
+
+        Dim eventType As Integer
+        Dim keyText As String
+        Dim mouseX As Integer
+        Dim mouseY As Integer
+        Dim mouseAction As Integer
+
+        If ConsolePollInput(eventType, keyText, mouseX, mouseY, mouseAction) = 0 Then
+            Sleep 5, 1
+            Continue Do
+        End If
+
+        If eventType <> MSX_INPUT_KEY Then Continue Do
+        keyText = NormalizeKey(keyText)
+
+        If keyText = Chr(27) Then
+            result = 0
+            Exit Do
+        End If
+        If Len(keyText) = 1 Then
+            Select Case UCase(keyText)
+                Case "S"
+                    result = -1
+                    Exit Do
+                Case "N"
+                    result = 0
+                    Exit Do
+            End Select
+        End If
+        If keyText = Chr(13) Then
+            result = IIf(selected = 0, -1, 0)
+            Exit Do
+        End If
+        If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
+            Select Case Asc(Right(keyText, 1))
+                Case 75, 77, 72, 80
+                    selected = IIf(selected = 0, -1, 0)
+            End Select
+        End If
+    Loop
+
+    FinalizeModalInputState()
+    Return result
+End Function
+
+' "Monitora" o arquivo do documento ATIVO (pedido do usuario, 2026-09-12) -
+' chamada com throttle (ver EditorCheckExternalChanges, wrapper publico)
+' pra nao ler o arquivo do disco a cada frame. Compara o disco AGORA contra
+' d.diskBaselineText (o que foi lido/gravado da ultima vez que este
+' documento sincronizou com o disco - ver JoinDocumentLines/LoadFromDisk/
+' SaveDocumentToDisk), nao contra d.lines() atual, pra nao confundir
+' edicoes proprias ainda-nao-salvas do usuario com uma mudanca externa.
+'
+' Caso especial pedido explicitamente: se a UNICA diferenca for a propria
+' aba (ou outra instancia/aba salvando o MESMO arquivo) ter ganho
+' "include msxide.dmx" como primeira linha - recarrega sozinho, sem
+' perguntar, porque essa mudanca especifica e' sempre benigna e esperada
+' (mesma logica de InsertMsxideIncludeLine). Qualquer outra diferenca
+' pergunta de verdade via PromptYesNo.
+' Verdadeiro se a UNICA diferenca entre currentLines(1..currentCount) e
+' diskLines(1..diskCount) for diskLines(1) ser exatamente um include do
+' msxide.dmx que currentLines ainda nao tem, com o resto batendo linha a
+' linha - extraido separado de CheckActiveDocumentForExternalChange pra dar
+' pra testar isolado (sem precisar de um Document/janela de verdade).
+Private Function DiskChangeIsJustMsxideInclude(currentLines() As String, ByVal currentCount As Integer, diskLines() As String, ByVal diskCount As Integer) As Integer
+    If diskCount <> currentCount + 1 Then Return 0
+
+    Dim firstT As String = LTrim(diskLines(1))
+    If UCase(Left(firstT, 7)) <> "INCLUDE" Then Return 0
+
+    Dim p1 As Integer = InStr(firstT, Chr(34))
+    Dim p2 As Integer = InStr(p1 + 1, firstT, Chr(34))
+    If p1 <= 0 Or p2 <= p1 Then Return 0
+
+    Dim incName As String = Mid(firstT, p1 + 1, p2 - p1 - 1)
+    incName = Mid(incName, Len(PathDirOf(incName)) + 1)
+    If LCase(incName) <> "msxide.dmx" Then Return 0
+
+    Dim m As Integer
+    For m = 1 To currentCount
+        If diskLines(m + 1) <> currentLines(m) Then Return 0
+    Next m
+    Return -1
+End Function
+
+Private Function CheckActiveDocumentForExternalChange() As Integer
+    If activeDoc < 1 Or activeDoc > docCount Then Return 0
+    Dim ByRef d As Document = docs(activeDoc)
+
+    If d.isHelp <> 0 Or d.isPixelEditor <> 0 Or d.isMamuteTerm <> 0 Or d.isMamuteEdit <> 0 Then Return 0
+    If Len(d.filePath) = 0 Then Return 0
+    If Left(LCase(d.filePath), 4) = "cfg:" Then Return 0
+    If Dir(d.filePath) = "" Then Return 0 ' arquivo sumiu do disco - nao ha' o que comparar
+
+    Dim diskLines() As String
+    Dim diskCount As Integer
+    If ReadFileLinesRaw(d.filePath, diskLines(), diskCount) = 0 Then Return 0
+
+    Dim diskText As String = ""
+    Dim k As Integer
+    For k = 1 To diskCount
+        diskText &= diskLines(k)
+        If k < diskCount Then diskText &= Chr(10)
+    Next k
+
+    If diskText = d.diskBaselineText Then Return 0 ' nada mudou desde a ultima sincronia
+
+    ' Caso especial pedido pelo usuario: disco ganhou EXATAMENTE o include
+    ' do msxide.dmx (por outra aba/instancia salvando o mesmo arquivo) -
+    ' recarrega sozinho, sem perguntar.
+    If DiskChangeIsJustMsxideInclude(d.lines(), d.lineCount, diskLines(), diskCount) <> 0 Then
+        InsertMsxideIncludeLine(d)
+        d.diskBaselineText = diskText
+        Return -1
+    End If
+
+    ' Mudanca de verdade (nao e' so' o include automatico) - pergunta.
+    Dim reload As Integer = PromptYesNo("Arquivo alterado", NormalizePathForDisplay(d.filePath) & " foi alterado fora do editor.", "Recarregar do disco? (perde as alteracoes nao salvas aqui)")
+    If reload <> 0 Then
+        d.lineCount = diskCount
+        If d.lineCount = 0 Then
+            d.lineCount = 1
+            d.lines(1) = ""
+        Else
+            Dim n As Integer
+            For n = 1 To diskCount
+                d.lines(n) = diskLines(n)
+            Next n
+        End If
+        If d.cursorY > d.lineCount Then d.cursorY = d.lineCount
+        If d.cursorY < 1 Then d.cursorY = 1
+        If d.cursorX > Len(d.lines(d.cursorY)) + 1 Then d.cursorX = Len(d.lines(d.cursorY)) + 1
+        d.selActive = 0
+        ClampScroll(d)
+    End If
+    ' Sim ou nao, atualiza a base de comparacao pra nao ficar perguntando
+    ' de novo pra essa MESMA mudanca a cada 2 segundos - so' volta a
+    ' perguntar se o disco mudar de novo depois disso.
+    d.diskBaselineText = diskText
+    Return -1
+End Function
+
+' Ponto de entrada publico (chamado do loop principal em main.bas) - so'
+' faz alguma coisa (le o arquivo do disco) no maximo a cada 2 segundos,
+' pra "monitorar" sem custar I/O de disco a cada frame. Devolve -1 quando
+' de fato mudou algo (recarregou sozinho ou mostrou a pergunta), pra quem
+' chamou saber que precisa forcar um redesenho.
+Function EditorCheckExternalChanges() As Integer
+    Static lastCheckAt As Double = 0
+    Dim nowT As Double = Timer
+    If nowT - lastCheckAt < 2.0 Then Return 0
+    lastCheckAt = nowT
+
+    Dim changed As Integer = CheckActiveDocumentForExternalChange()
+    If changed <> 0 Then
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+    End If
+    Return changed
+End Function
 
 Private Function PromptPathDialog(ByRef titleText As String, ByRef promptText As String, ByRef initialValue As String, ByRef canceled As Integer) As String
     Dim value As String = initialValue
@@ -3801,11 +4700,645 @@ Private Function PromptPathDialog(ByRef titleText As String, ByRef promptText As
     Return Trim(value)
 End Function
 
+' ------------------------------------------------------------------
+' BrowseForFile - dialogo modal de navegacao de arquivos (pedido do
+' usuario, 2026-09-12: os dialogos de Abrir/Salvar Como/Novo Projeto/
+' Abrir Projeto devem deixar navegar pelas pastas e unidades do
+' computador em vez de exigir o caminho inteiro digitado a mao como o
+' PromptPathDialog acima faz - esse continua existindo, e' usado pra
+' todo o resto que nao e' escolha de arquivo: endereco, slot, valor de
+' configuracao, texto de busca, etc.).
+'
+' filterSpec: lista de padroes separados por ";" (ex.: "*.dmx;*.amx").
+' Um token sem "*"/"?" e tratado como extensao (".dmx" vira "*.dmx");
+' "*.*"/"*"/"" mostra tudo. Editavel dentro do dialogo (campo "Filtro"),
+' Tab troca o foco entre a lista/Filtro/Nome, Enter no campo Filtro so'
+' reaplica o filtro (nao fecha o dialogo).
+'
+' isSaveMode = 0 (Abrir): o caminho final precisa existir e nao ser
+' pasta, senao o dialogo devolve cancelado em vez de um caminho
+' invalido. isSaveMode <> 0 (Salvar): qualquer nome nao-vazio digitado
+' no campo "Nome" e aceito (o dialogo so' escolhe o caminho, nao grava
+' nada em disco - quem chama continua responsavel por isso, igual
+' antes com PromptPathDialog).
+' ------------------------------------------------------------------
+
+Private Function BrowserNormalizeToken(ByRef token As String) As String
+    Dim t As String = Trim(token)
+    If Len(t) = 0 Then Return ""
+    If InStr(t, "*") = 0 And InStr(t, "?") = 0 Then
+        If Left(t, 1) <> "." Then t = "." & t
+        t = "*" & t
+    End If
+    Return t
+End Function
+
+' Casamento de padrao estilo DOS ("*"/"?"), sem diferenciar maiusculas.
+Private Function BrowserWildcardMatch(ByRef nameText As String, ByRef pattern As String) As Integer
+    Dim n As String = LCase(nameText)
+    Dim p As String = LCase(pattern)
+    Dim nLen As Integer = Len(n)
+    Dim pLen As Integer = Len(p)
+    Dim ni As Integer = 1, pi As Integer = 1
+    Dim starIdx As Integer = 0, matchIdx As Integer = 0
+
+    Do While ni <= nLen
+        If pi <= pLen AndAlso (Mid(p, pi, 1) = "?" Or Mid(p, pi, 1) = Mid(n, ni, 1)) Then
+            ni += 1 : pi += 1
+        ElseIf pi <= pLen AndAlso Mid(p, pi, 1) = "*" Then
+            starIdx = pi : matchIdx = ni : pi += 1
+        ElseIf starIdx <> 0 Then
+            pi = starIdx + 1
+            matchIdx += 1
+            ni = matchIdx
+        Else
+            Return 0
+        End If
+    Loop
+    Do While pi <= pLen AndAlso Mid(p, pi, 1) = "*"
+        pi += 1
+    Loop
+    Return IIf(pi > pLen, -1, 0)
+End Function
+
+Private Function BrowserMatchesFilter(ByRef nameText As String, ByRef filterText As String) As Integer
+    Dim ft As String = Trim(filterText)
+    If Len(ft) = 0 Then Return -1
+
+    Dim startPos As Integer = 1
+    Dim semiPos As Integer
+    Do
+        semiPos = InStr(startPos, ft, ";")
+        Dim tok As String
+        If semiPos > 0 Then
+            tok = Mid(ft, startPos, semiPos - startPos)
+        Else
+            tok = Mid(ft, startPos)
+        End If
+        tok = BrowserNormalizeToken(tok)
+        If Len(tok) > 0 Then
+            If tok = "*" Or tok = "*.*" Then Return -1
+            If BrowserWildcardMatch(nameText, tok) <> 0 Then Return -1
+        End If
+        startPos = semiPos + 1
+    Loop While semiPos > 0
+    Return 0
+End Function
+
+Private Function BrowserEnsureTrailingSep(ByRef pathValue As String) As String
+    If Len(pathValue) = 0 Then Return pathValue
+    Dim lastCh As String = Right(pathValue, 1)
+    If lastCh = Chr(92) Or lastCh = "/" Then Return pathValue
+    Return pathValue & Chr(92)
+End Function
+
+' Mesmo cuidado do DirExistsP (project.bas): Dir() nao reconhece um
+' diretorio existente quando o caminho termina com separador.
+Private Function BrowserDirExists(ByRef dirPath As String) As Integer
+    Dim p As String = dirPath
+    If Len(p) > 1 And (Right(p, 1) = Chr(92) Or Right(p, 1) = "/") Then p = Left(p, Len(p) - 1)
+    If Len(p) = 0 Then Return 0
+    Return IIf(Dir(p, fbDirectory) <> "", -1, 0)
+End Function
+
+' curPath = "" e' o estado especial "lista de unidades" (alcancado
+' subindo ".." a partir da raiz de uma unidade, ex.: "C:\").
+Private Function BrowserParentOf(ByRef curPath As String) As String
+    #Ifdef __FB_WIN32__
+        If Len(curPath) = 3 And Mid(curPath, 2, 2) = ":" & Chr(92) Then Return ""
+    #Else
+        If curPath = "/" Then Return "/"
+    #EndIf
+    Dim trimmed As String = curPath
+    Dim lastCh As String = Right(trimmed, 1)
+    If lastCh = Chr(92) Or lastCh = "/" Then trimmed = Left(trimmed, Len(trimmed) - 1)
+    Dim lastSlash As Integer = InStrRev(trimmed, Chr(92))
+    Dim lastFwd As Integer = InStrRev(trimmed, "/")
+    If lastFwd > lastSlash Then lastSlash = lastFwd
+    If lastSlash <= 0 Then Return trimmed & Chr(92)
+    Return Left(trimmed, lastSlash)
+End Function
+
+Private Sub BrowserSortNames(names() As String, ByVal n As Integer)
+    Dim i As Integer, j As Integer, tmp As String
+    For i = 2 To n
+        tmp = names(i)
+        j = i - 1
+        Do While j >= 1 AndAlso LCase(names(j)) > LCase(tmp)
+            names(j + 1) = names(j)
+            j -= 1
+        Loop
+        names(j + 1) = tmp
+    Next i
+End Sub
+
+' Declarada a mao (em vez de "#Include Once windows.bi") porque windows.bi
+' traz a API Win32 inteira pro escopo global, incluindo funcoes com o MESMO
+' NOME de procedures ja existentes neste arquivo (DrawMenuBar/
+' GetMenuItemCount sao, coincidentemente, tambem nomes de funcoes reais da
+' user32.dll) - inclui-lo quebra a compilacao com "Return type here does not
+' match DECLARE prototype" nelas. Mesmo idioma ja usado mais abaixo pro
+' ShellExecuteA (uma unica funcao Win32 declarada a mao, sem trazer o
+' cabecalho inteiro).
+Declare Function GetLogicalDrives Lib "kernel32" Alias "GetLogicalDrives" () As ULong
+
+' Reconstroi a listagem pra curPath/filterText atuais. entryIsDir(i) <> 0
+' significa pasta/unidade/".." (Enter/clique navega); = 0 significa
+' arquivo (Enter/clique escolhe).
+Private Sub BrowserBuildEntries(ByRef curPath As String, ByRef filterText As String, entryNames() As String, entryIsDir() As Integer, ByRef entryCount As Integer)
+    entryCount = 0
+    Erase entryNames
+    Erase entryIsDir
+
+    If Len(curPath) = 0 Then
+        #Ifdef __FB_WIN32__
+            Dim driveMask As ULong = GetLogicalDrives()
+            Dim di As Integer
+            For di = 0 To 25
+                If (driveMask And (CULng(1) Shl di)) <> 0 Then
+                    entryCount += 1
+                    ReDim Preserve entryNames(1 To entryCount)
+                    ReDim Preserve entryIsDir(1 To entryCount)
+                    entryNames(entryCount) = Chr(65 + di) & ":" & Chr(92)
+                    entryIsDir(entryCount) = -1
+                End If
+            Next di
+        #Else
+            entryCount = 1
+            ReDim entryNames(1 To 1)
+            ReDim entryIsDir(1 To 1)
+            entryNames(1) = "/"
+            entryIsDir(1) = -1
+        #EndIf
+        Exit Sub
+    End If
+
+    Dim showParent As Integer = -1
+    #Ifndef __FB_WIN32__
+        If curPath = "/" Then showParent = 0
+    #EndIf
+    If showParent <> 0 Then
+        entryCount += 1
+        ReDim Preserve entryNames(1 To entryCount)
+        ReDim Preserve entryIsDir(1 To entryCount)
+        entryNames(entryCount) = ".."
+        entryIsDir(entryCount) = -1
+    End If
+
+    Dim dirNames() As String
+    Dim dirCount As Integer = 0
+    Dim fileNames() As String
+    Dim fileCount As Integer = 0
+
+    ' Primeiro passo: so' coleta os nomes (sem interromper o cursor global
+    ' do Dir() com outra chamada no meio do "found = Dir()" de continuacao -
+    ' FreeBASIC tem UM cursor de busca por processo, chamar Dir() com outro
+    ' padrao no meio da varredura reinicia esse cursor e quebra a
+    ' continuacao). Classificar pasta/arquivo fica pro segundo passo,
+    ' de proposito separado.
+    Dim rawNames() As String
+    Dim rawCount As Integer = 0
+    Dim scanAttr As Integer = fbDirectory Or fbHidden Or fbArchive Or fbReadOnly Or fbSystem
+    Dim found As String = Dir(curPath & "*.*", scanAttr)
+    Do While Len(found) > 0
+        If found <> "." And found <> ".." Then
+            rawCount += 1
+            ReDim Preserve rawNames(1 To rawCount)
+            rawNames(rawCount) = found
+        End If
+        found = Dir()
+    Loop
+
+    ' Segundo passo: classifica cada nome coletado. FreeBASIC nao tem uma
+    ' funcao GetAttr/GetFileAttributes de RTL - o jeito documentado de saber
+    ' se um caminho exato e' pasta e' este truque com dois Dir(): passar
+    ' TODOS os bits "de arquivo" (sem o de pasta) e ver se ainda assim nao
+    ' acha nada - so' pastas ficam de fora desse conjunto (arquivos normais
+    ' sao sempre incluidos pelo Dir(), documentado e confirmado num teste
+    ' isolado 2026-09-12, inclusive com pasta oculta tipo ".git").
+    Dim i2 As Integer
+    For i2 = 1 To rawCount
+        Dim fullPath As String = curPath & rawNames(i2)
+        Dim isDirEntry As Integer = IIf(Dir(fullPath, fbHidden Or fbSystem Or fbReadOnly Or fbArchive) = "", -1, 0)
+        If isDirEntry <> 0 Then
+            dirCount += 1
+            ReDim Preserve dirNames(1 To dirCount)
+            dirNames(dirCount) = rawNames(i2)
+        ElseIf BrowserMatchesFilter(rawNames(i2), filterText) <> 0 Then
+            fileCount += 1
+            ReDim Preserve fileNames(1 To fileCount)
+            fileNames(fileCount) = rawNames(i2)
+        End If
+    Next i2
+
+    BrowserSortNames(dirNames(), dirCount)
+    BrowserSortNames(fileNames(), fileCount)
+
+    Dim i As Integer
+    For i = 1 To dirCount
+        entryCount += 1
+        ReDim Preserve entryNames(1 To entryCount)
+        ReDim Preserve entryIsDir(1 To entryCount)
+        entryNames(entryCount) = dirNames(i)
+        entryIsDir(entryCount) = -1
+    Next i
+    For i = 1 To fileCount
+        entryCount += 1
+        ReDim Preserve entryNames(1 To entryCount)
+        ReDim Preserve entryIsDir(1 To entryCount)
+        entryNames(entryCount) = fileNames(i)
+        entryIsDir(entryCount) = 0
+    Next i
+End Sub
+
+Private Function BrowseForFile(ByRef titleText As String, ByRef startPath As String, ByRef filterSpec As String, ByVal isSaveMode As Integer, ByRef canceled As Integer) As String
+    Dim absStart As String = ToAbsolutePath(startPath)
+    Dim curPath As String = PathDirOf(absStart)
+    If Len(curPath) = 0 OrElse BrowserDirExists(curPath) = 0 Then curPath = BrowserEnsureTrailingSep(CurDir())
+    curPath = BrowserEnsureTrailingSep(curPath)
+
+    Dim nameText As String = Mid(absStart, Len(curPath) + 1)
+    If InStr(nameText, Chr(92)) > 0 Or InStr(nameText, "/") > 0 Then nameText = ""
+
+    Dim filterText As String = filterSpec
+    Dim nameCursorPos As Integer = Len(nameText) + 1
+    Dim filterCursorPos As Integer = Len(filterText) + 1
+    Dim focus As Integer = 0 ' 0=lista, 1=filtro, 2=nome
+    Dim selected As Integer = 0
+    Dim scrollTop As Integer = 0
+    Dim statusMsg As String = ""
+
+    Dim entryNames() As String
+    Dim entryIsDir() As Integer
+    Dim entryCount As Integer
+    BrowserBuildEntries(curPath, filterText, entryNames(), entryIsDir(), entryCount)
+
+    If entryCount > 0 And Len(nameText) > 0 Then
+        Dim k As Integer
+        For k = 1 To entryCount
+            If entryIsDir(k) = 0 And LCase(entryNames(k)) = LCase(nameText) Then selected = k - 1
+        Next k
+    End If
+
+    canceled = 0
+    Dim inputEvent As Integer
+    Dim inputKey As String
+    Dim inputMouseX As Integer
+    Dim inputMouseY As Integer
+    Dim inputMouseAction As Integer
+
+    Dim dialogW As Integer = Clamp(uiW - 6, 70, 96)
+    Dim dialogH As Integer = Clamp(uiH - 4, 22, 30)
+    Dim dialogX As Integer = ((uiW - dialogW) \ 2) + 1
+    Dim dialogY As Integer = ((uiH - dialogH) \ 2) + 1
+    Dim innerW As Integer = dialogW - 4
+    Dim fieldW As Integer = innerW - 9
+    Dim listY As Integer = dialogY + 7
+    Dim listRows As Integer = dialogH - 10
+    If listRows < 3 Then listRows = 3
+
+    Do
+        If entryCount > 0 Then
+            If selected < 0 Then selected = 0
+            If selected > entryCount - 1 Then selected = entryCount - 1
+        Else
+            selected = 0
+        End If
+        If selected < scrollTop Then scrollTop = selected
+        If selected > scrollTop + listRows - 1 Then scrollTop = selected - listRows + 1
+        If scrollTop > entryCount - listRows Then scrollTop = entryCount - listRows
+        If scrollTop < 0 Then scrollTop = 0
+
+        ConsoleBeginFrame()
+        DrawDesktop()
+        DrawDocumentsFull()
+        DrawMenuBar(0)
+        DrawStatusBar()
+
+        Dim topLine As String = Chr(201) & String(dialogW - 2, Chr(205)) & Chr(187)
+        Dim midLine As String = Chr(186) & String(dialogW - 2, " ") & Chr(186)
+        Dim botLine As String = Chr(200) & String(dialogW - 2, Chr(205)) & Chr(188)
+        Dim rowIdx As Integer
+
+        ConsoleWriteText(dialogX, dialogY, topLine, 15, 1)
+        For rowIdx = 1 To dialogH - 2
+            ConsoleWriteText(dialogX, dialogY + rowIdx, midLine, 15, 1)
+        Next rowIdx
+        ConsoleWriteText(dialogX, dialogY + dialogH - 1, botLine, 15, 1)
+
+        ConsoleWriteText(dialogX + 2, dialogY, " " & titleText & " ", 0, 7, dialogW - 4)
+
+        Dim dirLabel As String = IIf(Len(curPath) = 0, "Unidades disponiveis:", "Pasta: " & curPath)
+        ConsoleWriteText(dialogX + 2, dialogY + 1, dirLabel, 11, 1, innerW)
+
+        Dim filterBg As UByte = 7
+        If focus = 1 Then filterBg = 3
+        ConsoleWriteText(dialogX + 2, dialogY + 3, "Filtro:", 15, 1)
+        ConsoleWriteText(dialogX + 11, dialogY + 3, Left(filterText & Space(fieldW), fieldW), 0, filterBg)
+
+        Dim nameBg As UByte = 7
+        If focus = 2 Then nameBg = 3
+        ConsoleWriteText(dialogX + 2, dialogY + 4, "Nome:  ", 15, 1)
+        ConsoleWriteText(dialogX + 11, dialogY + 4, Left(nameText & Space(fieldW), fieldW), 0, nameBg)
+
+        Dim headerText As String = IIf(entryCount = 0, "(pasta vazia ou nenhum arquivo casa com o filtro)", "Arquivos/pastas (" & entryCount & "):")
+        ConsoleWriteText(dialogX + 2, dialogY + 6, headerText, 8, 1, innerW)
+
+        Dim li As Integer
+        For li = 0 To listRows - 1
+            Dim itemIdx As Integer = scrollTop + li
+            Dim rowY As Integer = listY + li
+            Dim itemFg As UByte = 15, itemBg As UByte = 1
+            Dim itemText As String = ""
+            If itemIdx < entryCount Then
+                Dim rawName As String = entryNames(itemIdx + 1)
+                Dim tagText As String = IIf(entryIsDir(itemIdx + 1) <> 0, "<DIR>", "")
+                itemText = " " & rawName
+                If Len(tagText) > 0 Then
+                    itemText = Left(itemText & Space(innerW - Len(tagText) - 1), innerW - Len(tagText) - 1) & tagText
+                End If
+                If focus = 0 And itemIdx = selected Then
+                    itemFg = 0 : itemBg = 7
+                End If
+            End If
+            ConsoleWriteText(dialogX + 2, rowY, Left(itemText & Space(innerW), innerW), itemFg, itemBg)
+        Next li
+
+        Dim statusY As Integer = listY + listRows
+        Dim hintText As String
+        Select Case focus
+            Case 1
+                hintText = "Editando filtro - Enter aplica  Tab troca campo  Esc cancela tudo"
+            Case 2
+                hintText = "Editando nome - Enter confirma  Tab troca campo  Esc cancela tudo"
+            Case Else
+                hintText = "Setas navega  Enter abre pasta/escolhe  Backspace sobe uma pasta  Tab troca campo"
+        End Select
+        ConsoleWriteText(dialogX + 2, statusY, hintText, 8, 1, innerW)
+
+        Dim hintText2 As String = IIf(Len(statusMsg) > 0, statusMsg, "Enter confirma  Esc cancela")
+        Dim hintColor2 As UByte = 8
+        If Len(statusMsg) > 0 Then hintColor2 = 12
+        ConsoleWriteText(dialogX + 2, statusY + 1, hintText2, hintColor2, 1, innerW)
+
+        If focus = 1 Then
+            ConsoleSetCursor(dialogX + 11 + Clamp(filterCursorPos - 1, 0, fieldW), dialogY + 3, 1)
+        ElseIf focus = 2 Then
+            ConsoleSetCursor(dialogX + 11 + Clamp(nameCursorPos - 1, 0, fieldW), dialogY + 4, 1)
+        Else
+            ConsoleSetCursor(dialogX + 2, listY + (selected - scrollTop), 0)
+        End If
+
+        ConsoleFlush()
+        ConsoleEndFrame()
+
+        If ConsolePollInput(inputEvent, inputKey, inputMouseX, inputMouseY, inputMouseAction) = 0 Then
+            Sleep 5, 1
+            Continue Do
+        End If
+
+        statusMsg = ""
+
+        If inputEvent = MSX_INPUT_MOUSE Then
+            If inputMouseAction = MSX_MOUSE_DOWN And inputMouseX >= dialogX + 2 And inputMouseX < dialogX + 2 + innerW And inputMouseY >= listY And inputMouseY < listY + listRows Then
+                Dim clickedIdx As Integer = scrollTop + (inputMouseY - listY)
+                If clickedIdx >= 0 And clickedIdx < entryCount Then
+                    focus = 0
+                    selected = clickedIdx
+                    If entryIsDir(clickedIdx + 1) <> 0 Then
+                        Dim clickedName As String = entryNames(clickedIdx + 1)
+                        If clickedName = ".." Then
+                            curPath = BrowserParentOf(curPath)
+                        ElseIf Len(curPath) = 0 Then
+                            curPath = clickedName
+                        Else
+                            curPath = curPath & clickedName & Chr(92)
+                        End If
+                        BrowserBuildEntries(curPath, filterText, entryNames(), entryIsDir(), entryCount)
+                        selected = 0 : scrollTop = 0
+                    Else
+                        nameText = entryNames(clickedIdx + 1)
+                        nameCursorPos = Len(nameText) + 1
+                    End If
+                End If
+            ElseIf inputMouseAction = MSX_MOUSE_WHEEL_UP Then
+                scrollTop = Clamp(scrollTop - 3, 0, entryCount)
+            ElseIf inputMouseAction = MSX_MOUSE_WHEEL_DOWN Then
+                scrollTop = Clamp(scrollTop + 3, 0, entryCount)
+            End If
+            Continue Do
+        End If
+
+        If inputEvent <> MSX_INPUT_KEY Then Continue Do
+        inputKey = NormalizeKey(inputKey)
+
+        If inputKey = Chr(27) Then
+            canceled = -1
+            Exit Do
+        End If
+
+        If inputKey = Chr(9) Then
+            focus += 1
+            If focus > 2 Then focus = 0
+            Continue Do
+        End If
+
+        If focus = 0 Then
+            If inputKey = Chr(13) Then
+                If entryCount > 0 And selected >= 0 And selected < entryCount Then
+                    Dim chosenName As String = entryNames(selected + 1)
+                    If entryIsDir(selected + 1) <> 0 Then
+                        If chosenName = ".." Then
+                            curPath = BrowserParentOf(curPath)
+                        ElseIf Len(curPath) = 0 Then
+                            curPath = chosenName
+                        Else
+                            curPath = curPath & chosenName & Chr(92)
+                        End If
+                        BrowserBuildEntries(curPath, filterText, entryNames(), entryIsDir(), entryCount)
+                        selected = 0 : scrollTop = 0
+                    Else
+                        nameText = chosenName
+                        Exit Do
+                    End If
+                End If
+                Continue Do
+            End If
+
+            If inputKey = Chr(8) Then
+                If Len(curPath) > 0 Then
+                    curPath = BrowserParentOf(curPath)
+                    BrowserBuildEntries(curPath, filterText, entryNames(), entryIsDir(), entryCount)
+                    selected = 0 : scrollTop = 0
+                End If
+                Continue Do
+            End If
+
+            If Len(inputKey) = 2 And Asc(Left(inputKey, 1)) = 0 Then
+                Select Case Asc(Right(inputKey, 1))
+                    Case 72 ' Up
+                        If selected > 0 Then selected -= 1
+                    Case 80 ' Down
+                        If selected < entryCount - 1 Then selected += 1
+                    Case 73 ' PgUp
+                        selected = Clamp(selected - listRows, 0, entryCount - 1)
+                    Case 81 ' PgDn
+                        selected = Clamp(selected + listRows, 0, entryCount - 1)
+                    Case 71 ' Home
+                        selected = 0
+                    Case 79 ' End
+                        selected = entryCount - 1
+                End Select
+                Continue Do
+            End If
+
+            ' Digitar uma letra com a lista em foco pula pro proximo item
+            ' que comeca com ela (busca incremental simples, tipo Explorer).
+            If Len(inputKey) = 1 Then
+                Dim c As Integer = Asc(inputKey)
+                If c >= 32 And c <= 126 And entryCount > 0 Then
+                    Dim searchFrom As Integer = selected + 1
+                    Dim foundIdx As Integer = -1
+                    Dim sk As Integer
+                    For sk = 0 To entryCount - 1
+                        Dim idx As Integer = (searchFrom + sk) Mod entryCount
+                        If LCase(Left(entryNames(idx + 1), 1)) = LCase(inputKey) Then
+                            foundIdx = idx
+                            Exit For
+                        End If
+                    Next sk
+                    If foundIdx >= 0 Then selected = foundIdx
+                End If
+            End If
+            Continue Do
+        End If
+
+        If focus = 1 Then
+            If inputKey = Chr(13) Then
+                BrowserBuildEntries(curPath, filterText, entryNames(), entryIsDir(), entryCount)
+                selected = 0 : scrollTop = 0
+                focus = 0
+                Continue Do
+            End If
+            If inputKey = Chr(8) Then
+                If filterCursorPos > 1 Then
+                    filterText = Left(filterText, filterCursorPos - 2) & Mid(filterText, filterCursorPos)
+                    filterCursorPos -= 1
+                End If
+                Continue Do
+            End If
+            If Len(inputKey) = 1 Then
+                Dim fc As Integer = Asc(inputKey)
+                If fc >= 32 And fc <= 126 And Len(filterText) < fieldW Then
+                    filterText = Left(filterText, filterCursorPos - 1) & inputKey & Mid(filterText, filterCursorPos)
+                    filterCursorPos += 1
+                End If
+                Continue Do
+            End If
+            If Len(inputKey) = 2 And Asc(Left(inputKey, 1)) = 0 Then
+                Select Case Asc(Right(inputKey, 1))
+                    Case 75
+                        If filterCursorPos > 1 Then filterCursorPos -= 1
+                    Case 77
+                        If filterCursorPos <= Len(filterText) Then filterCursorPos += 1
+                    Case 71
+                        filterCursorPos = 1
+                    Case 79
+                        filterCursorPos = Len(filterText) + 1
+                    Case 83
+                        If filterCursorPos <= Len(filterText) Then
+                            filterText = Left(filterText, filterCursorPos - 1) & Mid(filterText, filterCursorPos + 1)
+                        End If
+                End Select
+            End If
+            Continue Do
+        End If
+
+        ' focus = 2 (campo Nome)
+        If inputKey = Chr(13) Then
+            If Len(Trim(nameText)) = 0 Then
+                statusMsg = "Digite um nome de arquivo."
+            Else
+                Exit Do
+            End If
+            Continue Do
+        End If
+        If inputKey = Chr(8) Then
+            If nameCursorPos > 1 Then
+                nameText = Left(nameText, nameCursorPos - 2) & Mid(nameText, nameCursorPos)
+                nameCursorPos -= 1
+            End If
+            Continue Do
+        End If
+        If Len(inputKey) = 1 Then
+            Dim nc As Integer = Asc(inputKey)
+            If nc >= 32 And nc <= 126 And Len(nameText) < fieldW Then
+                nameText = Left(nameText, nameCursorPos - 1) & inputKey & Mid(nameText, nameCursorPos)
+                nameCursorPos += 1
+            End If
+            Continue Do
+        End If
+        If Len(inputKey) = 2 And Asc(Left(inputKey, 1)) = 0 Then
+            Select Case Asc(Right(inputKey, 1))
+                Case 75
+                    If nameCursorPos > 1 Then nameCursorPos -= 1
+                Case 77
+                    If nameCursorPos <= Len(nameText) Then nameCursorPos += 1
+                Case 71
+                    nameCursorPos = 1
+                Case 79
+                    nameCursorPos = Len(nameText) + 1
+                Case 83
+                    If nameCursorPos <= Len(nameText) Then
+                        nameText = Left(nameText, nameCursorPos - 1) & Mid(nameText, nameCursorPos + 1)
+                    End If
+            End Select
+        End If
+    Loop
+
+    FinalizeModalInputState()
+    If canceled <> 0 Then Return ""
+
+    Dim finalName As String = Trim(nameText)
+    If Len(finalName) = 0 Then
+        canceled = -1
+        Return ""
+    End If
+
+    Dim finalPath As String
+    If Len(finalName) >= 2 And Mid(finalName, 2, 1) = ":" Then
+        finalPath = finalName
+    ElseIf Left(finalName, 1) = Chr(92) Or Left(finalName, 1) = "/" Then
+        finalPath = finalName
+    Else
+        finalPath = curPath & finalName
+    End If
+
+    If isSaveMode = 0 Then
+        ' Precisa existir como ARQUIVO (nao pasta) - mesmo truque de
+        ' BrowserBuildEntries: pedir todos os bits "de arquivo" sem o de
+        ' pasta so' acha algo se for de fato um arquivo (normal, oculto ou
+        ' de sistema); uma pasta nunca aparece nesse conjunto.
+        If Dir(finalPath, fbHidden Or fbSystem Or fbReadOnly Or fbArchive) = "" Then
+            canceled = -1
+            Return ""
+        End If
+    End If
+
+    Return finalPath
+End Function
+
 Private Sub OpenDocumentDialog()
     Dim canceled As Integer
     Dim path As String
+    Dim startPath As String = ""
+    If activeDoc >= 1 And activeDoc <= docCount Then
+        If Len(docs(activeDoc).filePath) > 0 And Left(LCase(docs(activeDoc).filePath), 4) <> "cfg:" Then
+            startPath = docs(activeDoc).filePath
+        End If
+    End If
 
-    path = PromptPathDialog("Abrir arquivo", "Caminho:", "", canceled)
+    path = BrowseForFile("Abrir arquivo", startPath, "*.*", 0, canceled)
     If canceled <> 0 Then Exit Sub
     If Len(path) = 0 Then Exit Sub
 
@@ -3821,7 +5354,7 @@ Private Sub SaveActiveDocumentAsDialog()
     Dim canceled As Integer
     Dim path As String
 
-    path = PromptPathDialog("Salvar como", "Caminho:", d.filePath, canceled)
+    path = BrowseForFile("Salvar como", d.filePath, "*.*", -1, canceled)
     If canceled <> 0 Then Exit Sub
     If Len(path) = 0 Then Exit Sub
 
@@ -3989,6 +5522,29 @@ Private Sub EnsureHelpRerender(ByRef d As Document)
             LoadHelpIntoDocument(d, ht, d.filePath, -1)
         End If
     End If
+End Sub
+
+' Referencia -> msxide.dmx (biblioteca M_) - abre a biblioteca de defines/
+' rotinas/variaveis de uso geral (ver msxide.dmx na raiz do projeto, ao lado
+' de msx00.dmx/exemplo.msxproj) como um documento normal e editavel, igual
+' "Abrir arquivo" faria, e nao pelo visualizador de Ajuda em markdown (o
+' arquivo e' Basic Dignified de verdade, nao prosa) - reaproveita o cursor
+' de aba ja aberta em vez de duplicar toda vez que o item e' escolhido de
+' novo, mesmo espirito de OpenConfigDocument/OpenHelpDocument logo abaixo.
+Private Sub OpenReferenceLibraryFile()
+    Dim libPath As String = ToAbsolutePath("msxide.dmx")
+    Dim i As Integer
+
+    For i = 1 To docCount
+        If docs(i).isHelp = 0 And LCase(ToAbsolutePath(docs(i).filePath)) = LCase(libPath) Then
+            BringDocumentToFront(i)
+            forceFullRedraw = 1
+            renderMode = RENDER_FULL
+            Exit Sub
+        End If
+    Next i
+
+    EditorOpenFromPath(libPath)
 End Sub
 
 Private Sub OpenConfigDocument(ByRef titleText As String, ByRef configGroup As String)
@@ -7625,6 +9181,9 @@ Sub ShowConfigForm(ByRef titleText As String, ByRef configGroup As String)
         AddConfigField(fields(), fieldCount, "cfg.msxbasic.tokenizer.list", "Tokenizer List", CFG_KIND_INT, "16", "Formato de listagem", "", -1, 0, 99)
         AddConfigField(fields(), fieldCount, "cfg.msxbasic.tokenizer.del_ascii", "Tokenizer Del ASCII", CFG_KIND_BOOL, "False", "Remove ASCII extra")
         AddConfigField(fields(), fieldCount, "cfg.msxbasic.tokenizer.verbose", "Tokenizer Verbose", CFG_KIND_INT, "3", "Nivel de log tokenizer", "", -1, 0, 5)
+        AddConfigField(fields(), fieldCount, "cfg.msxbasic.autocomplete.min_chars", "Autocomplete Min Chars", CFG_KIND_INT, "3", "Caracteres minimos digitados antes de sugerir autocompletar", "", -1, 1, 20)
+        AddConfigField(fields(), fieldCount, "cfg.msxbasic.autocomplete.case", "Autocomplete Case", CFG_KIND_ENUM, "lower", "Maiusculas ou minusculas ao completar (padrao minusculas, igual aos exemplos do projeto)", "lower|upper")
+        AddConfigField(fields(), fieldCount, "cfg.msxbasic.nbasic.enabled", "NBasic", CFG_KIND_BOOL, "False", "Ativa o NestorBASIC: garante include " & Chr(34) & "nbasic.dmx" & Chr(34) & " (apelidos das rotinas) e a rotina de carga do nbasic.bin ao salvar/compilar")
     ElseIf grp = "emulator" Then
         AddConfigField(fields(), fieldCount, "cfg.emulator.run", "Run", CFG_KIND_BOOL, "False", "Executar emulador apos build")
         AddConfigField(fields(), fieldCount, "cfg.emulator.setting", "Setting", CFG_KIND_TEXT, "", "Preset/settings")
@@ -7970,6 +9529,31 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
             Select Case UCase(keyText)
                 Case "C"
                     Return MENU_CMD_INSERT_CHARMAP
+                Case "O"
+                    Return MENU_CMD_INSERT_COLOR
+            End Select
+        End If
+        Return MENU_CMD_NONE
+    End If
+
+    ' MENU_VIEW_PROJECT precisa do proprio bloco (com Return incondicional
+    ' no fim, igual aos outros menus acima) - senao cai no bloco generico
+    ' logo abaixo, que e' do menu Arquivo, e "O"/"S"/"A"/etc iam disparar
+    ' Abrir/Salvar/Salvar Como do Arquivo enquanto o menu Projeto esta'
+    ' aberto (achado real ao revisar isto: P/J/K/W ja' funcionavam por
+    ' coincidencia so' porque tambem estavam nesse bloco generico, de
+    ' quando Projeto ainda vivia dentro do menu Arquivo).
+    If menuView = MENU_VIEW_PROJECT Then
+        If Len(keyText) = 1 Then
+            Select Case UCase(keyText)
+                Case "P"
+                    Return MENU_CMD_PROJECT_NEW
+                Case "J"
+                    Return MENU_CMD_PROJECT_OPEN
+                Case "K"
+                    Return MENU_CMD_PROJECT_SAVE
+                Case "W"
+                    Return MENU_CMD_PROJECT_CLOSE
             End Select
         End If
         Return MENU_CMD_NONE
@@ -7997,14 +9581,6 @@ Private Function MenuCommandFromKey(ByVal menuView As Integer, ByRef keyText As 
                 Return MENU_CMD_CLOSE
             Case "X"
                 Return MENU_CMD_EXIT
-            Case "P"
-                Return MENU_CMD_PROJECT_NEW
-            Case "J"
-                Return MENU_CMD_PROJECT_OPEN
-            Case "K"
-                Return MENU_CMD_PROJECT_SAVE
-            Case "W"
-                Return MENU_CMD_PROJECT_CLOSE
         End Select
     End If
 
@@ -8027,7 +9603,7 @@ End Function
 Private Sub ExecuteProjectNew()
     Dim canceled As Integer
     Dim initial As String = "projeto.msxproj"
-    Dim path As String = PromptPathDialog("Novo Projeto", "Caminho do projeto (.msxproj):", initial, canceled)
+    Dim path As String = BrowseForFile("Novo Projeto", initial, "*.msxproj", -1, canceled)
     If canceled <> 0 Or Len(path) = 0 Then Exit Sub
 
     path = ToAbsolutePath(path)
@@ -8043,7 +9619,7 @@ End Sub
 Private Sub ExecuteProjectOpen()
     Dim canceled As Integer
     Dim initial As String = ""
-    Dim path As String = PromptPathDialog("Abrir Projeto", "Caminho do projeto (.msxproj):", initial, canceled)
+    Dim path As String = BrowseForFile("Abrir Projeto", initial, "*.msxproj", 0, canceled)
     If canceled <> 0 Or Len(path) = 0 Then Exit Sub
 
     path = ToAbsolutePath(path)
@@ -8172,6 +9748,8 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             OpenHelpDocument("SEE Tracker", "dbhelp:SEETRACKER|docs\help\seetracker.md")
         Case MENU_CMD_REF_MSXBAS2ROM
             OpenHelpDocument("MSXBAS2ROM", "dbhelp:MSXBAS2ROM|docs\help\msxbas2rom.md")
+        Case MENU_CMD_REF_MSXIDE_DMX
+            OpenReferenceLibraryFile()
         Case MENU_CMD_CFG_MAMUTE_MEM
             ShowMamuteMemoryConfig()
         Case MENU_CMD_MAMUTE_OPEN
@@ -8184,6 +9762,8 @@ Private Sub ExecuteMenuCommand(ByVal commandId As Integer, ByRef running As Inte
             ShowConfigForm("Editor", "editor")
         Case MENU_CMD_INSERT_CHARMAP
             ShowMsxCharPickerDialog()
+        Case MENU_CMD_INSERT_COLOR
+            ShowMsxColorInsertDialog()
         Case MENU_CMD_HELP_MARKDOWN
             OpenHelpDocument("Markdown", "dbhelp:MARKDOWN|docs\help\markdown.md")
     End Select
@@ -8912,6 +10492,36 @@ Private Sub ShowMsxCharPickerDialog()
     renderMode = RENDER_FULL
 End Sub
 
+' Insere Cor MSX (Inserir->Cor MSX) - mesma tela de escolha das 16 cores
+' fixas do MSX1 ja usada pelos editores de sprite/fonte (PromptMsxColorPicker,
+' mais abaixo), so' que aqui o resultado nao muda um pixel: digita o NOME da
+' constante M_ (ver MsxColorConstantName/msxide.dmx) direto no cursor do
+' texto, pra poder escrever "color [M_cyan],[M_black],[M_black]" em vez
+' de "color 7,1,1" sem decorar a tabela de numeros do VDP (colchetes sao
+' obrigatorios - e' assim que o Basic Dignified reconhece um define no
+' meio do codigo, ver msxide.dmx).
+Private Sub ShowMsxColorInsertDialog()
+    If activeDoc < 1 Or activeDoc > docCount Then Exit Sub
+    Dim ByRef d As Document = docs(activeDoc)
+    If d.isHelp <> 0 Then Exit Sub
+    If d.isMarkdown <> 0 And d.mdViewMode = 2 Then Exit Sub
+    If d.isPixelEditor <> 0 Or d.isMamuteTerm <> 0 Or d.isMamuteEdit <> 0 Then Exit Sub
+
+    Dim chosen As Integer = PromptMsxColorPicker(15)
+    If chosen < 0 Then
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    UndoCheckpointFresh(d)
+    If HasSelection(d) <> 0 Then DeleteSelectionRange(d)
+    PasteTextAtCursor(d, "[" & MsxColorConstantName(chosen) & "]")
+
+    forceFullRedraw = 1
+    renderMode = RENDER_FULL
+End Sub
+
 Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, ByRef needFullRedraw As Integer, ByRef renderHint As Integer)
     Dim ByRef d As Document = docs(activeDoc)
     renderHint = RENDER_CURSOR
@@ -8942,6 +10552,32 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
             renderHint = RENDER_FULL
         End If
         Exit Sub
+    End If
+
+    ' Quadrinho de autocompletar aberto (ver AutocompleteRefresh) - Setas
+    ' cima/baixo escolhem, Tab/Enter confirmam, Espaco cancela (mas o
+    ' espaco em si continua sendo digitado normalmente, por isso nao sai
+    ' da Sub aqui - cai pro processamento comum de caractere logo abaixo).
+    ' Qualquer outra tecla (letra/numero/backspace) segue o fluxo normal
+    ' mais embaixo, que chama AutocompleteRefresh de novo com o resultado.
+    If acActive <> 0 And acDocIndex = activeDoc Then
+        If keyText = Chr(0) & Chr(72) Then ' Seta cima
+            acSelected -= 1
+            If acSelected < 1 Then acSelected = acCandidateCount
+            renderHint = RENDER_CLIENT
+            Exit Sub
+        ElseIf keyText = Chr(0) & Chr(80) Then ' Seta baixo
+            acSelected += 1
+            If acSelected > acCandidateCount Then acSelected = 1
+            renderHint = RENDER_CLIENT
+            Exit Sub
+        ElseIf keyText = Chr(9) Or keyText = Chr(13) Then ' Tab ou Enter confirmam
+            AutocompleteConfirm(d)
+            renderHint = RENDER_CLIENT
+            Exit Sub
+        ElseIf keyText = " " Then ' Espaco cancela
+            AutocompleteClose()
+        End If
     End If
 
     ' editable = falso pra Ajuda/dicionario e pro preview Somente-leitura de
@@ -8980,6 +10616,12 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
             d.undoRunAtX = d.cursorX
             d.undoRunAtY = d.cursorY
         End If
+        AutocompleteRefresh(d)
+        ' RENDER_LINE nao alcanca as linhas do quadrinho de autocompletar
+        ' (fica abaixo/acima da linha atual) - forca RENDER_CLIENT sempre
+        ' que ele pode ter aberto/fechado/mudado de tamanho, senao sobra
+        ' pedaco dele desenhado na tela por cima do texto.
+        If renderHint < RENDER_CLIENT Then renderHint = RENDER_CLIENT
         Exit Sub
     End If
 
@@ -9011,6 +10653,11 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
             d.undoRunAtX = d.cursorX
             d.undoRunAtY = d.cursorY
             renderHint = IIf(hadSelCh <> 0, RENDER_CLIENT, RENDER_LINE)
+            AutocompleteRefresh(d)
+            ' Mesmo motivo do Backspace acima - o quadrinho pode ter
+            ' aberto/fechado/mudado de tamanho, RENDER_LINE sozinho nao
+            ' cobre as linhas dele.
+            If renderHint < RENDER_CLIENT Then renderHint = RENDER_CLIENT
         End If
         Exit Sub
     End If
@@ -9018,6 +10665,15 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
     If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 Then
         Dim navCode As Integer = Asc(Right(keyText, 1))
         Dim hadSel As Integer = HasSelection(d)
+
+        ' Qualquer navegacao que chegou ate' aqui (Seta cima/baixo com o
+        ' quadrinho aberto ja' foi tratada e saiu mais acima) fecha o
+        ' autocompletar - mover o cursor pra longe da palavra digitada
+        ' invalida a sugestao.
+        If acActive <> 0 Then
+            AutocompleteClose()
+            renderHint = RENDER_CLIENT
+        End If
 
         Select Case navCode
             ' --- movimento simples (colapsa selecao, se houver) ---
@@ -9536,6 +11192,32 @@ Private Function MsxColorName(ByVal msxColor As Integer) As String
         Case 13 : Return "Magenta"
         Case 14 : Return "Cinza"
         Case Else : Return "Branco"
+    End Select
+End Function
+
+' Nome da constante M_ correspondente (msxide.dmx, "Definicoes -> Cores do
+' MSX1") - usado tanto pra gerar o arquivo quanto pelo Inserir->Cor MSX
+' (ShowMsxColorInsertDialog), que digita o NOME em vez do numero no cursor.
+' Mesma paleta/ordem de MsxColorName acima, so' que em ingles/snake_case
+' porque BASIC classico nao aceita acento em nome de variavel/define.
+Private Function MsxColorConstantName(ByVal msxColor As Integer) As String
+    Select Case msxColor And 15
+        Case 0 : Return "M_transparent"
+        Case 1 : Return "M_black"
+        Case 2 : Return "M_medium_green"
+        Case 3 : Return "M_light_green"
+        Case 4 : Return "M_dark_blue"
+        Case 5 : Return "M_light_blue"
+        Case 6 : Return "M_dark_red"
+        Case 7 : Return "M_cyan"
+        Case 8 : Return "M_medium_red"
+        Case 9 : Return "M_light_red"
+        Case 10 : Return "M_dark_yellow"
+        Case 11 : Return "M_light_yellow"
+        Case 12 : Return "M_dark_green"
+        Case 13 : Return "M_magenta"
+        Case 14 : Return "M_gray"
+        Case Else : Return "M_white"
     End Select
 End Function
 
@@ -16859,6 +18541,7 @@ Sub EditorDraw(ByVal menuOpen As Integer)
         DrawStatusBar()
     End If
 
+    If menuOpen = 0 Then DrawAutocompletePopup()
     PlaceActiveCursor()
     ConsoleFlush()
     ConsoleEndFrame()
@@ -16937,6 +18620,13 @@ Sub EditorHandleKey(ByRef keyText As String, ByRef running As Integer, ByRef men
     ' tambem Referencia e Mamute, que ate' aqui so' abriam com o mouse.
     If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 230 Then ' Alt+A - Arquivo
         menuOpen = IIf(menuOpen = MENU_VIEW_FILE, MENU_VIEW_NONE, MENU_VIEW_FILE)
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
+    If Len(keyText) = 2 And Asc(Left(keyText, 1)) = 0 And Asc(Right(keyText, 1)) = 245 Then ' Alt+P - Projeto
+        menuOpen = IIf(menuOpen = MENU_VIEW_PROJECT, MENU_VIEW_NONE, MENU_VIEW_PROJECT)
         forceFullRedraw = 1
         renderMode = RENDER_FULL
         Exit Sub
@@ -17157,8 +18847,17 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
         Exit Sub
     End If
 
+    ' Clique na barra de menu (Projeto)
+    If mouseY = 1 And mouseX >= 11 And mouseX <= 17 Then
+        menuOpen = IIf(menuOpen = MENU_VIEW_PROJECT, MENU_VIEW_NONE, MENU_VIEW_PROJECT)
+        dragMode = DRAG_NONE
+        forceFullRedraw = 1
+        renderMode = RENDER_FULL
+        Exit Sub
+    End If
+
     ' Clique na barra de menu (Configurar)
-    If mouseY = 1 And mouseX >= 11 And mouseX <= 20 Then
+    If mouseY = 1 And mouseX >= 20 And mouseX <= 29 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_CONFIG, MENU_VIEW_NONE, MENU_VIEW_CONFIG)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -17167,7 +18866,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     End If
 
     ' Clique na barra de menu (Compilar)
-    If mouseY = 1 And mouseX >= 23 And mouseX <= 30 Then
+    If mouseY = 1 And mouseX >= 32 And mouseX <= 39 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_COMPILE, MENU_VIEW_NONE, MENU_VIEW_COMPILE)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -17176,7 +18875,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     End If
 
     ' Clique na barra de menu (Referencia)
-    If mouseY = 1 And mouseX >= 33 And mouseX <= 42 Then
+    If mouseY = 1 And mouseX >= 42 And mouseX <= 51 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_REFERENCE, MENU_VIEW_NONE, MENU_VIEW_REFERENCE)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -17185,7 +18884,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     End If
 
     ' Clique na barra de menu (Mamute)
-    If mouseY = 1 And mouseX >= 45 And mouseX <= 51 Then
+    If mouseY = 1 And mouseX >= 54 And mouseX <= 60 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_MAMUTE, MENU_VIEW_NONE, MENU_VIEW_MAMUTE)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -17194,7 +18893,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     End If
 
     ' Clique na barra de menu (Ajuda)
-    If mouseY = 1 And mouseX >= 53 And mouseX <= 57 Then
+    If mouseY = 1 And mouseX >= 62 And mouseX <= 66 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_HELP, MENU_VIEW_NONE, MENU_VIEW_HELP)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -17203,7 +18902,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
     End If
 
     ' Clique na barra de menu (Inserir)
-    If mouseY = 1 And mouseX >= 60 And mouseX <= 67 Then
+    If mouseY = 1 And mouseX >= 69 And mouseX <= 76 Then
         menuOpen = IIf(menuOpen = MENU_VIEW_INSERT, MENU_VIEW_NONE, MENU_VIEW_INSERT)
         dragMode = DRAG_NONE
         forceFullRedraw = 1
@@ -17236,18 +18935,23 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                         menuCmd = MENU_CMD_CLOSE
                     Case 12
                         menuCmd = MENU_CMD_EXIT
-                    Case 14
+                End Select
+            End If
+        ElseIf menuOpen = MENU_VIEW_PROJECT Then
+            If mouseX >= 12 And mouseX <= 43 Then
+                Select Case mouseY
+                    Case 3
                         menuCmd = MENU_CMD_PROJECT_NEW
-                    Case 15
+                    Case 4
                         menuCmd = MENU_CMD_PROJECT_OPEN
-                    Case 16
+                    Case 5
                         menuCmd = MENU_CMD_PROJECT_SAVE
-                    Case 17
+                    Case 6
                         menuCmd = MENU_CMD_PROJECT_CLOSE
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_CONFIG Then
-            If mouseX >= 12 And mouseX <= 43 Then
+            If mouseX >= 21 And mouseX <= 52 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_CFG_BADIG
@@ -17264,7 +18968,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_COMPILE Then
-            If mouseX >= 24 And mouseX <= 65 Then
+            If mouseX >= 33 And mouseX <= 74 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_COMPILE_MSX
@@ -17279,7 +18983,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_HELP Then
-            If mouseX >= 54 And mouseX <= 87 Then
+            If mouseX >= 63 And mouseX <= 96 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_HELP_BASIC
@@ -17302,7 +19006,7 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_REFERENCE Then
-            If mouseX >= 33 And mouseX <= 74 Then
+            If mouseX >= 42 And mouseX <= 82 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_REF_REDBOOK
@@ -17324,20 +19028,24 @@ Sub EditorHandleMouse(ByVal mouseX As Integer, ByVal mouseY As Integer, ByVal mo
                         menuCmd = MENU_CMD_REF_OPENMSX
                     Case 12
                         menuCmd = MENU_CMD_REF_MSXBAS2ROM
+                    Case 13
+                        menuCmd = MENU_CMD_REF_MSXIDE_DMX
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_MAMUTE Then
-            If mouseX >= 45 And mouseX <= 75 Then
+            If mouseX >= 54 And mouseX <= 84 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_MAMUTE_OPEN
                 End Select
             End If
         ElseIf menuOpen = MENU_VIEW_INSERT Then
-            If mouseX >= 60 And mouseX <= 88 Then
+            If mouseX >= 69 And mouseX <= 97 Then
                 Select Case mouseY
                     Case 3
                         menuCmd = MENU_CMD_INSERT_CHARMAP
+                    Case 4
+                        menuCmd = MENU_CMD_INSERT_COLOR
                 End Select
             End If
         End If
@@ -17480,6 +19188,26 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
         report = "SMOKE HELP FAIL: parser INKEY$ retornou programa exemplo truncado"
         Return 0
     End If
+
+    ' Shift+F1 (FindMsxDictEntry/ResolveMsxDictTitleForKeyword) em comandos
+    ' que so' existem dentro de um verbete composto do dicionario da Ajuda
+    ' ("GOSUB-RETURN", "FOR-NEXT", "IF-THEN-ELSE") - achado real, 2026-09-12:
+    ' o usuario reportou "palavra nao encontrada" ao pedir ajuda em cima de
+    ' GOSUB, mesmo bug do autocompletar (ver NormalizeAutocompleteKeyword)
+    ' so' que na Ajuda em vez do quadrinho de sugestoes.
+    Dim dictWordsToCheck(1 To 7) As String
+    dictWordsToCheck(1) = "GOSUB" : dictWordsToCheck(2) = "RETURN" : dictWordsToCheck(3) = "FOR"
+    dictWordsToCheck(4) = "NEXT"  : dictWordsToCheck(5) = "IF"     : dictWordsToCheck(6) = "THEN"
+    dictWordsToCheck(7) = "ELSE"
+    Dim dwI As Integer
+    For dwI = 1 To 7
+        Dim dwEntry As MsxDictEntry
+        Dim dwErr As String
+        If FindMsxDictEntry(dictWordsToCheck(dwI), dwEntry, dwErr) = 0 Then
+            report = "SMOKE HELP FAIL: Shift+F1 em '" & dictWordsToCheck(dwI) & "' deveria achar verbete (" & dwErr & ")"
+            Return 0
+        End If
+    Next dwI
 
     If docCount < 1 Or activeDoc < 1 Or activeDoc > docCount Then
         report = "SMOKE HELP FAIL: editor sem documento ativo"
@@ -18593,7 +20321,7 @@ Function EditorRunHelpSmokeTest(ByRef report As String) As Integer
         projCleanEntry = Dir()
     Wend
 
-    report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword & ", refdict biosdoc (" & Trim(Str(biosdocLineCount)) & " linhas), redbook (" & Trim(Str(rbTopicCount)) & " topicos/" & Trim(Str(rbGroupHeaders)) & " grupos, Ver tambem OK), msxmanuals (" & Trim(Str(mmTopicCount)) & " topicos, sem duplicata), openmsx (" & Trim(Str(omTopicCount)) & " topicos), nestorbasic/seetracker/msxbas2rom/editor/mamute/markdown OK, th2handbook (" & Trim(Str(thTopicCount)) & "), bioscalls (" & Trim(Str(bcTopicCount)) & "), hardware (" & Trim(Str(hwTopicCount)) & ")"
+    report = "SMOKE HELP OK: ESC modal->log, retorno Shift+F1, contextual PRINT, Shift+F1 em verbete composto (GOSUB/RETURN/FOR/NEXT/IF/THEN/ELSE), comando exclusivo MSX2+/FM (" & msx2Exclusive & "), topico de referencia, indice, clique e Enter para " & firstKeyword & ", refdict biosdoc (" & Trim(Str(biosdocLineCount)) & " linhas), redbook (" & Trim(Str(rbTopicCount)) & " topicos/" & Trim(Str(rbGroupHeaders)) & " grupos, Ver tambem OK), msxmanuals (" & Trim(Str(mmTopicCount)) & " topicos, sem duplicata), openmsx (" & Trim(Str(omTopicCount)) & " topicos), nestorbasic/seetracker/msxbas2rom/editor/mamute/markdown OK, th2handbook (" & Trim(Str(thTopicCount)) & "), bioscalls (" & Trim(Str(bcTopicCount)) & "), hardware (" & Trim(Str(hwTopicCount)) & ")"
     Return -1
 End Function
 
@@ -20355,9 +22083,9 @@ Function EditorRunTextEditSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
-    EditorHandleKey(Chr(0) & Chr(77), running, menuOpenNav) ' Direita - troca pro menu Configurar
-    If menuOpenNav <> MENU_VIEW_CONFIG Then
-        report = "SMOKE EDIT FAIL: Seta direita nao trocou pro menu Configurar (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
+    EditorHandleKey(Chr(0) & Chr(77), running, menuOpenNav) ' Direita - troca pro menu Projeto
+    If menuOpenNav <> MENU_VIEW_PROJECT Then
+        report = "SMOKE EDIT FAIL: Seta direita nao trocou pro menu Projeto (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
         Return 0
     End If
     DrawMenuBar(menuOpenNav)
@@ -20365,13 +22093,36 @@ Function EditorRunTextEditSmokeTest(ByRef report As String) As Integer
         report = "SMOKE EDIT FAIL: destaque nao voltou pro item 1 ao trocar de menu (veio " & Trim(Str(menuHighlightIndex)) & ")"
         Return 0
     End If
+    If GetMenuItemCount(MENU_VIEW_PROJECT) <> 4 Then
+        report = "SMOKE EDIT FAIL: GetMenuItemCount(Projeto) deveria ser 4 (veio " & Trim(Str(GetMenuItemCount(MENU_VIEW_PROJECT))) & ")"
+        Return 0
+    End If
+    If GetMenuCommandAtIndex(MENU_VIEW_PROJECT, 1) <> MENU_CMD_PROJECT_NEW Then
+        report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Projeto, 1) deveria ser MENU_CMD_PROJECT_NEW"
+        Return 0
+    End If
+    If GetMenuCommandAtIndex(MENU_VIEW_PROJECT, 4) <> MENU_CMD_PROJECT_CLOSE Then
+        report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Projeto, 4) deveria ser MENU_CMD_PROJECT_CLOSE"
+        Return 0
+    End If
+
+    EditorHandleKey(Chr(0) & Chr(77), running, menuOpenNav) ' Direita de novo - troca pro menu Configurar
+    If menuOpenNav <> MENU_VIEW_CONFIG Then
+        report = "SMOKE EDIT FAIL: Seta direita a partir de Projeto nao trocou pro menu Configurar (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
+        Return 0
+    End If
+    DrawMenuBar(menuOpenNav)
 
     If GetMenuCommandAtIndex(MENU_VIEW_COMPILE, 1) <> MENU_CMD_COMPILE_MSX Then
         report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Compilar, 1) deveria ser MENU_CMD_COMPILE_MSX"
         Return 0
     End If
-    If GetMenuItemCount(MENU_VIEW_REFERENCE) <> 10 Then
-        report = "SMOKE EDIT FAIL: GetMenuItemCount(Referencia) deveria ser 10 (veio " & Trim(Str(GetMenuItemCount(MENU_VIEW_REFERENCE))) & ")"
+    If GetMenuItemCount(MENU_VIEW_REFERENCE) <> 11 Then
+        report = "SMOKE EDIT FAIL: GetMenuItemCount(Referencia) deveria ser 11, com o item msxide.dmx (veio " & Trim(Str(GetMenuItemCount(MENU_VIEW_REFERENCE))) & ")"
+        Return 0
+    End If
+    If GetMenuCommandAtIndex(MENU_VIEW_REFERENCE, 11) <> MENU_CMD_REF_MSXIDE_DMX Then
+        report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Referencia, 11) deveria ser MENU_CMD_REF_MSXIDE_DMX"
         Return 0
     End If
     If GetMenuItemCount(MENU_VIEW_CONFIG) <> 6 Then
@@ -20382,12 +22133,16 @@ Function EditorRunTextEditSmokeTest(ByRef report As String) As Integer
         report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Configurar, 6) deveria ser MENU_CMD_CFG_EDITOR"
         Return 0
     End If
-    If GetMenuItemCount(MENU_VIEW_INSERT) <> 1 Then
-        report = "SMOKE EDIT FAIL: GetMenuItemCount(Inserir) deveria ser 1 (veio " & Trim(Str(GetMenuItemCount(MENU_VIEW_INSERT))) & ")"
+    If GetMenuItemCount(MENU_VIEW_INSERT) <> 2 Then
+        report = "SMOKE EDIT FAIL: GetMenuItemCount(Inserir) deveria ser 2, com o item Cor MSX (veio " & Trim(Str(GetMenuItemCount(MENU_VIEW_INSERT))) & ")"
         Return 0
     End If
     If GetMenuCommandAtIndex(MENU_VIEW_INSERT, 1) <> MENU_CMD_INSERT_CHARMAP Then
         report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Inserir, 1) deveria ser MENU_CMD_INSERT_CHARMAP"
+        Return 0
+    End If
+    If GetMenuCommandAtIndex(MENU_VIEW_INSERT, 2) <> MENU_CMD_INSERT_COLOR Then
+        report = "SMOKE EDIT FAIL: GetMenuCommandAtIndex(Inserir, 2) deveria ser MENU_CMD_INSERT_COLOR"
         Return 0
     End If
     If NextMenuView(MENU_VIEW_HELP, 1) <> MENU_VIEW_INSERT Then
@@ -20415,6 +22170,15 @@ Function EditorRunTextEditSmokeTest(ByRef report As String) As Integer
     EditorHandleKey(Chr(0) & Chr(244), running, menuOpenNav) ' Alt+O - Configurar
     If menuOpenNav <> MENU_VIEW_CONFIG Then
         report = "SMOKE EDIT FAIL: Alt+O deveria abrir o menu Configurar (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
+        Return 0
+    End If
+
+    ' Alt+P ficou livre desde a troca acima (Compilar deixou de usa-la) -
+    ' reaproveitada agora pro novo menu Projeto (2026-09-12).
+    menuOpenNav = MENU_VIEW_NONE
+    EditorHandleKey(Chr(0) & Chr(245), running, menuOpenNav) ' Alt+P - Projeto
+    If menuOpenNav <> MENU_VIEW_PROJECT Then
+        report = "SMOKE EDIT FAIL: Alt+P deveria abrir o menu Projeto (menuOpen=" & Trim(Str(menuOpenNav)) & ")"
         Return 0
     End If
 
@@ -20467,7 +22231,188 @@ Function EditorRunTextEditSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
-    report = "SMOKE EDIT OK: digitar, selecao Shift+seta, copiar/colar (Ctrl+C/V), recortar linha (Ctrl+X), desfazer/refazer (Ctrl+Z/Y), navegacao por palavra (Ctrl+seta) e paragrafo, localizar/substituir, selecao/colagem multi-linha, clipboard real do Windows, navegacao de menu (Alt+letra/setas/Enter, Alt+C=Compilar, Alt+O=Configurar), Tab configuravel via Configurar->Editor (Indent Size), item Editor no menu Configurar, menu Inserir->Caracteres Especiais MSX"
+    ' Autocompletar tipo IntelliSense (Configurar -> MSX Basic ->
+    ' Autocomplete Min Chars/Case, 2026-09-12) - guarda/restaura os valores
+    ' reais do usuario, igual ao teste de Tab acima, pra nao deixar
+    ' sujeira. Forca Case=upper so' pra este teste poder comparar contra
+    ' os nomes exatos do dicionario sem se preocupar com maiusculas/
+    ' minusculas (a conversao de caixa em si e' testada por ultimo, isolada).
+    Dim savedAcMinChars As String = DbGetSetting("cfg.msxbasic.autocomplete.min_chars", "3")
+    Dim savedAcCase As String = DbGetSetting("cfg.msxbasic.autocomplete.case", "lower")
+    DbSetSetting("cfg.msxbasic.autocomplete.min_chars", "3")
+    DbSetSetting("cfg.msxbasic.autocomplete.case", "upper")
+    AutocompleteClose()
+    dTab.lines(1) = ""
+    dTab.lineCount = 1
+    dTab.cursorX = 1 : dTab.cursorY = 1
+    dTab.selActive = 0
+
+    ' Menos de 3 caracteres ainda nao deveria mostrar nada.
+    EditorHandleKey("P", running, menuOpen)
+    EditorHandleKey("R", running, menuOpen)
+    If acActive <> 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: autocompletar nao deveria aparecer com so' 2 caracteres (PR)"
+        Return 0
+    End If
+
+    ' O 3o caractere bate o minimo (default) - deveria aparecer com PRINT
+    ' entre as sugestoes.
+    EditorHandleKey("I", running, menuOpen)
+    If acActive = 0 Or acCandidateCount = 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: autocompletar deveria aparecer depois de 'PRI' (acActive=" & Trim(Str(acActive)) & " acCandidateCount=" & Trim(Str(acCandidateCount)) & ")"
+        Return 0
+    End If
+    Dim foundPrint As Integer = 0
+    Dim acI As Integer
+    For acI = 1 To acCandidateCount
+        If acCandidates(acI) = "PRINT" Then foundPrint = -1
+    Next acI
+    If foundPrint = 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: PRINT deveria estar entre as sugestoes de 'PRI' (" & Trim(Str(acCandidateCount)) & " sugestao/oes)"
+        Return 0
+    End If
+
+    ' Enter confirma a sugestao em destaque (a 1a, ordem alfabetica - o
+    ' dicionario ja' vem ordenado, ver CollectMsxDictKeywords) no lugar do
+    ' prefixo digitado, e fecha o quadrinho.
+    Dim expectedFirst As String = acCandidates(1)
+    EditorHandleKey(Chr(13), running, menuOpen)
+    If acActive <> 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: Enter deveria fechar o quadrinho de autocompletar"
+        Return 0
+    End If
+    If dTab.lines(1) <> expectedFirst Or dTab.cursorX <> Len(expectedFirst) + 1 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: Enter deveria completar para '" & expectedFirst & "' - linha='" & dTab.lines(1) & "' col=" & Trim(Str(dTab.cursorX))
+        Return 0
+    End If
+
+    ' Espaco cancela sem confirmar a sugestao, mas o espaco em si continua
+    ' sendo digitado normalmente.
+    dTab.lines(1) = ""
+    dTab.cursorX = 1 : dTab.cursorY = 1
+    EditorHandleKey("C", running, menuOpen)
+    EditorHandleKey("O", running, menuOpen)
+    EditorHandleKey("L", running, menuOpen)
+    If acActive = 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: autocompletar deveria aparecer depois de 'COL'"
+        Return 0
+    End If
+    EditorHandleKey(" ", running, menuOpen)
+    If acActive <> 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: Espaco deveria fechar o quadrinho de autocompletar"
+        Return 0
+    End If
+    If dTab.lines(1) <> "COL " Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: Espaco deveria continuar sendo digitado normalmente - linha='" & dTab.lines(1) & "'"
+        Return 0
+    End If
+
+    ' "GOS" so' deveria sugerir GOSUB (achado real, 2026-09-12: o
+    ' dicionario da Ajuda tem um unico verbete "GOSUB-RETURN" cobrindo o
+    ' par de comandos - sem separar, a sugestao vinha errada como
+    ' "GOSUB-RETURN" inteiro, que nao e' BASIC valido). Confere tambem que
+    ' RETURN, FOR, NEXT, IF, THEN e ELSE (que so' existiam dentro de
+    ' titulos compostos tipo "FOR-NEXT"/"IF-THEN-ELSE") agora aparecem
+    ' como sugestao propria, e que nenhuma sugestao sobrou com hifen.
+    AutocompleteClose()
+    dTab.lines(1) = ""
+    dTab.cursorX = 1 : dTab.cursorY = 1
+    EditorHandleKey("G", running, menuOpen)
+    EditorHandleKey("O", running, menuOpen)
+    EditorHandleKey("S", running, menuOpen)
+    If acActive = 0 Or acCandidateCount <> 1 Or acCandidates(1) <> "GOSUB" Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: 'GOS' deveria sugerir so' GOSUB (achou " & Trim(Str(acCandidateCount)) & " sugestao/oes, 1a='" & IIf(acCandidateCount > 0, acCandidates(1), "") & "')"
+        Return 0
+    End If
+    EditorHandleKey(Chr(13), running, menuOpen)
+    If dTab.lines(1) <> "GOSUB" Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: Enter em 'GOS' deveria completar para 'GOSUB' - linha='" & dTab.lines(1) & "'"
+        Return 0
+    End If
+
+    AutocompleteEnsureDictLoaded()
+    Dim hasHyphenLeftover As Integer = 0
+    Dim acJ As Integer
+    For acJ = 1 To acDictWordCount
+        If InStr(acDictWords(acJ), "-") > 0 Then hasHyphenLeftover = -1
+    Next acJ
+    If hasHyphenLeftover <> 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: sobrou sugestao de autocompletar com hifen (titulo composto nao separado)"
+        Return 0
+    End If
+
+    Dim mustHaveWords(1 To 8) As String
+    mustHaveWords(1) = "RETURN" : mustHaveWords(2) = "FOR"   : mustHaveWords(3) = "NEXT" : mustHaveWords(4) = "IF"
+    mustHaveWords(5) = "THEN"   : mustHaveWords(6) = "ELSE"  : mustHaveWords(7) = "GOSUB" : mustHaveWords(8) = "GOTO"
+    Dim missing As String = ""
+    Dim wantI As Integer
+    For wantI = 1 To 8
+        Dim wFound As Integer = 0
+        Dim scanI As Integer
+        For scanI = 1 To acDictWordCount
+            If acDictWords(scanI) = mustHaveWords(wantI) Then wFound = -1
+        Next scanI
+        If wFound = 0 Then missing &= mustHaveWords(wantI) & " "
+    Next wantI
+    If Len(missing) > 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: autocompletar deveria conhecer estes comandos (vieram so' de titulos compostos tipo FOR-NEXT/IF-THEN-ELSE) e nao achou: " & missing
+        Return 0
+    End If
+
+    ' Autocomplete Case=lower (novo default, 2026-09-12) - a sugestao
+    ' aparece e e' inserida em minusculas.
+    DbSetSetting("cfg.msxbasic.autocomplete.case", "lower")
+    acDictLoaded = 0 ' forca reler pra pegar a mudanca de caixa
+    AutocompleteClose()
+    dTab.lines(1) = ""
+    dTab.cursorX = 1 : dTab.cursorY = 1
+    EditorHandleKey("G", running, menuOpen)
+    EditorHandleKey("O", running, menuOpen)
+    EditorHandleKey("S", running, menuOpen)
+    If acActive = 0 Or acCandidateCount <> 1 Or acCandidates(1) <> "gosub" Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: Autocomplete Case=lower deveria sugerir 'gosub' em minusculas (veio '" & IIf(acCandidateCount > 0, acCandidates(1), "") & "')"
+        Return 0
+    End If
+    EditorHandleKey(Chr(13), running, menuOpen)
+    If dTab.lines(1) <> "gosub" Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: Autocomplete Case=lower deveria completar para 'gosub' - linha='" & dTab.lines(1) & "'"
+        Return 0
+    End If
+
+    AutocompleteClose()
+    acDictLoaded = 0
+    DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+    DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+
+    report = "SMOKE EDIT OK: digitar, selecao Shift+seta, copiar/colar (Ctrl+C/V), recortar linha (Ctrl+X), desfazer/refazer (Ctrl+Z/Y), navegacao por palavra (Ctrl+seta) e paragrafo, localizar/substituir, selecao/colagem multi-linha, clipboard real do Windows, navegacao de menu (Alt+letra/setas/Enter, Alt+C=Compilar, Alt+O=Configurar, Alt+P=Projeto), Tab configuravel via Configurar->Editor (Indent Size), item Editor no menu Configurar, menu Projeto proprio (Novo/Abrir/Salvar/Fechar Projeto), menu Inserir->Caracteres Especiais MSX e Inserir->Cor MSX, Referencia->msxide.dmx, autocompletar tipo IntelliSense (Configurar->MSX Basic->Autocomplete Min Chars/Case, setas escolhe, Tab/Enter confirma, Espaco cancela, titulos compostos do dicionario tipo GOSUB-RETURN/FOR-NEXT/IF-THEN-ELSE separados nos comandos reais)"
     Return -1
 End Function
 

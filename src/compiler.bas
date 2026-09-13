@@ -611,6 +611,22 @@ Type DefineEntry
     content As String
 End Type
 
+' Proto-funcoes (func .nome(args) / ret ...) - ver "Estagio 5b" no
+' paleobasic (DignifiedPreprocessor.pbi) que serviu de referencia. nameKey
+' e' ScopedName(ns, nome) como um define/label normal; bareUpper e' so' o
+' nome (sem namespace) pra permitir o mesmo fallback "escopo -> global" que
+' ApplyDefinesOnce/ResolveLabelRefs ja usam - uma chamada .nome(...) escrita
+' no arquivo principal, DEPOIS de um include que define .nome, precisa achar
+' a funcao mesmo se o namespace "atual" do ponto de chamada nao bater
+' exatamente com o do ponto de definicao.
+Type FuncEntry
+    nameKey As String
+    bareUpper As String
+    paramList As String    ' "p1;p2;p3" (nomes dos parametros, na ordem)
+    defaultList As String  ' "d1;d2;d3" (default de cada param, "" = sem default)
+    retList As String      ' "e1;e2;e3" (expressoes do RET, preenchido so' quando o RET aparece)
+End Type
+
 Type ProcLine
     text As String
     kind As Integer
@@ -1372,6 +1388,360 @@ Private Function ResolveLabelRefs(ByRef textIn As String, ByVal stmtIndex As Int
     Return outText
 End Function
 
+' ===========================================================================
+' Proto-funcoes (func .nome(args) / ret / chamadas .nome(args)) - porte do
+' "Estagio 5b" do paleobasic (DignifiedPreprocessor.pbi: Dig_HandleFuncDef/
+' Dig_HandleFuncRet/Dig_BuildFuncCallReplacement/Dig_FuncCalls_Piece),
+' adaptado ao pipeline de linha-unica do msxIDE. Uma chamada ".nome(args)"
+' vira "param1=arg1:param2=arg2:GOSUB {rotulo}:capturada1=retorno1:..." -
+' o alvo do GOSUB usa a MESMA sintaxe "{rotulo}" de label ja resolvida por
+' ResolveLabelRefs (com o mesmo fallback escopo->global), entao nao precisa
+' de nenhum marcador especial: e' so' mais um label comum, cujo "corpo" e' o
+' bloco entre "func .nome(...)" e o "ret" correspondente.
+' ===========================================================================
+
+Private Function FindFuncIndex(funcs() As FuncEntry, ByVal funcCount As Integer, ByRef keyName As String) As Integer
+    Dim k As String = UCase(Trim(keyName))
+    Dim i As Integer
+    For i = 1 To funcCount
+        If funcs(i).nameKey = k Then Return i
+    Next i
+    Return 0
+End Function
+
+Private Function FindFuncIndexByBareName(funcs() As FuncEntry, ByVal funcCount As Integer, ByRef bareName As String) As Integer
+    Dim k As String = UCase(Trim(bareName))
+    Dim i As Integer
+    For i = 1 To funcCount
+        If funcs(i).bareUpper = k Then Return i
+    Next i
+    Return 0
+End Function
+
+Private Function ResolveFuncIndex(funcs() As FuncEntry, ByVal funcCount As Integer, ByRef currentNs As String, ByRef bareName As String) As Integer
+    Dim idx As Integer = FindFuncIndex(funcs(), funcCount, ScopedName(currentNs, bareName))
+    If idx <= 0 Then idx = FindFuncIndexByBareName(funcs(), funcCount, bareName)
+    Return idx
+End Function
+
+Private Function FuncLabelName(ByRef fname As String) As String
+    Return "__FUNC_" & UCase(fname)
+End Function
+
+' Separa Text por virgulas de nivel superior (ignora virgula dentro de
+' parenteses aninhados ou de literal entre aspas) - reusado pra argumentos
+' de func, expressoes de ret e argumentos de chamada .nome(args). Texto
+' vazio/so' espacos devolve 0 itens (func sem parametros).
+Private Sub SplitTopLevelArgs(ByRef bodyText As String, outItems() As String, ByRef outCount As Integer)
+    outCount = 0
+    If Len(Trim(bodyText)) = 0 Then Exit Sub
+
+    Dim depth As Integer = 0
+    Dim inQuote As Integer = 0
+    Dim startPos As Integer = 1
+    Dim i As Integer
+    For i = 1 To Len(bodyText)
+        Dim ch As String = Mid(bodyText, i, 1)
+        If inQuote <> 0 Then
+            If ch = Chr(34) Then inQuote = 0
+        Else
+            If ch = Chr(34) Then
+                inQuote = -1
+            ElseIf ch = "(" Then
+                depth += 1
+            ElseIf ch = ")" Then
+                depth -= 1
+            ElseIf ch = "," And depth = 0 Then
+                outCount += 1
+                ReDim Preserve outItems(1 To outCount)
+                outItems(outCount) = Trim(Mid(bodyText, startPos, i - startPos))
+                startPos = i + 1
+            End If
+        End If
+    Next i
+    outCount += 1
+    ReDim Preserve outItems(1 To outCount)
+    outItems(outCount) = Trim(Mid(bodyText, startPos, Len(bodyText) - startPos + 1))
+End Sub
+
+' Acha a posicao do ')' que fecha o '(' em text(openPos), respeitando
+' parenteses aninhados e literais entre aspas. Devolve 0 se nao fechar.
+Private Function FindMatchingParenPos(ByRef text As String, ByVal openPos As Integer) As Integer
+    Dim depth As Integer = 1
+    Dim i As Integer = openPos + 1
+    Dim inQuote As Integer = 0
+    While i <= Len(text)
+        Dim ch As String = Mid(text, i, 1)
+        If inQuote <> 0 Then
+            If ch = Chr(34) Then inQuote = 0
+        Else
+            If ch = Chr(34) Then
+                inQuote = -1
+            ElseIf ch = "(" Then
+                depth += 1
+            ElseIf ch = ")" Then
+                depth -= 1
+                If depth = 0 Then Return i
+            End If
+        End If
+        i += 1
+    Wend
+    Return 0
+End Function
+
+' Acha a posicao do ULTIMO ':' de nivel superior em text (fora de literal
+' entre aspas) - 0 se nao houver. Usado pra achar um "ret ..." colado no
+' final de uma linha logica ja unida por JoinContinuationLines via ':' de
+' continuacao (ex.: "gosub {x}:" seguido de "ret y" no fonte vira uma linha
+' so' "gosub {x}:ret y" antes de chegar aqui - sem isso "ret" deixa de ser a
+' primeira palavra da linha e nunca e' reconhecido).
+Private Function FindLastTopLevelColonPos(ByRef text As String) As Integer
+    Dim inQuote As Integer = 0
+    Dim lastPos As Integer = 0
+    Dim i As Integer
+    For i = 1 To Len(text)
+        Dim ch As String = Mid(text, i, 1)
+        If inQuote <> 0 Then
+            If ch = Chr(34) Then inQuote = 0
+        Else
+            If ch = Chr(34) Then
+                inQuote = -1
+            ElseIf ch = ":" Then
+                lastPos = i
+            End If
+        End If
+    Next i
+    Return lastPos
+End Function
+
+Private Function FirstWordUpper(ByRef text As String) As String
+    Dim sp As Integer = InStr(text, " ")
+    If sp = 0 Then Return UCase(text)
+    Return UCase(Left(text, sp - 1))
+End Function
+
+Private Function CountChar(ByRef s As String, ByRef ch As String) As Integer
+    Dim cnt As Integer = 0
+    Dim p As Integer = 1
+    Do
+        Dim f As Integer = InStr(p, s, ch)
+        If f = 0 Then Exit Do
+        cnt += 1
+        p = f + 1
+    Loop
+    Return cnt
+End Function
+
+' Equivalente a StringField(s, idx, ";") do PureBasic - campo idx (1-based)
+' de uma lista separada por ";".
+Private Function FieldSemicolon(ByRef s As String, ByVal idx As Integer) As String
+    Dim p As Integer = 1
+    Dim curIdx As Integer = 1
+    Do While curIdx < idx
+        Dim f As Integer = InStr(p, s, ";")
+        If f = 0 Then Return ""
+        p = f + 1
+        curIdx += 1
+    Loop
+    Dim nextP As Integer = InStr(p, s, ";")
+    If nextP = 0 Then Return Mid(s, p)
+    Return Mid(s, p, nextP - p)
+End Function
+
+' Tenta reconhecer "var1, var2 = " logo antes do fim de textSoFar (usado
+' antes de uma chamada .nome(...) pra capturar os retornos). Devolve a
+' posicao (1-based) onde comeca esse prefixo (pra caller cortar textSoFar
+' ali) e preenche captureVars(); devolve 0 (e captureCount=0) se nao achar
+' um prefixo valido - textSoFar fica intocado pelo caller nesse caso.
+Private Function TryExtractCaptureVars(ByRef textSoFar As String, captureVars() As String, ByRef captureCount As Integer) As Integer
+    captureCount = 0
+    Dim s As String = textSoFar
+    Dim i As Integer = Len(s)
+
+    While i >= 1 AndAlso Mid(s, i, 1) = " "
+        i -= 1
+    Wend
+    If i < 1 Then Return 0
+    If Mid(s, i, 1) <> "=" Then Return 0
+    If i >= 2 Then
+        Dim beforeEq As String = Mid(s, i - 1, 1)
+        If beforeEq = "<" Or beforeEq = ">" Or beforeEq = "=" Then Return 0
+    End If
+    i -= 1
+
+    Dim scanPos As Integer = i
+    Do While scanPos >= 1
+        Dim c As String = Mid(s, scanPos, 1)
+        If c = " " Or c = "," Or IsIdentBodyChar(Asc(c)) <> 0 Or c = "$" Or c = "%" Or c = "!" Or c = "#" Then
+            scanPos -= 1
+        Else
+            Exit Do
+        End If
+    Loop
+
+    Dim startBoundary As Integer = scanPos + 1
+    If startBoundary > i Then Return 0
+    Dim candidate As String = Mid(s, startBoundary, i - startBoundary + 1)
+    If Len(Trim(candidate)) = 0 Then Return 0
+
+    Dim pieces() As String
+    Dim pieceCount As Integer = 0
+    SplitTopLevelArgs(candidate, pieces(), pieceCount)
+    If pieceCount = 0 Then Return 0
+
+    Dim k As Integer
+    For k = 1 To pieceCount
+        Dim piece As String = Trim(pieces(k))
+        If Len(piece) = 0 Then Return 0
+        If IsIdentStartChar(Asc(Left(piece, 1))) = 0 Then Return 0
+        Dim pi As Integer
+        For pi = 2 To Len(piece)
+            Dim pc As String = Mid(piece, pi, 1)
+            If IsIdentBodyChar(Asc(pc)) = 0 And pc <> "$" And pc <> "%" And pc <> "!" And pc <> "#" Then Return 0
+        Next pi
+    Next k
+
+    captureCount = pieceCount
+    ReDim captureVars(1 To pieceCount)
+    For k = 1 To pieceCount
+        captureVars(k) = Trim(pieces(k))
+    Next k
+
+    Return startBoundary
+End Function
+
+' Monta o texto de substituicao de uma chamada .nome(args), incluindo
+' atribuicao de argumentos, o GOSUB {rotulo} e atribuicao dos retornos
+' capturados - evita "X=X" quando o valor ja e' o mesmo (mesma regra do
+' paleobasic, pra nao gerar atribuicoes inuteis quando quem chama usa os
+' mesmos nomes de variavel da definicao).
+Private Function BuildFuncCallReplacement(ByRef fname As String, callArgs() As String, ByVal callArgCount As Integer, captureVars() As String, ByVal captureCount As Integer, funcs() As FuncEntry, ByVal funcCount As Integer, ByRef currentNs As String, ByRef errMsg As String) As String
+    Dim fIdx As Integer = ResolveFuncIndex(funcs(), funcCount, currentNs, fname)
+    If fIdx <= 0 Then
+        errMsg = "Funcao nao definida: ." & fname
+        Return ""
+    End If
+
+    Dim paramList As String = funcs(fIdx).paramList
+    Dim defaultList As String = funcs(fIdx).defaultList
+    Dim retList As String = funcs(fIdx).retList
+
+    Dim nParams As Integer = 0
+    If Len(paramList) > 0 Then nParams = CountChar(paramList, ";") + 1
+
+    If callArgCount > nParams Then
+        errMsg = "Chamada com argumentos demais: ." & fname
+        Return ""
+    End If
+
+    Dim result As String = ""
+    Dim k As Integer
+    For k = 1 To nParams
+        Dim pname As String = FieldSemicolon(paramList, k)
+        Dim pdefault As String = FieldSemicolon(defaultList, k)
+        Dim callVal As String = ""
+        If k <= callArgCount Then callVal = callArgs(k)
+
+        If Len(Trim(callVal)) > 0 Then
+            If Trim(callVal) <> Trim(pname) Then result &= pname & "=" & callVal & ":"
+        ElseIf Len(Trim(pdefault)) > 0 Then
+            If Trim(pdefault) <> Trim(pname) Then result &= pname & "=" & pdefault & ":"
+        End If
+    Next k
+
+    result &= "GOSUB {" & FuncLabelName(fname) & "}"
+
+    Dim nRets As Integer = 0
+    If Len(retList) > 0 Then nRets = CountChar(retList, ";") + 1
+    For k = 1 To captureCount
+        If k <= nRets Then
+            Dim rexpr As String = FieldSemicolon(retList, k)
+            If Trim(rexpr) <> Trim(captureVars(k)) Then result &= ":" & captureVars(k) & "=" & rexpr
+        End If
+    Next k
+
+    Return result
+End Function
+
+' Varre uma linha INTEIRA (precisa ver a linha toda, nao um pedaco - os
+' argumentos da chamada podem conter literais de string que quebrariam o
+' casamento de parenteses se so' enxergasse um trecho) procurando chamadas
+' .nome(args), com captura opcional de retorno "var1,var2 = .nome(args)"
+' logo antes. Tem sua propria consciencia de string/comentario/DATA.
+Private Function ExpandFuncCallsInLine(ByRef lineText As String, funcs() As FuncEntry, ByVal funcCount As Integer, ByRef currentNs As String, ByRef errMsg As String) As String
+    Dim outText As String = ""
+    Dim scanCharPos As Integer = 1
+    Dim inQuote As Integer = 0
+    Dim n As Integer = Len(lineText)
+
+    While scanCharPos <= n
+        Dim ch As String = Mid(lineText, scanCharPos, 1)
+
+        If ch = Chr(34) Then
+            inQuote = Not inQuote
+            outText &= ch
+            scanCharPos += 1
+            Continue While
+        End If
+
+        If inQuote = 0 Then
+            If ch = "'" Then
+                outText &= Mid(lineText, scanCharPos)
+                Exit While
+            End If
+
+            Dim boundaryBefore As Integer = (scanCharPos = 1) Or (IsIdentBodyChar(Asc(Mid(lineText, scanCharPos - 1, 1))) = 0)
+            If boundaryBefore <> 0 And UCase(Mid(lineText, scanCharPos, 3)) = "REM" And IsIdentBodyChar(Asc(Mid(lineText, scanCharPos + 3, 1))) = 0 Then
+                outText &= Mid(lineText, scanCharPos)
+                Exit While
+            End If
+            If boundaryBefore <> 0 And UCase(Mid(lineText, scanCharPos, 4)) = "DATA" And IsIdentBodyChar(Asc(Mid(lineText, scanCharPos + 4, 1))) = 0 Then
+                Dim dEnd As Integer = InStr(scanCharPos, lineText, ":")
+                If dEnd = 0 Then dEnd = n + 1
+                outText &= Mid(lineText, scanCharPos, dEnd - scanCharPos)
+                scanCharPos = dEnd
+                Continue While
+            End If
+
+            If ch = "." And IsIdentStartChar(Asc(Mid(lineText, scanCharPos + 1, 1))) <> 0 Then
+                Dim np As Integer = scanCharPos + 1
+                While np <= n AndAlso IsIdentBodyChar(Asc(Mid(lineText, np, 1))) <> 0
+                    np += 1
+                Wend
+                If Mid(lineText, np, 1) = "(" Then
+                    Dim fname As String = Mid(lineText, scanCharPos + 1, np - scanCharPos - 1)
+                    Dim closeParen As Integer = FindMatchingParenPos(lineText, np)
+                    If closeParen = 0 Then
+                        errMsg = "Parenteses nao fechados na chamada: ." & fname
+                        Return outText
+                    End If
+
+                    Dim callArgs() As String
+                    Dim callArgCount As Integer = 0
+                    SplitTopLevelArgs(Mid(lineText, np + 1, closeParen - np - 1), callArgs(), callArgCount)
+
+                    Dim captureVars() As String
+                    Dim captureCount As Integer = 0
+                    Dim capStart As Integer = TryExtractCaptureVars(outText, captureVars(), captureCount)
+                    If capStart > 0 Then outText = Left(outText, capStart - 1)
+
+                    Dim replacement As String = BuildFuncCallReplacement(fname, callArgs(), callArgCount, captureVars(), captureCount, funcs(), funcCount, currentNs, errMsg)
+                    If Len(errMsg) > 0 Then Return outText
+                    outText &= replacement
+
+                    scanCharPos = closeParen + 1
+                    Continue While
+                End If
+            End If
+        End If
+
+        outText &= ch
+        scanCharPos += 1
+    Wend
+
+    Return outText
+End Function
+
 Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath As String, ByRef outAmxText As String, ByRef outAmxOverride As String, ByRef errMsg As String) As Integer
     errMsg = ""
     outAmxText = ""
@@ -1397,6 +1767,11 @@ Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath A
 
     Dim defs() As DefineEntry
     Dim defCount As Integer = 0
+
+    Dim funcs() As FuncEntry
+    Dim funcCount As Integer = 0
+    Dim inFuncName As String = ""
+    Dim inFuncScopedKey As String = ""
 
     Dim stmts() As ProcLine
     Dim stmtCount As Integer = 0
@@ -1546,6 +1921,131 @@ Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath A
         t = Trim(t)
         If Len(t) = 0 Then Continue While
 
+        If Left(UCase(t), 5) = "FUNC " Then
+            If Len(inFuncName) > 0 Then
+                errMsg = "Ja dentro de uma funcao: " & inFuncName
+                Return 0
+            End If
+
+            Dim frest As String = Trim(Mid(t, 5))
+            If Left(frest, 1) <> "." Then
+                errMsg = "Nome de funcao invalido: " & frest
+                Return 0
+            End If
+
+            Dim fparenPos As Integer = InStr(frest, "(")
+            If fparenPos = 0 Then
+                errMsg = "Funcao sem parenteses: " & frest
+                Return 0
+            End If
+
+            Dim fname As String = Trim(Mid(frest, 2, fparenPos - 2))
+            If IsValidLabelName(fname) = 0 Then
+                errMsg = "Nome de funcao invalido: " & fname
+                Return 0
+            End If
+
+            Dim fcloseParen As Integer = FindMatchingParenPos(frest, fparenPos)
+            If fcloseParen = 0 Then
+                errMsg = "Parenteses nao fechados na funcao: " & fname
+                Return 0
+            End If
+
+            If Len(Trim(Mid(frest, fcloseParen + 1))) > 0 Then
+                errMsg = "Conteudo apos 'func .nome(...)' na mesma linha nao suportado: " & fname
+                Return 0
+            End If
+
+            Dim fScopedKey As String = ScopedName(currentNs, fname)
+            If FindFuncIndex(funcs(), funcCount, fScopedKey) > 0 Then
+                errMsg = "Funcao duplicada: " & fname
+                Return 0
+            End If
+
+            Dim fargItems() As String
+            Dim fargCount As Integer = 0
+            SplitTopLevelArgs(Mid(frest, fparenPos + 1, fcloseParen - fparenPos - 1), fargItems(), fargCount)
+
+            Dim fParamList As String = ""
+            Dim fDefaultList As String = ""
+            Dim fai As Integer
+            For fai = 1 To fargCount
+                Dim fargText As String = fargItems(fai)
+                Dim feqPos As Integer = InStr(fargText, "=")
+                Dim fpname As String
+                Dim fpdefault As String
+                If feqPos > 0 Then
+                    fpname = Trim(Left(fargText, feqPos - 1))
+                    fpdefault = Trim(Mid(fargText, feqPos + 1))
+                Else
+                    fpname = Trim(fargText)
+                    fpdefault = ""
+                End If
+                If Len(fpname) = 0 Then
+                    errMsg = "Argumento de funcao invalido: " & fargText
+                    Return 0
+                End If
+                If Len(fParamList) > 0 Then
+                    fParamList &= ";"
+                    fDefaultList &= ";"
+                End If
+                fParamList &= fpname
+                fDefaultList &= fpdefault
+            Next fai
+
+            funcCount += 1
+            ReDim Preserve funcs(1 To funcCount)
+            funcs(funcCount).nameKey = fScopedKey
+            funcs(funcCount).bareUpper = UCase(fname)
+            funcs(funcCount).paramList = fParamList
+            funcs(funcCount).defaultList = fDefaultList
+            funcs(funcCount).retList = ""
+
+            inFuncName = fname
+            inFuncScopedKey = fScopedKey
+
+            pendingCount += 1
+            ReDim Preserve pendingLabels(1 To pendingCount)
+            pendingLabels(pendingCount) = ScopedName(currentNs, FuncLabelName(fname))
+
+            Continue While
+        End If
+
+        Dim retColonPos As Integer = FindLastTopLevelColonPos(t)
+        Dim retTail As String = t
+        Dim retPrefix As String = ""
+        If retColonPos > 0 Then
+            retPrefix = Left(t, retColonPos)
+            retTail = Trim(Mid(t, retColonPos + 1))
+        End If
+
+        If FirstWordUpper(retTail) = "RET" Then
+            If Len(inFuncName) = 0 Then
+                errMsg = "RET sem FUNC correspondente."
+                Return 0
+            End If
+
+            Dim rrest As String = Trim(Mid(retTail, 4))
+            Dim fRetItems() As String
+            Dim fRetCount As Integer = 0
+            SplitTopLevelArgs(rrest, fRetItems(), fRetCount)
+
+            Dim fRetList As String = ""
+            Dim fri As Integer
+            For fri = 1 To fRetCount
+                If Len(fRetList) > 0 Then fRetList &= ";"
+                fRetList &= fRetItems(fri)
+            Next fri
+
+            Dim fRetIdx As Integer = FindFuncIndex(funcs(), funcCount, inFuncScopedKey)
+            If fRetIdx > 0 Then funcs(fRetIdx).retList = fRetList
+
+            inFuncName = ""
+            inFuncScopedKey = ""
+
+            t = Trim(retPrefix & "RETURN")
+        End If
+
         Do While Left(t, 1) = "{" And InStr(t, "}") > 1
             Dim p2 As Integer = InStr(t, "}")
             Dim lbl As String = Mid(t, 2, p2 - 2)
@@ -1645,6 +2145,11 @@ Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath A
         Return 0
     End If
 
+    If Len(inFuncName) > 0 Then
+        errMsg = "Funcao sem RET: " & inFuncName
+        Return 0
+    End If
+
     If pendingCount > 0 Then
         errMsg = "Label no final sem comando associado."
         Return 0
@@ -1654,6 +2159,23 @@ Private Function PreprocessDignified(ByRef sourceText As String, ByRef srcPath A
         errMsg = "Fonte vazia apos preprocessamento."
         Return 0
     End If
+
+    ' Chamadas .nome(args) sao expandidas so' AGORA, depois que o loop acima
+    ' inteiro ja' rodou - assim uma funcao pode ser chamada ANTES do seu
+    ' proprio "func .nome(...)" aparecer no texto (ex.: NestorBASIC e'
+    ' include"ado no topo do arquivo e chamado bem mais abaixo, mas o
+    ' exemplo oficial do Basic Dignified tambem chama a funcao ANTES dela
+    ' mesma, deixando a definicao "no fim, num ponto inalcancavel do
+    ' codigo" - ver BASIC_DIGNIFIED.md). Se a expansao rodasse dentro do
+    ' loop principal, uma chamada so' acharia funcoes ja' registradas ATE'
+    ' aquele ponto do arquivo.
+    Dim fcs As Integer
+    For fcs = 1 To stmtCount
+        If stmts(fcs).kind = STMT_NORMAL Then
+            stmts(fcs).text = ExpandFuncCallsInLine(stmts(fcs).text, funcs(), funcCount, stmts(fcs).nsKey, errMsg)
+            If Len(errMsg) > 0 Then Return 0
+        End If
+    Next fcs
 
     CollectVariableUsage(stmts(), stmtCount, keepLongKeys(), keepLongCount, reservedShortVals(), reservedShortCount, longVarKeys(), longVarCount)
     AssignShortNames(longVarKeys(), longVarCount, keepLongKeys(), keepLongCount, reservedShortVals(), reservedShortCount, varMap(), varMapCount)
@@ -2877,6 +3399,204 @@ Function CompilerRunVariableSmokeTest(ByRef report As String) As Integer
     End If
 
     report = "SMOKE BADIG VAR OK: nome longo->curto (zz descendente), mesmo curto independente de tipo ($), string/REM protegidos da varredura, declare explicito e reserva de curto, ~ mantem nome por extenso em todas as ocorrencias, variavel de 1-2 letras usada direto nunca e' tocada"
+    Return -1
+End Function
+
+' Smoke test headless do nbasic.dmx (apelidos do NestorBASIC, 2026-09-13) -
+' confere que "include " & Chr(34) & "nbasic.dmx" & Chr(34) resolve de
+' verdade (arquivo precisa estar na raiz do msxIDE, CurDir() de quem roda
+' isto) e que os apelidos viram o NUMERO certo de usr() depois do
+' preprocessamento - sem isso, um erro de digitacao/duplicata no
+' nbasic.dmx so' apareceria quando algum usuario tentasse compilar um
+' programa de verdade usando NestorBASIC.
+Function CompilerRunNBasicSmokeTest(ByRef report As String) As Integer
+    Dim amxText As String
+    Dim amxOverride As String
+    Dim errMsg As String
+
+    If Dir("nbasic.dmx") = "" Then
+        report = "SMOKE NBASIC FAIL: nbasic.dmx nao encontrado na raiz (CurDir=" & CurDir() & ")"
+        Return 0
+    End If
+
+    Dim srcText As String = "include " & Chr(34) & "nbasic.dmx" & Chr(34) & Chr(10) & _
+        "valor = 0 : erro = 0" & Chr(10) & _
+        "erro = .NB_ReadByte(4, &H100) : valor = p(2)" & Chr(10) & _
+        "erro = .NB_GetAttrByName(" & Chr(34) & "TESTE.BIN" & Chr(34) & ")"
+
+    If PreprocessDignified(srcText, "smoke_nbasic_test.dmx", amxText, amxOverride, errMsg) = 0 Then
+        report = "SMOKE NBASIC FAIL: PreprocessDignified deu erro - " & errMsg
+        Return 0
+    End If
+
+    Dim compactUp As String = CompactUpper(amxText)
+    If InStr(compactUp, "USR(2)") = 0 Then
+        report = "SMOKE NBASIC FAIL: .NB_ReadByte deveria chamar usr(2) - saida: " & amxText
+        Return 0
+    End If
+    ' NB_GetAttrByHandle e NB_GetAttrByName compartilham o numero 50 de
+    ' proposito (mesma rotina do NestorBASIC, escolhida por p(0)=255 = "por
+    ' nome" - ver comentario no proprio nbasic.dmx) - confere que resolveu
+    ' pro numero certo mesmo assim.
+    If InStr(compactUp, "USR(50)") = 0 Then
+        report = "SMOKE NBASIC FAIL: .NB_GetAttrByName deveria chamar usr(50) - saida: " & amxText
+        Return 0
+    End If
+    ' Confere so' as DUAS chamadas de verdade que este teste faz (nao um
+    ' "sem .NB_ em lugar nenhum" generico - os proprios comentarios do
+    ' arquivo (mantidos de proposito, ' nao e' ##) mencionam varios outros
+    ' nomes .NB_Algo em prosa, o que e' esperado e nao indica bug nenhum).
+    If InStr(compactUp, ".NB_READBYTE(") > 0 Then
+        report = "SMOKE NBASIC FAIL: sobrou chamada .NB_ReadByte(...) sem expandir na saida - " & amxText
+        Return 0
+    End If
+    If InStr(compactUp, ".NB_GETATTRBYNAME(") > 0 Then
+        report = "SMOKE NBASIC FAIL: sobrou chamada .NB_GetAttrByName(...) sem expandir na saida - " & amxText
+        Return 0
+    End If
+    If InStr(compactUp, "GOSUB") = 0 Or InStr(compactUp, "RETURN") = 0 Then
+        report = "SMOKE NBASIC FAIL: chamadas deveriam virar GOSUB/RETURN - saida: " & amxText
+        Return 0
+    End If
+
+    ' Todo "func .NB_Nome(...) / ... / erro = usr(numero)" do arquivo real
+    ' (nao um texto de teste solto) precisa ter um numero de usr() UNICO
+    ' por nome de funcao, e todo numero usado tem que estar entre 0 e 86
+    ' (faixa documentada no cabecalho do arquivo) - confere direto no
+    ' nbasic.dmx pra pegar erro de digitacao/duplicata que um teste so'
+    ' com 2 chamadas acima nunca alcancaria. So' considera o PRIMEIRO
+    ' usr(numero) de cada func (a maioria tem um so'; .NB_ErrorText nao
+    ' tem nenhum - fica de fora, contado a parte).
+    Dim nbasicText As String
+    Dim readErrMsg As String
+    If ReadTextFile("nbasic.dmx", nbasicText, readErrMsg) = 0 Then
+        report = "SMOKE NBASIC FAIL: nao consegui reler nbasic.dmx pra conferir duplicatas - " & readErrMsg
+        Return 0
+    End If
+    Dim names() As String
+    Dim nameCount As Integer = 0
+    Dim numbers() As Integer
+    Dim funcsWithoutUsr As Integer = 0
+    Dim p As Integer = 1
+    Do
+        Dim fPos As Integer = InStr(p, nbasicText, "func .NB_")
+        If fPos = 0 Then Exit Do
+        Dim nameStart As Integer = fPos + Len("func .")
+        Dim nameEnd As Integer = InStr(nameStart, nbasicText, "(")
+        If nameEnd = 0 Then Exit Do
+        Dim oneName As String = Trim(Mid(nbasicText, nameStart, nameEnd - nameStart))
+
+        Dim dupIdx As Integer = 0
+        Dim k As Integer
+        For k = 1 To nameCount
+            If names(k) = oneName Then dupIdx = k
+        Next k
+        If dupIdx > 0 Then
+            report = "SMOKE NBASIC FAIL: funcao '" & oneName & "' duplicada em nbasic.dmx"
+            Return 0
+        End If
+
+        ' Acha o proximo "ret" (fim do corpo desta func) e procura
+        ' "usr(numero)" so' dentro desse intervalo.
+        Dim retPos As Integer = InStr(nameEnd, nbasicText, Chr(10) & "ret ")
+        If retPos = 0 Then retPos = Len(nbasicText)
+        Dim usrPos As Integer = InStr(nameEnd, nbasicText, "usr(")
+        If usrPos > 0 And usrPos < retPos Then
+            Dim numStart As Integer = usrPos + 4
+            Dim numEnd As Integer = InStr(numStart, nbasicText, ")")
+            Dim oneNum As Integer = ValInt(Mid(nbasicText, numStart, numEnd - numStart))
+            If oneNum < 0 Or oneNum > 86 Then
+                report = "SMOKE NBASIC FAIL: '" & oneName & "' com usr() fora da faixa 0-86 (" & Trim(Str(oneNum)) & ")"
+                Return 0
+            End If
+            nameCount += 1
+            If nameCount = 1 Then
+                ReDim names(1 To 1)
+                ReDim numbers(1 To 1)
+            Else
+                ReDim Preserve names(1 To nameCount)
+                ReDim Preserve numbers(1 To nameCount)
+            End If
+            names(nameCount) = oneName
+            numbers(nameCount) = oneNum
+        Else
+            funcsWithoutUsr += 1
+        End If
+
+        p = retPos + 1
+    Loop
+
+    If nameCount < 80 Then
+        report = "SMOKE NBASIC FAIL: nbasic.dmx deveria ter pelo menos 80 funcoes com usr() direto (achou " & Trim(Str(nameCount)) & ", mais " & Trim(Str(funcsWithoutUsr)) & " sem usr() direto)"
+        Return 0
+    End If
+
+    report = "SMOKE NBASIC OK: include " & Chr(34) & "nbasic.dmx" & Chr(34) & " com func/ret de verdade, .NB_ReadByte->usr(2), .NB_GetAttrByName->usr(50) (compartilhado com .NB_GetAttrByHandle de proposito), " & Trim(Str(nameCount)) & " funcoes com usr() direto sem numero duplicado, todas no intervalo 0-86 (mais " & Trim(Str(funcsWithoutUsr)) & " sem usr() direto, ex.: .NB_ErrorText)"
+    Return -1
+End Function
+
+' Proto-funcao "func .nome(args) / ret" - exemplo com 2 chamadas a mesma
+' funcao: uma que reusa os MESMOS nomes de variavel da definicao (parametro
+' e retorno "pulam" a atribuicao, ver BuildFuncCallReplacement) e outra que
+' usa nomes diferentes (precisa gerar as atribuicoes de verdade).
+Function CompilerRunFuncSmokeTest(ByRef report As String) As Integer
+    Dim amxText As String
+    Dim amxOverride As String
+    Dim errMsg As String
+
+    Dim srcText As String = _
+        "seg = 1 : addr = 256" & Chr(10) & _
+        "erro = .rd(seg, addr)" & Chr(10) & _
+        "myerr = .rd(seg, addr)" & Chr(10) & _
+        "print erro" & Chr(10) & _
+        "end" & Chr(10) & _
+        "func .rd(segmento, endereco)" & Chr(10) & _
+        "p(0) = segmento : p(1) = endereco" & Chr(10) & _
+        "erro = usr(2)" & Chr(10) & _
+        "ret erro"
+
+    If PreprocessDignified(srcText, "smoke_func_test.dmx", amxText, amxOverride, errMsg) = 0 Then
+        report = "SMOKE FUNC FAIL: PreprocessDignified deu erro - " & errMsg
+        Return 0
+    End If
+
+    Dim compactUp As String = CompactUpper(amxText)
+
+    If InStr(compactUp, ".RD(") > 0 Then
+        report = "SMOKE FUNC FAIL: sobrou chamada .RD(...) sem expandir - " & amxText
+        Return 0
+    End If
+    If InStr(compactUp, "GOSUB") = 0 Then
+        report = "SMOKE FUNC FAIL: chamada nao virou GOSUB - " & amxText
+        Return 0
+    End If
+    If InStr(compactUp, "RETURN") = 0 Then
+        report = "SMOKE FUNC FAIL: RET nao virou RETURN - " & amxText
+        Return 0
+    End If
+    If InStr(compactUp, "FUNC") > 0 Then
+        report = "SMOKE FUNC FAIL: sobrou palavra FUNC na saida - " & amxText
+        Return 0
+    End If
+
+    Dim outLines() As String
+    Dim outLineCount As Integer = SplitNonBlankTrimmedLines(amxText, outLines())
+    If outLineCount < 6 Then
+        report = "SMOKE FUNC FAIL: esperava pelo menos 6 linhas numeradas - " & amxText
+        Return 0
+    End If
+
+    Dim colonSep As String = ":"
+    If CountChar(outLines(2), colonSep) < 1 Then
+        report = "SMOKE FUNC FAIL: 1a chamada (mesmos nomes) deveria pular atribuicao de argumento mas ainda ter o GOSUB - linha: " & outLines(2)
+        Return 0
+    End If
+    If CountChar(outLines(3), colonSep) < 2 Then
+        report = "SMOKE FUNC FAIL: 2a chamada (nomes diferentes: myerr<>erro) deveria gerar atribuicao explicita do retorno - linha: " & outLines(3)
+        Return 0
+    End If
+
+    report = "SMOKE FUNC OK: func .nome(args)/ret funcionando, chamada com nomes iguais aos da definicao pula atribuicao inutil (arg e retorno), chamada com nomes diferentes atribui de verdade, GOSUB/RETURN resolvidos via {label} normal"
     Return -1
 End Function
 

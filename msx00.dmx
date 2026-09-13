@@ -1,3 +1,5 @@
+include "nbasic.dmx"
+include "msxide.dmx"
 maxfiles=1 :
 gosub {desktop} :
 gosub {traca_q1} :
@@ -8,7 +10,7 @@ gosub {fim}
 
 {fim}
     screen 0 :
-    color 15,1,1 : 
+    color M_white,M_black,M_black : 
     cls : 
     width 40 :
     key off :

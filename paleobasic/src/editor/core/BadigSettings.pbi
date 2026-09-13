@@ -839,8 +839,18 @@ Procedure BadigCfg_OpenSettingsWindow(ParentWindow, OverridePath.s = "")
   Protected G_LineStep = StringGadget(#PB_Any, 234, 52, 90, 24, Str(BadigCfg\LineStep))
   Protected G_TabLenght = StringGadget(#PB_Any, 444, 52, 90, 24, Str(BadigCfg\TabLenght))
 
-  TextGadget(#PB_Any, 24, 102, 200, 20, "Verbosidade (0-4)")
-  Protected G_VerboseLevel = StringGadget(#PB_Any, 24, 130, 90, 24, Str(BadigCfg\VerboseLevel))
+  ; Escala de verbosidade do compilador (0-5, ver BadigLog.pbi): cada nivel
+  ; inclui os anteriores (limiar, nao categoria isolada) - 0 silencia tudo
+  ; exceto o erro fatal em si (nunca deixa o usuario com a janela de erro
+  ; vazia depois de uma compilacao que falhou, ver BadigLog_Render()).
+  TextGadget(#PB_Any, 24, 102, 300, 20, "Verbosidade")
+  Protected G_VerboseLevel = ComboBoxGadget(#PB_Any, 24, 130, 360, 24)
+  AddGadgetItem(G_VerboseLevel, -1, "0 - Silencio")
+  AddGadgetItem(G_VerboseLevel, -1, "1 - Erros")
+  AddGadgetItem(G_VerboseLevel, -1, "2 - Alertas")
+  AddGadgetItem(G_VerboseLevel, -1, "3 - Cabecalhos")
+  AddGadgetItem(G_VerboseLevel, -1, "4 - Informacao")
+  AddGadgetItem(G_VerboseLevel, -1, "5 - Detalhes")
 
   ; Nota: coordenadas de gadgets criados dentro de um PanelGadget sao
   ; relativas a LARGURA DO PANEL (632px, WinW - 48), nao a largura da janela -
@@ -908,6 +918,10 @@ Procedure BadigCfg_OpenSettingsWindow(ParentWindow, OverridePath.s = "")
   CloseGadgetList()
 
   ;- Preenche os valores atuais -------------------------------------------------
+  Protected VerboseInit.i = BadigCfg\VerboseLevel
+  If VerboseInit < 0 : VerboseInit = 0 : EndIf
+  If VerboseInit > 5 : VerboseInit = 5 : EndIf
+  SetGadgetState(G_VerboseLevel, VerboseInit)
   SetGadgetState(G_RemHeader, BadigCfg\RemHeader)
   SetGadgetState(G_StripSpaces, BadigCfg\StripSpaces)
   SetGadgetState(G_CapitalizeAll, BadigCfg\CapitalizeAll)
@@ -992,7 +1006,7 @@ Procedure BadigCfg_OpenSettingsWindow(ParentWindow, OverridePath.s = "")
     BadigCfg\LineStart = Val(GetGadgetText(G_LineStart))
     BadigCfg\LineStep = Val(GetGadgetText(G_LineStep))
     BadigCfg\TabLenght = Val(GetGadgetText(G_TabLenght))
-    BadigCfg\VerboseLevel = Val(GetGadgetText(G_VerboseLevel))
+    BadigCfg\VerboseLevel = GetGadgetState(G_VerboseLevel)
     BadigCfg\RemHeader = GetGadgetState(G_RemHeader)
     BadigCfg\StripSpaces = GetGadgetState(G_StripSpaces)
     BadigCfg\CapitalizeAll = GetGadgetState(G_CapitalizeAll)
