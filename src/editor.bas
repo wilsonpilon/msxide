@@ -129,6 +129,14 @@ Dim Shared acDictWords() As String
 Dim Shared acDictWordCount As Integer = 0
 Dim Shared acDictLoaded As Integer = 0
 
+' Rotinas do NestorBASIC (.NB_Nome, ver nbasic.dmx) - dicionario SEPARADO
+' do MSX BASIC acima, so' misturado nas sugestoes quando o documento ativo
+' tem "include "nbasic.dmx"" (DocumentHasNBasicInclude, 2026-09-13) - quem
+' nao usa NBasic no arquivo nao precisa ver ".NB_ReadByte" toda hora.
+Dim Shared acNBasicWords() As String
+Dim Shared acNBasicWordCount As Integer = 0
+Dim Shared acNBasicLoaded As Integer = 0
+
 Dim Shared dragMode As Integer
 Dim Shared dragOffsetX As Integer
 Dim Shared dragOffsetY As Integer
@@ -318,6 +326,7 @@ Declare Sub ShowMsxCharPickerDialog()
 Declare Sub ShowMsxColorInsertDialog()
 Declare Function MsxColorConstantName(ByVal msxColor As Integer) As String
 Declare Sub OpenReferenceLibraryFile()
+Declare Function DocumentHasNBasicInclude(ByRef d As Document) As Integer
 Declare Function GetExtLower(ByRef path As String) As String
 Declare Function NormalizePathForDisplay(ByRef pathValue As String) As String
 Declare Sub UndoCheckpointFresh(ByRef d As Document)
@@ -1450,6 +1459,42 @@ Private Sub AutocompleteEnsureDictLoaded()
     End If
 End Sub
 
+' Le nbasic.dmx (raiz do projeto) e extrai o nome de cada rotina
+' "func .NB_Nome(..." definida ali - carregado uma unica vez por sessao
+' (mesmo esquema de AutocompleteEnsureDictLoaded acima), falha silenciosa
+' (acNBasicWordCount fica 0) se o arquivo ainda nao existir (NBasic pode
+' estar desmarcado em Configurar -> MSX Basic). So' usado quando o
+' documento ativo realmente tem "include "nbasic.dmx"" - ver
+' DocumentHasNBasicInclude/AutocompleteRefresh.
+Private Sub AutocompleteEnsureNBasicDictLoaded()
+    If acNBasicLoaded <> 0 Then Exit Sub
+    acNBasicLoaded = -1
+    acNBasicWordCount = 0
+
+    Dim nbasicText As String
+    If ReadWholeTextFile("nbasic.dmx", nbasicText) = 0 Then Exit Sub
+
+    Dim p As Integer = 1
+    Do
+        Dim fPos As Integer = InStr(p, nbasicText, "func .")
+        If fPos = 0 Then Exit Do
+        Dim nameStart As Integer = fPos + Len("func .")
+        Dim nameEnd As Integer = InStr(nameStart, nbasicText, "(")
+        If nameEnd = 0 Then Exit Do
+        Dim oneName As String = UCase(Trim(Mid(nbasicText, nameStart, nameEnd - nameStart)))
+        If Len(oneName) > 0 And InStr(oneName, Chr(10)) = 0 Then
+            acNBasicWordCount += 1
+            If acNBasicWordCount = 1 Then
+                ReDim acNBasicWords(1 To 1)
+            Else
+                ReDim Preserve acNBasicWords(1 To acNBasicWordCount)
+            End If
+            acNBasicWords(acNBasicWordCount) = oneName
+        End If
+        p = nameEnd + 1
+    Loop
+End Sub
+
 Private Sub AutocompleteClose()
     acActive = 0
     acCandidateCount = 0
@@ -1516,6 +1561,26 @@ Private Sub AutocompleteRefresh(ByRef d As Document)
             If matchCount >= MAX_AC_MATCHES Then Exit For
         End If
     Next i
+
+    ' NestorBASIC (.NB_Nome, ver nbasic.dmx) so' entra na lista de sugestoes
+    ' se o documento ativo realmente tem "include "nbasic.dmx"" - pedido do
+    ' usuario (2026-09-13): quem nao usa NBasic no arquivo nao deve ver
+    ' ".NB_ReadByte" etc. toda hora que digitar 3+ letras.
+    If matchCount < MAX_AC_MATCHES And DocumentHasNBasicInclude(d) <> 0 Then
+        AutocompleteEnsureNBasicDictLoaded()
+        For i = 1 To acNBasicWordCount
+            If Left(acNBasicWords(i), wordLen) = wordUpper And acNBasicWords(i) <> wordUpper Then
+                matchCount += 1
+                If matchCount = 1 Then
+                    ReDim acCandidates(1 To 1)
+                Else
+                    ReDim Preserve acCandidates(1 To matchCount)
+                End If
+                acCandidates(matchCount) = IIf(caseUpper <> 0, acNBasicWords(i), LCase(acNBasicWords(i)))
+                If matchCount >= MAX_AC_MATCHES Then Exit For
+            End If
+        Next i
+    End If
 
     If matchCount = 0 Then
         AutocompleteClose()
@@ -3074,15 +3139,36 @@ Private Sub EnsureCursorVisible(ByRef d As Document)
     ClampScroll(d)
 End Sub
 
+' Tamanho padrao de uma janelinha de documento NOVA (edicao, help, etc.) -
+' menor que o desktop inteiro de proposito (pedido do usuario, 2026-09-13:
+' o desktop/console continua ocupando a tela toda, mas cada janelinha
+' abrindo quase do tamanho da tela ficava feio) - 80x35 e' o ideal
+' visualmente, mas nunca maior que o desktop disponivel (uiW-6/uiH-7, a
+' folga de sempre pras bordas/cascata) nem menor que o minimo de
+' ClampWindowSize (20x8).
+Private Function DefaultDocWindowW() As Integer
+    Dim w As Integer = 80
+    If w > uiW - 6 Then w = uiW - 6
+    If w < 20 Then w = 20
+    Return w
+End Function
+
+Private Function DefaultDocWindowH() As Integer
+    Dim h As Integer = 35
+    If h > uiH - 7 Then h = uiH - 7
+    If h < 8 Then h = 8
+    Return h
+End Function
+
 Private Sub ReflowWindows()
     Dim i As Integer
+    Dim defW As Integer = DefaultDocWindowW()
+    Dim defH As Integer = DefaultDocWindowH()
     For i = 1 To docCount
         docs(i).winX = 3 + ((i - 1) Mod 5) * 2
         docs(i).winY = 3 + ((i - 1) Mod 5) * 1
-        docs(i).winW = uiW - 6
-        docs(i).winH = uiH - 7
-        If docs(i).winW < 20 Then docs(i).winW = 20
-        If docs(i).winH < 8 Then docs(i).winH = 8
+        docs(i).winW = defW
+        docs(i).winH = defH
     Next i
 End Sub
 
@@ -3091,11 +3177,8 @@ Private Sub LayoutNewDocumentWindow(ByVal docIndex As Integer)
 
     docs(docIndex).winX = 3 + ((docIndex - 1) Mod 5) * 2
     docs(docIndex).winY = 3 + ((docIndex - 1) Mod 5) * 1
-    docs(docIndex).winW = uiW - 6
-    docs(docIndex).winH = uiH - 7
-
-    If docs(docIndex).winW < 20 Then docs(docIndex).winW = 20
-    If docs(docIndex).winH < 8 Then docs(docIndex).winH = 8
+    docs(docIndex).winW = DefaultDocWindowW()
+    docs(docIndex).winH = DefaultDocWindowH()
 End Sub
 
 Private Sub BringDocumentToFront(ByVal docIndex As Integer)
@@ -10823,6 +10906,10 @@ Private Sub HandleEditorKey(ByRef keyText As String, ByRef running As Integer, B
 End Sub
 
 Sub EditorInit(ByRef startupName As String)
+    ' A janela do PROGRAMA (o desktop azul, console inteiro) sempre ocupa a
+    ' tela toda - so' as janelinhas de documento (edicao/help/etc., ver
+    ' ReflowWindows/LayoutNewDocumentWindow) e' que abrem num tamanho menor
+    ' por padrao (pedido do usuario, 2026-09-13).
     ConsoleGetCurrentSize(uiW, uiH)
     ConsoleInit(uiW, uiH)
     ConsoleClear(7, 0)
@@ -22407,12 +22494,64 @@ Function EditorRunTextEditSmokeTest(ByRef report As String) As Integer
         Return 0
     End If
 
+    DbSetSetting("cfg.msxbasic.autocomplete.case", "upper")
+    acDictLoaded = 0
+
+    ' NestorBASIC (.NB_Nome, ver nbasic.dmx) so' deve entrar nas sugestoes
+    ' quando o DOCUMENTO ATIVO tem "include "nbasic.dmx"" (pedido do
+    ' usuario, 2026-09-13) - primeiro confere que SEM o include nada de
+    ' NB_ aparece, depois que COM o include aparece de verdade.
+    AutocompleteClose()
+    acNBasicLoaded = 0
+    dTab.lineCount = 1
+    dTab.lines(1) = ""
+    dTab.cursorX = 1 : dTab.cursorY = 1
+    EditorHandleKey("N", running, menuOpen)
+    EditorHandleKey("B", running, menuOpen)
+    EditorHandleKey("_", running, menuOpen)
+    Dim foundNbWithoutInclude As Integer = 0
+    For acI = 1 To acCandidateCount
+        If Left(acCandidates(acI), 3) = "NB_" Then foundNbWithoutInclude = -1
+    Next acI
+    If foundNbWithoutInclude <> 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: sugestao NB_... nao deveria aparecer sem include " & Chr(34) & "nbasic.dmx" & Chr(34) & " no documento"
+        Return 0
+    End If
+
+    AutocompleteClose()
+    dTab.lineCount = 2
+    dTab.lines(1) = "include " & Chr(34) & "nbasic.dmx" & Chr(34)
+    dTab.lines(2) = ""
+    dTab.cursorX = 1 : dTab.cursorY = 2
+    EditorHandleKey("N", running, menuOpen)
+    EditorHandleKey("B", running, menuOpen)
+    EditorHandleKey("_", running, menuOpen)
+    If acActive = 0 Or acCandidateCount = 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: autocompletar deveria sugerir rotinas NB_... com include " & Chr(34) & "nbasic.dmx" & Chr(34) & " no documento (acActive=" & Trim(Str(acActive)) & " acCandidateCount=" & Trim(Str(acCandidateCount)) & ")"
+        Return 0
+    End If
+    Dim foundNbReadByte As Integer = 0
+    For acI = 1 To acCandidateCount
+        If acCandidates(acI) = "NB_READBYTE" Then foundNbReadByte = -1
+    Next acI
+    If foundNbReadByte = 0 Then
+        DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
+        DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
+        report = "SMOKE EDIT FAIL: NB_ReadByte deveria estar entre as sugestoes de 'NB_' com include " & Chr(34) & "nbasic.dmx" & Chr(34) & " (" & Trim(Str(acCandidateCount)) & " sugestao/oes)"
+        Return 0
+    End If
+
     AutocompleteClose()
     acDictLoaded = 0
+    acNBasicLoaded = 0
     DbSetSetting("cfg.msxbasic.autocomplete.min_chars", savedAcMinChars)
     DbSetSetting("cfg.msxbasic.autocomplete.case", savedAcCase)
 
-    report = "SMOKE EDIT OK: digitar, selecao Shift+seta, copiar/colar (Ctrl+C/V), recortar linha (Ctrl+X), desfazer/refazer (Ctrl+Z/Y), navegacao por palavra (Ctrl+seta) e paragrafo, localizar/substituir, selecao/colagem multi-linha, clipboard real do Windows, navegacao de menu (Alt+letra/setas/Enter, Alt+C=Compilar, Alt+O=Configurar, Alt+P=Projeto), Tab configuravel via Configurar->Editor (Indent Size), item Editor no menu Configurar, menu Projeto proprio (Novo/Abrir/Salvar/Fechar Projeto), menu Inserir->Caracteres Especiais MSX e Inserir->Cor MSX, Referencia->msxide.dmx, autocompletar tipo IntelliSense (Configurar->MSX Basic->Autocomplete Min Chars/Case, setas escolhe, Tab/Enter confirma, Espaco cancela, titulos compostos do dicionario tipo GOSUB-RETURN/FOR-NEXT/IF-THEN-ELSE separados nos comandos reais)"
+    report = "SMOKE EDIT OK: digitar, selecao Shift+seta, copiar/colar (Ctrl+C/V), recortar linha (Ctrl+X), desfazer/refazer (Ctrl+Z/Y), navegacao por palavra (Ctrl+seta) e paragrafo, localizar/substituir, selecao/colagem multi-linha, clipboard real do Windows, navegacao de menu (Alt+letra/setas/Enter, Alt+C=Compilar, Alt+O=Configurar, Alt+P=Projeto), Tab configuravel via Configurar->Editor (Indent Size), item Editor no menu Configurar, menu Projeto proprio (Novo/Abrir/Salvar/Fechar Projeto), menu Inserir->Caracteres Especiais MSX e Inserir->Cor MSX, Referencia->msxide.dmx, autocompletar tipo IntelliSense (Configurar->MSX Basic->Autocomplete Min Chars/Case, setas escolhe, Tab/Enter confirma, Espaco cancela, titulos compostos do dicionario tipo GOSUB-RETURN/FOR-NEXT/IF-THEN-ELSE separados nos comandos reais, rotinas NestorBASIC NB_... so' quando o documento tem include nbasic.dmx)"
     Return -1
 End Function
 

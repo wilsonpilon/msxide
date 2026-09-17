@@ -173,6 +173,16 @@ Sub ConsoleInit(ByVal w As Integer, ByVal h As Integer)
 End Sub
 
 Sub ConsoleGetCurrentSize(ByRef w As Integer, ByRef h As Integer)
+    ' Maximiza a janela do console ANTES de ler o tamanho - pedido do
+    ' usuario (2026-09-13): o desktop deve sempre ocupar a largura/altura
+    ' total da janela do terminal. So' "ler o tamanho atual" sem maximizar
+    ' primeiro fica preso no tamanho que a janela ja' estava - inclusive um
+    ' tamanho pequeno deixado por uma execucao ANTERIOR deste mesmo
+    ' programa (o Windows nao devolve a janela do console ao tamanho
+    ' original sozinho so' porque o processo terminou).
+    Dim hwnd As HWND = GetConsoleWindow()
+    If hwnd <> 0 Then ShowWindow(hwnd, SW_MAXIMIZE)
+
     Dim outH As HANDLE = GetStdHandle(STD_OUTPUT_HANDLE)
     Dim info As CONSOLE_SCREEN_BUFFER_INFO
 
